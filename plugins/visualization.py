@@ -1,9 +1,9 @@
 import torch
 import numpy as np
 import queue
-from core import Node, register_node, BLOCK_SIZE, CHANNELS, DTYPE
+from core import Node, BLOCK_SIZE, CHANNELS, DTYPE
 
-@register_node
+
 class WaveformDisplay(Node):
     CUSTOM_UI = "WaveformWidget"
 
@@ -16,12 +16,14 @@ class WaveformDisplay(Node):
     def process(self):
         sig = self.inp.get_tensor()
         self.out.buffer.copy_(sig)
-        
+
         if not self.monitor_queue.full():
             try:
                 snapshot = sig.cpu().numpy().copy()
                 self.monitor_queue.put_nowait(snapshot)
-            except: pass
+            except:
+                pass
+
 
 try:
     from PySide6.QtWidgets import QWidget
@@ -40,7 +42,7 @@ try:
             self.channel_colors = [QColor("#00ff00"), QColor("#00ccff"), QColor("#ff00ff"), QColor("#ffff00")]
 
             self.timer = QTimer(self)
-            self.timer.interval = 33 
+            self.timer.interval = 33
             self.timer.timeout.connect(self.poll)
             self.timer.start()
 
@@ -48,7 +50,8 @@ try:
             try:
                 self.data = self.node.monitor_queue.get_nowait()
                 self.update()
-            except queue.Empty: pass
+            except queue.Empty:
+                pass
 
         def paintEvent(self, event):
             painter = QPainter(self)
@@ -60,15 +63,16 @@ try:
                 return
 
             num_channels, num_samples = self.data.shape
-            if num_channels == 0 or num_samples == 0: return
-            
+            if num_channels == 0 or num_samples == 0:
+                return
+
             w = self.width()
             h = self.height()
             center_y = h / 2.0
-            
+
             painter.setPen(QPen(QColor(50, 50, 50), 1, Qt.DashLine))
             painter.drawLine(0, int(center_y), w, int(center_y))
-            
+
             for ch in range(num_channels):
                 color = self.channel_colors[ch % len(self.channel_colors)]
                 painter.setPen(QPen(color, 1.5))
@@ -76,7 +80,7 @@ try:
                 step = max(1, num_samples // w)
                 val_start = np.clip(self.data[ch, 0], -1.0, 1.0)
                 path.moveTo(0, center_y - (val_start * center_y * 0.9))
-                
+
                 for i in range(step, num_samples, step):
                     x = (i / num_samples) * w
                     val = np.clip(self.data[ch, i], -1.0, 1.0)
@@ -86,4 +90,5 @@ try:
                 painter.setPen(color)
                 painter.drawText(5, 15 + (ch * 15), f"Ch {ch+1}")
 
-except ImportError: pass
+except ImportError:
+    pass
