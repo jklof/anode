@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
 )
-from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QLinearGradient, QCursor
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot
+from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QLinearGradient, QCursor, QTransform
 import plugin_system
 
 NODE_WIDTH = 160
@@ -63,7 +63,7 @@ class ConnectionItem(QGraphicsPathItem):
     def __init__(self, start_item, end_item, logic_key=None):
         super().__init__()
         self.setZValue(-1)
-        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setAcceptedMouseButtons(Qt.RightButton)  # Enable right click for context menu
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.start_item = start_item
         self.end_item = end_item
@@ -105,6 +105,19 @@ class ConnectionItem(QGraphicsPathItem):
     def paint(self, p, o, w):
         p.setPen(QPen(QColor("yellow") if self.isSelected() else QColor("white"), 3 if self.isSelected() else 2))
         p.drawPath(self.path())
+
+    def contextMenuEvent(self, event):
+        menu = QMenu()
+        action_del = menu.addAction("Delete Connection")
+
+        # logic_key contains (src_id, src_port, dst_id, dst_port)
+        # Controller expects (dst_id, dst_port) to disconnect
+        if self.logic_key:
+            _, _, did, dp = self.logic_key
+            action_del.triggered.connect(lambda: self.scene().controller.disconnect_nodes(did, dp))
+
+        menu.exec(event.screenPos())
+        event.accept()
 
 
 class NodeItem(QGraphicsObject):
@@ -354,12 +367,67 @@ class GraphScene(QGraphicsScene):
 
         self.update()
 
+    def contextMenuEvent(self, event):
+        # If mouse is over an item, let the item handle it
+        item = self.itemAt(event.scenePos(), QTransform())
+        if item:
+            super().contextMenuEvent(event)
+            return
+
+        # Otherwise, show Add Node menu
+        menu = QMenu()
+        add_menu = menu.addMenu("Add Node")
+
+        # Use specific position where mouse clicked
+        click_pos = event.scenePos()
+
+        for name in sorted(plugin_system.NODE_REGISTRY.keys()):
+            action = add_menu.addAction(name)
+            # Capture name and position in closure
+            action.triggered.connect(
+                lambda c=False, n=name, p=(click_pos.x(), click_pos.y()): self.controller.add_node(n, p)
+            )
+
+        menu.exec(event.screenPos())
+        event.accept()
+
 
 class GraphView(QGraphicsView):
     def __init__(self, scene):
         super().__init__(scene)
         self.setRenderHint(QPainter.Antialiasing)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+
+    def wheelEvent(self, event):
+        """Handle zoom with mouse wheel."""
+        if event.modifiers() & Qt.ControlModifier:
+            super().wheelEvent(event)
+        else:
+            zoom_in_factor = 1.15
+            zoom_out_factor = 1 / zoom_in_factor
+            if event.angleDelta().y() > 0:
+                self.scale(zoom_in_factor, zoom_in_factor)
+            else:
+                self.scale(zoom_out_factor, zoom_out_factor)
+            event.accept()
+
+    @Slot()
+    def zoom_in(self):
+        self.scale(1.2, 1.2)
+
+    @Slot()
+    def zoom_out(self):
+        self.scale(1 / 1.2, 1 / 1.2)
+
+    @Slot()
+    def zoom_to_fit(self):
+        items = self.scene().items()
+        if items:
+            rect = self.scene().itemsBoundingRect()
+            rect.adjust(-50, -50, 50, 50)
+            self.fitInView(rect, Qt.KeepAspectRatio)
 
     def mousePressEvent(self, event):
         pos = event.position().toPoint()

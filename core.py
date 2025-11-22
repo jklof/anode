@@ -237,7 +237,6 @@ class Graph:
                 n.set_master(n == node)
 
     def recalculate_order(self):
-        # This is the "Execution Plan". It is cached in self.execution_order
         state = {n.id: 0 for n in self.nodes}
         order = []
 
@@ -323,7 +322,12 @@ class Engine:
                 self.output_queue.get_nowait()
             except:
                 pass
-        self.output_queue.put(self.graph.get_snapshot())
+
+        snap = self.graph.get_snapshot()
+        # Vital: Inject running state so UI knows to toggle Play/Stop buttons
+        snap["is_running"] = self.running
+
+        self.output_queue.put(snap)
 
     def _apply_command(self, cmd):
         from plugin_system import NODE_REGISTRY
@@ -438,7 +442,6 @@ class Engine:
 
                 for node in self.graph.nodes:
                     node.sync()
-                # Iterate over the cached Execution Plan
                 for node in self.graph.execution_order:
                     try:
                         node.process()
@@ -447,12 +450,19 @@ class Engine:
 
         for n in self.graph.nodes:
             n.stop()
+
+        # Force final status update so UI knows we stopped
+        self._emit_snapshot()
         print("Engine: Stopped")
 
     def start(self):
         if self.running:
             return
         self.running = True
+
+        # Force immediate status update so UI toggles buttons
+        self._emit_snapshot()
+
         self.thread = threading.Thread(target=self._worker)
         self.thread.start()
 
@@ -460,3 +470,6 @@ class Engine:
         self.running = False
         if self.thread:
             self.thread.join()
+
+        # Force immediate status update so UI toggles buttons
+        self._emit_snapshot()
