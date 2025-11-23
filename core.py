@@ -55,18 +55,26 @@ class InputSlot:
         self.name = name
         self.parent = parent
         self.param_name = param_name
-        self.connected_output: Optional[OutputSlot] = None
+        self.connected_outputs: List[OutputSlot] = []
         self._scratch = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
 
     def connect(self, target: OutputSlot):
-        self.connected_output = target
+        if target not in self.connected_outputs:
+            self.connected_outputs.append(target)
 
-    def disconnect(self):
-        self.connected_output = None
+    def disconnect(self, target=None):
+        if target is None:
+            self.connected_outputs = []
+        else:
+            if target in self.connected_outputs:
+                self.connected_outputs.remove(target)
 
     def get_tensor(self) -> torch.Tensor:
-        if self.connected_output:
-            return self.connected_output.buffer
+        if self.connected_outputs:
+            self._scratch.zero_()
+            for out in self.connected_outputs:
+                self._scratch += out.buffer
+            return self._scratch
         if self.param_name and self.param_name in self.parent.params:
             return self.parent.params[self.param_name].get_tensor_cache()
         self._scratch.zero_()
@@ -203,8 +211,9 @@ class Graph:
             inp.disconnect()
         for other in self.nodes:
             for inp in other.inputs.values():
-                if inp.connected_output and inp.connected_output.parent == node:
-                    inp.disconnect()
+                for conn_out in list(inp.connected_outputs):
+                    if conn_out.parent == node:
+                        inp.disconnect(conn_out)
         self.nodes.remove(node)
         del self.node_map[node_id]
         if self.clock_source is None:
@@ -218,14 +227,15 @@ class Graph:
         src = self.node_map.get(src_id)
         dst = self.node_map.get(dst_id)
         if src and dst and src_port in src.outputs and dst_port in dst.inputs:
-            dst.inputs[dst_port].disconnect()
             dst.inputs[dst_port].connect(src.outputs[src_port])
             self.recalculate_order()
 
-    def disconnect(self, dst_id, dst_port):
-        dst = self.node_map.get(dst_id)
-        if dst and dst_port in dst.inputs:
-            dst.inputs[dst_port].disconnect()
+    def disconnect(self, src_id, src_port, dst_id, dst_port):
+        src_node = self.node_map.get(src_id)
+        dst_node = self.node_map.get(dst_id)
+        if src_node and dst_node and src_port in src_node.outputs and dst_port in dst_node.inputs:
+            output_slot = src_node.outputs[src_port]
+            dst_node.inputs[dst_port].disconnect(target=output_slot)
             self.recalculate_order()
 
     def set_master_clock(self, node: Node):
@@ -247,8 +257,8 @@ class Graph:
                 return
             state[n.id] = 1
             for inp in n.inputs.values():
-                if inp.connected_output:
-                    visit(inp.connected_output.parent)
+                for out in inp.connected_outputs:
+                    visit(out.parent)
             state[n.id] = 2
             order.append(n)
 
@@ -283,8 +293,7 @@ class Graph:
             )
         for dst in self.nodes:
             for d_port, inp in dst.inputs.items():
-                if inp.connected_output:
-                    out = inp.connected_output
+                for out in inp.connected_outputs:
                     data["connections"].append(
                         {"src_id": out.parent.id, "src_port": out.name, "dst_id": dst.id, "dst_port": d_port}
                     )
@@ -298,8 +307,7 @@ class Graph:
         }
         for dst in self.nodes:
             for d_port, inp in dst.inputs.items():
-                if inp.connected_output:
-                    out = inp.connected_output
+                for out in inp.connected_outputs:
                     data["connections"].append(
                         {"src_id": out.parent.id, "src_port": out.name, "dst_id": dst.id, "dst_port": d_port}
                     )
@@ -362,8 +370,8 @@ class Engine:
                 _, sid, sp, did, dp = cmd
                 self.graph.connect(sid, sp, did, dp)
             elif op == "disconn":
-                _, did, dp = cmd
-                self.graph.disconnect(did, dp)
+                _, sid, sp, did, dp = cmd
+                self.graph.disconnect(sid, sp, did, dp)
             elif op == "param":
                 _, nid, p, val = cmd
                 node = self.graph.node_map.get(nid)

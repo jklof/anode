@@ -17,7 +17,17 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
 )
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot
-from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QPainterPath, QLinearGradient, QCursor, QTransform
+from PySide6.QtGui import (
+    QPainter,
+    QPen,
+    QColor,
+    QBrush,
+    QPainterPath,
+    QLinearGradient,
+    QCursor,
+    QTransform,
+    QPainterPathStroker,
+)
 import plugin_system
 
 NODE_WIDTH = 160
@@ -126,10 +136,15 @@ class ConnectionItem(QGraphicsPathItem):
         menu = QMenu()
         action_del = menu.addAction("Delete Connection")
         if self.logic_key:
-            _, _, did, dp = self.logic_key
-            action_del.triggered.connect(lambda: self.scene().controller.disconnect_nodes(did, dp))
+            sid, sp, did, dp = self.logic_key
+            action_del.triggered.connect(lambda: self.scene().controller.disconnect_nodes(sid, sp, did, dp))
         menu.exec(event.screenPos())
         event.accept()
+
+    def shape(self):
+        stroker = QPainterPathStroker()
+        stroker.setWidth(10)
+        return stroker.createStroke(self.path())
 
 
 class NodeItem(QGraphicsObject):
@@ -483,6 +498,6 @@ class GraphView(QGraphicsView):
                 if isinstance(item, NodeItem):
                     self.scene().controller.delete_node(item.nid)
                 elif isinstance(item, ConnectionItem) and item.logic_key:
-                    _, _, did, dp = item.logic_key
-                    self.scene().controller.disconnect_nodes(did, dp)
+                    sid, sp, did, dp = item.logic_key
+                    self.scene().controller.disconnect_nodes(sid, sp, did, dp)
         super().keyPressEvent(event)

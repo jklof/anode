@@ -44,8 +44,8 @@ class AppController(QObject):
     def connect_nodes(self, src_id, src_port, dst_id, dst_port):
         self.engine.push_command(("conn", src_id, src_port, dst_id, dst_port))
 
-    def disconnect_nodes(self, dst_id, dst_port):
-        self.engine.push_command(("disconn", dst_id, dst_port))
+    def disconnect_nodes(self, src_id, src_port, dst_id, dst_port):
+        self.engine.push_command(("disconn", src_id, src_port, dst_id, dst_port))
 
     def set_master_clock(self, node_id):
         self.engine.push_command(("clock", node_id))
