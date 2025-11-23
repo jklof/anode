@@ -63,7 +63,7 @@ class ConnectionItem(QGraphicsPathItem):
     def __init__(self, start_item, end_item, logic_key=None):
         super().__init__()
         self.setZValue(-1)
-        self.setAcceptedMouseButtons(Qt.RightButton)  # Enable right click for context menu
+        self.setAcceptedMouseButtons(Qt.RightButton)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.start_item = start_item
         self.end_item = end_item
@@ -71,7 +71,6 @@ class ConnectionItem(QGraphicsPathItem):
         self.update_path()
 
     def update_path(self):
-        # Defensive check: If items have been removed from scene, stop updating
         if isinstance(self.start_item, QGraphicsItem):
             if not self.start_item.scene():
                 return
@@ -109,13 +108,9 @@ class ConnectionItem(QGraphicsPathItem):
     def contextMenuEvent(self, event):
         menu = QMenu()
         action_del = menu.addAction("Delete Connection")
-
-        # logic_key contains (src_id, src_port, dst_id, dst_port)
-        # Controller expects (dst_id, dst_port) to disconnect
         if self.logic_key:
             _, _, did, dp = self.logic_key
             action_del.triggered.connect(lambda: self.scene().controller.disconnect_nodes(did, dp))
-
         menu.exec(event.screenPos())
         event.accept()
 
@@ -132,8 +127,9 @@ class NodeItem(QGraphicsObject):
         self.monitor_queue = node_data["monitor_queue"]
         self.controller = controller
 
-        # Store widget references for updates
         self.param_controls = {}
+        self._processing_load = 0.0
+        self._show_load = False
 
         self.setFlag(QGraphicsItem.ItemIsMovable)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -198,7 +194,6 @@ class NodeItem(QGraphicsObject):
         ptype = p_data["type"]
         meta = p_data["meta"]
         val = p_data["value"]
-
         control_ref = {"type": ptype, "meta": meta}
 
         if ptype == "float":
@@ -217,7 +212,6 @@ class NodeItem(QGraphicsObject):
             l.addWidget(lbl)
             self.layout.addWidget(c)
             self.layout.addWidget(slider)
-
             control_ref["widget"] = slider
             control_ref["label"] = lbl
 
@@ -241,41 +235,33 @@ class NodeItem(QGraphicsObject):
         self.param_controls[name] = control_ref
 
     def update_from_snapshot(self, node_data):
-        """
-        Updates the visual state from a new snapshot.
-        This handles position updates and parameter changes from the engine/files.
-        """
-        # 1. Update Position
         new_pos = QPointF(*node_data["pos"])
         if self.pos() != new_pos:
             self.setPos(new_pos)
-
-        # 2. Update Parameters
         new_params = node_data["params"]
         for name, control in self.param_controls.items():
             if name in new_params:
                 new_val = new_params[name]["value"]
                 widget = control["widget"]
-
-                # Block signals so we don't send this update back to the engine
                 with QSignalBlocker(widget):
                     if control["type"] == "float":
                         meta = control["meta"]
-                        # Reverse calculate slider position
                         norm = (new_val - meta["min"]) / (meta["max"] - meta["min"])
-                        slider_val = int(norm * 1000)
-                        if widget.value() != slider_val:
-                            widget.setValue(slider_val)
-                            if "label" in control:
-                                control["label"].setText(f"{name}: {new_val:.2f}")
-
+                        widget.setValue(int(norm * 1000))
+                        if "label" in control:
+                            control["label"].setText(f"{name}: {new_val:.2f}")
                     elif control["type"] == "bool":
-                        if widget.isChecked() != bool(new_val):
-                            widget.setChecked(bool(new_val))
-
+                        widget.setChecked(bool(new_val))
                     elif control["type"] == "menu":
-                        if widget.currentIndex() != int(new_val):
-                            widget.setCurrentIndex(int(new_val))
+                        widget.setCurrentIndex(int(new_val))
+
+    def set_processing_load(self, pct):
+        self._processing_load = pct
+        self.update()
+
+    def set_show_load(self, show):
+        self._show_load = show
+        self.update()
 
     def boundingRect(self):
         return QRectF(0, 0, self.width, self.height)
@@ -289,6 +275,20 @@ class NodeItem(QGraphicsObject):
         grad.setColorAt(1, QColor(50, 50, 50))
         painter.setBrush(grad)
         painter.drawRoundedRect(0, 0, self.width, HEADER_HEIGHT, 5, 5)
+
+        # Draw Load Bar
+        if self._show_load and self._processing_load > 0:
+            pct = min(self._processing_load, 100.0)
+            bar_width = self.width * (pct / 100.0)
+            color = QColor(0, 255, 0, 100)
+            if pct > 50:
+                color = QColor(255, 255, 0, 100)
+            if pct > 85:
+                color = QColor(255, 0, 0, 120)
+            painter.setBrush(color)
+            painter.setPen(Qt.NoPen)
+            painter.drawRect(0, 0, bar_width, HEADER_HEIGHT)
+
         painter.setPen(QColor("white"))
         painter.drawText(QRectF(0, 0, self.width, HEADER_HEIGHT), Qt.AlignCenter, self.node_name)
 
@@ -313,41 +313,36 @@ class GraphScene(QGraphicsScene):
         self.wire_items = {}
         self.drag_start = None
         self.temp_wire = None
+        self._show_load = False
         self.controller.graphUpdated.connect(self.reconcile)
+        self.controller.statsUpdated.connect(self.on_stats_updated)
 
     def reconcile(self, snapshot: dict):
         snap_nodes = snapshot["nodes"]
         snap_ids = {n["id"] for n in snap_nodes}
-
-        # Connections
         snap_conns = set()
         for c in snapshot["connections"]:
             snap_conns.add((c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]))
 
-        # 1. Remove dead Wires FIRST (Fixes QGraphicsScene warnings)
         ui_keys = set(self.wire_items.keys())
         for k in ui_keys - snap_conns:
             self.removeItem(self.wire_items.pop(k))
 
-        # 2. Remove dead Nodes
         ui_ids = set(self.node_items.keys())
         for nid in ui_ids - snap_ids:
             self.removeItem(self.node_items.pop(nid))
 
-        # 3. Add OR Update Nodes
         for n_data in snap_nodes:
             nid = n_data["id"]
             if nid not in self.node_items:
-                # Create New
                 item = NodeItem(n_data, self.controller)
                 item.setPos(*n_data["pos"])
+                item.set_show_load(self._show_load)
                 self.addItem(item)
                 self.node_items[nid] = item
             else:
-                # Update Existing (Non-Destructive Sync)
                 self.node_items[nid].update_from_snapshot(n_data)
 
-        # 4. Add new Wires
         ui_keys = set(self.wire_items.keys())
         for k in snap_conns - ui_keys:
             sid, sp, did, dp = k
@@ -364,30 +359,31 @@ class GraphScene(QGraphicsScene):
 
                     s_item.positionChanged.connect(upd)
                     d_item.positionChanged.connect(upd)
-
         self.update()
 
+    def on_stats_updated(self, stats):
+        for nid, load in stats.items():
+            if nid in self.node_items:
+                self.node_items[nid].set_processing_load(load)
+
+    def toggle_load_view(self, show):
+        self._show_load = show
+        for item in self.node_items.values():
+            item.set_show_load(show)
+
     def contextMenuEvent(self, event):
-        # If mouse is over an item, let the item handle it
         item = self.itemAt(event.scenePos(), QTransform())
         if item:
             super().contextMenuEvent(event)
             return
-
-        # Otherwise, show Add Node menu
         menu = QMenu()
         add_menu = menu.addMenu("Add Node")
-
-        # Use specific position where mouse clicked
         click_pos = event.scenePos()
-
         for name in sorted(plugin_system.NODE_REGISTRY.keys()):
             action = add_menu.addAction(name)
-            # Capture name and position in closure
             action.triggered.connect(
                 lambda c=False, n=name, p=(click_pos.x(), click_pos.y()): self.controller.add_node(n, p)
             )
-
         menu.exec(event.screenPos())
         event.accept()
 
@@ -401,16 +397,11 @@ class GraphView(QGraphicsView):
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
     def wheelEvent(self, event):
-        """Handle zoom with mouse wheel."""
         if event.modifiers() & Qt.ControlModifier:
             super().wheelEvent(event)
         else:
-            zoom_in_factor = 1.15
-            zoom_out_factor = 1 / zoom_in_factor
-            if event.angleDelta().y() > 0:
-                self.scale(zoom_in_factor, zoom_in_factor)
-            else:
-                self.scale(zoom_out_factor, zoom_out_factor)
+            zoom = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+            self.scale(zoom, zoom)
             event.accept()
 
     @Slot()
@@ -423,11 +414,8 @@ class GraphView(QGraphicsView):
 
     @Slot()
     def zoom_to_fit(self):
-        items = self.scene().items()
-        if items:
-            rect = self.scene().itemsBoundingRect()
-            rect.adjust(-50, -50, 50, 50)
-            self.fitInView(rect, Qt.KeepAspectRatio)
+        if self.scene().items():
+            self.fitInView(self.scene().itemsBoundingRect().adjusted(-50, -50, 50, 50), Qt.KeepAspectRatio)
 
     def mousePressEvent(self, event):
         pos = event.position().toPoint()

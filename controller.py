@@ -5,6 +5,7 @@ from core import Engine
 
 class AppController(QObject):
     graphUpdated = Signal(dict)
+    statsUpdated = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -16,14 +17,15 @@ class AppController(QObject):
         self.poll_timer.start()
 
     def check_engine_messages(self):
-        try:
-            snap = None
-            while not self.engine.output_queue.empty():
-                snap = self.engine.output_queue.get_nowait()
-            if snap:
-                self.graphUpdated.emit(snap)
-        except:
-            pass
+        while not self.engine.output_queue.empty():
+            try:
+                msg = self.engine.output_queue.get_nowait()
+                if msg.get("type") == "stats":
+                    self.statsUpdated.emit(msg["data"])
+                else:
+                    self.graphUpdated.emit(msg)
+            except:
+                pass
 
     def start_audio(self):
         self.engine.start()
@@ -71,3 +73,6 @@ class AppController(QObject):
 
     def clear(self):
         self.engine.push_command(("clear",))
+
+    def reload_plugins(self):
+        self.engine.push_command(("reload",))

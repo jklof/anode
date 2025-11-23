@@ -258,7 +258,12 @@ class Graph:
         self.execution_order = order
 
     def get_snapshot(self) -> dict:
-        data = {"clock_id": self.clock_source.id if self.clock_source else None, "nodes": [], "connections": []}
+        data = {
+            "type": "graph_update",
+            "clock_id": self.clock_source.id if self.clock_source else None,
+            "nodes": [],
+            "connections": [],
+        }
         for n in self.nodes:
             p_data = {}
             for k, p in n.params.items():
@@ -306,7 +311,7 @@ class Engine:
         self.graph = Graph()
         self.running = False
         self.command_queue = queue.Queue()
-        self.output_queue = queue.Queue(maxsize=1)
+        self.output_queue = queue.Queue(maxsize=5)
         self.thread = None
 
     def push_command(self, cmd: Tuple):
@@ -324,19 +329,21 @@ class Engine:
                 pass
 
         snap = self.graph.get_snapshot()
-        # Vital: Inject running state so UI knows to toggle Play/Stop buttons
         snap["is_running"] = self.running
-
         self.output_queue.put(snap)
 
+    def _emit_stats(self, stats_data):
+        if not self.output_queue.full():
+            self.output_queue.put({"type": "stats", "data": stats_data})
+
     def _apply_command(self, cmd):
-        from plugin_system import NODE_REGISTRY
+        import plugin_system
 
         try:
             op = cmd[0]
             if op == "add":
                 _, type_name, nid, pos = cmd
-                cls = NODE_REGISTRY.get(type_name)
+                cls = plugin_system.NODE_REGISTRY.get(type_name)
                 if cls:
                     node = cls(name=type_name)
                     node.id = nid
@@ -396,7 +403,7 @@ class Engine:
                     data = json.loads(json_str)
                     new_graph = Graph()
                     for n_data in data["nodes"]:
-                        cls = NODE_REGISTRY.get(n_data["type"])
+                        cls = plugin_system.NODE_REGISTRY.get(n_data["type"])
                         if cls:
                             node = cls(n_data["name"])
                             node.id = n_data["id"]
@@ -415,6 +422,41 @@ class Engine:
                 except Exception as e:
                     print(f"Load Failed: {e}")
 
+            elif op == "reload":
+                print("Engine: Reloading plugins...")
+                current_json = self.graph.to_json()
+                for n in self.graph.nodes:
+                    n.stop()
+                self.graph = Graph()
+                try:
+                    plugin_system.load_plugins()
+                except Exception as e:
+                    print(f"Engine: Reload failed: {e}")
+                    return
+                try:
+                    data = json.loads(current_json)
+                    new_graph = Graph()
+                    for n_data in data["nodes"]:
+                        cls = plugin_system.NODE_REGISTRY.get(n_data["type"])
+                        if cls:
+                            node = cls(n_data["name"])
+                            node.id = n_data["id"]
+                            node.load_state(n_data)
+                            new_graph.add_node(node)
+                    for c in data["connections"]:
+                        if c["src_id"] in new_graph.node_map and c["dst_id"] in new_graph.node_map:
+                            new_graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])
+                    if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
+                        new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
+                    self.graph = new_graph
+                    if self.running:
+                        for n in self.graph.nodes:
+                            n.start()
+                    self._emit_snapshot()
+                    print("Engine: Hot reload complete.")
+                except Exception as e:
+                    print(f"Engine: Restore failed after reload: {e}")
+
         except Exception as e:
             print(f"Cmd Error: {e}")
 
@@ -423,6 +465,11 @@ class Engine:
         with torch.no_grad():
             for node in self.graph.nodes:
                 node.start()
+
+            block_duration_sec = BLOCK_SIZE / SAMPLE_RATE
+            stats_interval = 0.1
+            next_stats_time = time.perf_counter() + stats_interval
+            stats_buffer = {}
 
             while self.running:
                 dirty = False
@@ -442,16 +489,23 @@ class Engine:
 
                 for node in self.graph.nodes:
                     node.sync()
+
                 for node in self.graph.execution_order:
                     try:
+                        t0 = time.perf_counter()
                         node.process()
+                        dt = time.perf_counter() - t0
+                        stats_buffer[node.id] = (dt / block_duration_sec) * 100.0
                     except:
                         pass
 
+                now = time.perf_counter()
+                if now >= next_stats_time:
+                    self._emit_stats(stats_buffer.copy())
+                    next_stats_time = now + stats_interval
+
         for n in self.graph.nodes:
             n.stop()
-
-        # Force final status update so UI knows we stopped
         self._emit_snapshot()
         print("Engine: Stopped")
 
@@ -459,10 +513,7 @@ class Engine:
         if self.running:
             return
         self.running = True
-
-        # Force immediate status update so UI toggles buttons
         self._emit_snapshot()
-
         self.thread = threading.Thread(target=self._worker)
         self.thread.start()
 
@@ -470,6 +521,4 @@ class Engine:
         self.running = False
         if self.thread:
             self.thread.join()
-
-        # Force immediate status update so UI toggles buttons
         self._emit_snapshot()

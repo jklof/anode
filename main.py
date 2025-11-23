@@ -4,12 +4,9 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QToolBar,
     QWidget,
-    QMenu,
-    QToolButton,
     QLabel,
     QFileDialog,
     QSizePolicy,
-    QStyle,
 )
 from PySide6.QtGui import QAction, QKeySequence
 from controller import AppController
@@ -20,7 +17,7 @@ import plugin_system
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Bare Core V5 (Professional)")
+        self.setWindowTitle("ANode - Audio Node Processor")
         self.resize(1200, 800)
 
         plugin_system.load_plugins()
@@ -31,12 +28,9 @@ class MainWindow(QMainWindow):
         self.view = GraphView(self.scene)
         self.setCentralWidget(self.view)
 
-        # Setup UI elements
         self._create_actions()
         self._create_menus()
         self._create_toolbar()
-
-        # Create default patch
         self.create_default_patch()
 
     def create_default_patch(self):
@@ -48,7 +42,6 @@ class MainWindow(QMainWindow):
             self.controller.connect_nodes(id_conv, "out", id_out, "audio_in")
 
     def _create_actions(self):
-        # File Actions
         self.act_new = QAction("&New", self)
         self.act_new.setShortcut(QKeySequence.New)
         self.act_new.triggered.connect(self.controller.clear)
@@ -65,7 +58,6 @@ class MainWindow(QMainWindow):
         self.act_exit.setShortcut(QKeySequence.Quit)
         self.act_exit.triggered.connect(self.close)
 
-        # Process Actions
         self.act_start = QAction("&Start Audio", self)
         self.act_start.setShortcut("F5")
         self.act_start.triggered.connect(self.start_audio_action)
@@ -75,7 +67,6 @@ class MainWindow(QMainWindow):
         self.act_stop.triggered.connect(self.stop_audio_action)
         self.act_stop.setEnabled(False)
 
-        # View Actions
         self.act_zoom_in = QAction("Zoom &In", self)
         self.act_zoom_in.setShortcut(QKeySequence.ZoomIn)
         self.act_zoom_in.triggered.connect(self.view.zoom_in)
@@ -88,66 +79,52 @@ class MainWindow(QMainWindow):
         self.act_zoom_fit.setShortcut("Ctrl+0")
         self.act_zoom_fit.triggered.connect(self.view.zoom_to_fit)
 
-        # Dev Actions
+        self.act_show_load = QAction("Show Processing &Load", self)
+        self.act_show_load.setCheckable(True)
+        self.act_show_load.triggered.connect(self.scene.toggle_load_view)
+
         self.act_reload = QAction("&Reload Plugins", self)
-        self.act_reload.triggered.connect(lambda: plugin_system.load_plugins())
+        self.act_reload.triggered.connect(self.controller.reload_plugins)
 
     def _create_menus(self):
         menubar = self.menuBar()
+        file = menubar.addMenu("&File")
+        file.addAction(self.act_new)
+        file.addAction(self.act_open)
+        file.addAction(self.act_save)
+        file.addSeparator()
+        file.addAction(self.act_exit)
 
-        # File Menu
-        file_menu = menubar.addMenu("&File")
-        file_menu.addAction(self.act_new)
-        file_menu.addAction(self.act_open)
-        file_menu.addAction(self.act_save)
-        file_menu.addSeparator()
-        file_menu.addAction(self.act_exit)
+        process = menubar.addMenu("&Process")
+        process.addAction(self.act_start)
+        process.addAction(self.act_stop)
 
-        # Process Menu
-        process_menu = menubar.addMenu("&Process")
-        process_menu.addAction(self.act_start)
-        process_menu.addAction(self.act_stop)
+        view = menubar.addMenu("&View")
+        view.addAction(self.act_zoom_in)
+        view.addAction(self.act_zoom_out)
+        view.addAction(self.act_zoom_fit)
 
-        # View Menu
-        view_menu = menubar.addMenu("&View")
-        view_menu.addAction(self.act_zoom_in)
-        view_menu.addAction(self.act_zoom_out)
-        view_menu.addAction(self.act_zoom_fit)
-
-        # Developer Menu
-        dev_menu = menubar.addMenu("&Developer")
-        dev_menu.addAction(self.act_reload)
+        dev = menubar.addMenu("&Developer")
+        dev.addAction(self.act_show_load)
+        dev.addAction(self.act_reload)
 
     def _create_toolbar(self):
         t = QToolBar("Main Toolbar", self)
         t.setMovable(False)
         self.addToolBar(t)
-
-        # Removed "Add Node" button as requested
-
-        # 1. File Operations
         t.addAction(self.act_new)
         t.addAction(self.act_open)
         t.addAction(self.act_save)
-
         t.addSeparator()
-
-        # 2. Processing
         t.addAction(self.act_start)
         t.addAction(self.act_stop)
-
         t.addSeparator()
-
-        # 3. View
         t.addAction(self.act_zoom_in)
         t.addAction(self.act_zoom_out)
         t.addAction(self.act_zoom_fit)
-
-        # 4. Spacer & Status
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         t.addWidget(spacer)
-
         self.lbl_status = QLabel("Clock: None  ")
         t.addWidget(self.lbl_status)
 
@@ -168,12 +145,9 @@ class MainWindow(QMainWindow):
         self.controller.stop_audio()
 
     def on_graph_update(self, snapshot):
-        # 1. Update Play/Stop Button State based on actual engine state
         is_running = snapshot.get("is_running", False)
         self.act_start.setEnabled(not is_running)
         self.act_stop.setEnabled(is_running)
-
-        # 2. Update clock status
         clk_id = snapshot.get("clock_id")
         if clk_id:
             name = "Unknown"

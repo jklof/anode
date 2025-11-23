@@ -1,5 +1,6 @@
 import os
 import sys
+import importlib
 import importlib.util
 import inspect
 from typing import Dict, Type, Any, Optional
@@ -8,32 +9,57 @@ from core import Node
 NODE_REGISTRY: Dict[str, Type[Node]] = {}
 UI_REGISTRY: Dict[str, Type[Any]] = {}
 
+# Track loaded modules to allow reloading
+_loaded_modules = {}
+
 
 def load_plugins(folder="plugins"):
+    """
+    Scans the plugins folder. If modules are already loaded, it reloads them
+    to pick up code changes. Registers Node and UI classes.
+    """
+    # Clear registries so we don't have stale references
+    NODE_REGISTRY.clear()
+    UI_REGISTRY.clear()
+
     if not os.path.exists(folder):
         os.makedirs(folder)
-    sys.path.append(folder)
+
+    # Ensure folder is in path for imports
+    if folder not in sys.path:
+        sys.path.append(folder)
+
+    print(f"--- Loading Plugins from '{folder}' ---")
 
     for f in os.listdir(folder):
         if f.endswith(".py"):
             name = f[:-3]
-            path = os.path.join(folder, f)
-            try:
-                spec = importlib.util.spec_from_file_location(name, path)
-                mod = importlib.util.module_from_spec(spec)
-                sys.modules[name] = mod
-                spec.loader.exec_module(mod)
 
+            try:
+                # Hot Reload Logic
+                if name in _loaded_modules:
+                    # If previously loaded, force a reload of the module object
+                    mod = importlib.reload(_loaded_modules[name])
+                    print(f"Reloaded: {name}")
+                else:
+                    # First time load
+                    mod = importlib.import_module(name)
+                    _loaded_modules[name] = mod
+                    print(f"Loaded: {name}")
+
+                # Inspect the module for Nodes and UIs
                 for mem_name, obj in inspect.getmembers(mod, inspect.isclass):
+                    # Register Logic Class
                     if issubclass(obj, Node) and obj is not Node:
                         NODE_REGISTRY[obj.__name__] = obj
-                        print(f"Registered Logic: {obj.__name__}")
+                        # print(f"  -> Node: {obj.__name__}")
 
+                    # Register UI Class
                     if hasattr(obj, "IS_NODE_UI") and obj.IS_NODE_UI:
                         target = getattr(obj, "NODE_CLASS_NAME", None)
                         if target:
                             UI_REGISTRY[target] = obj
-                            print(f"Registered UI: {obj.__name__}")
+                            # print(f"  -> UI: {obj.__name__} for {target}")
 
             except Exception as e:
                 print(f"Failed to load plugin {name}: {e}")
