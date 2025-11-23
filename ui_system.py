@@ -59,27 +59,35 @@ class SocketItem(QGraphicsItem):
         self.setZValue(10)
         self.setCursor(QCursor(Qt.CrossCursor))
         self._base_color = QColor("#ff9900") if is_input else QColor("#00ccff")
-        self._current_color = self._base_color
+        self._hovered = False
 
     def boundingRect(self):
-        pad = 4
+        pad = 10
         return QRectF(-SOCKET_RADIUS - pad, -SOCKET_RADIUS - pad, (SOCKET_RADIUS + pad) * 2, (SOCKET_RADIUS + pad) * 2)
 
     def paint(self, painter, option, widget):
-        painter.setBrush(self._current_color)
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(QPointF(0, 0), SOCKET_RADIUS, SOCKET_RADIUS)
+        if self._hovered:
+            painter.save()
+            painter.scale(1.3, 1.3)
+            painter.setBrush(self._base_color)
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(0, 0), SOCKET_RADIUS, SOCKET_RADIUS)
+            painter.restore()
+        else:
+            painter.setBrush(self._base_color)
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(0, 0), SOCKET_RADIUS, SOCKET_RADIUS)
         painter.setPen(QColor("white"))
         text_rect = QRectF(15 if self.is_input else -105, -10, 90, 20)
         align = Qt.AlignLeft if self.is_input else Qt.AlignRight
         painter.drawText(text_rect, align | Qt.AlignVCenter, self.name)
 
     def hoverEnterEvent(self, e):
-        self._current_color = QColor("white")
+        self._hovered = True
         self.update()
 
     def hoverLeaveEvent(self, e):
-        self._current_color = self._base_color
+        self._hovered = False
         self.update()
 
 
@@ -87,11 +95,15 @@ class ConnectionItem(QGraphicsPathItem):
     def __init__(self, start_item, end_item, logic_key=None):
         super().__init__()
         self.setZValue(-1)
-        self.setAcceptedMouseButtons(Qt.RightButton)
+        self.setAcceptedMouseButtons(Qt.LeftButton | Qt.RightButton)
+        self.setAcceptHoverEvents(True)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
+        self.hovered = False
         self.start_item = start_item
         self.end_item = end_item
         self.logic_key = logic_key
+        self.temp_mode = False
+        self.temp_color = None
 
         # Store references to parents to manage signals
         self.start_node = start_item.parentItem() if isinstance(start_item, QGraphicsItem) else None
@@ -144,15 +156,43 @@ class ConnectionItem(QGraphicsPathItem):
 
         path = QPainterPath()
         path.moveTo(p1)
-        dist = max(abs(p1.x() - p2.x()) * 0.5, 50.0)
+        dist = max(abs(p1.x() - p2.x()) * 0.5, abs(p1.y() - p2.y()) * 0.5, 50.0)
         cp1 = -dist if start_is_input else dist
         cp2 = -dist if end_is_input else dist
         path.cubicTo(QPointF(p1.x() + cp1, p1.y()), QPointF(p2.x() + cp2, p2.y()), p2)
         self.setPath(path)
 
     def paint(self, p, o, w):
-        p.setPen(QPen(QColor("yellow") if self.isSelected() else QColor("white"), 3 if self.isSelected() else 2))
+        if self.temp_mode:
+            if self.temp_color == QColor("white"):
+                pen = QPen(QColor("white"), 2, Qt.DashLine)
+            elif self.temp_color == QColor("red"):
+                pen = QPen(QColor("red"), 3)
+            elif self.temp_color == QColor("green"):
+                pen = QPen(QColor("green"), 3)
+            else:
+                pen = QPen(QColor("white"), 2, Qt.DashLine)
+        elif self.isSelected():
+            pen = QPen(QColor("yellow"), 3)
+        elif self.hovered:
+            pen = QPen(QColor("#00ccff"), 4)
+        else:
+            pen = QPen(QColor("white"), 2)
+        p.setPen(pen)
         p.drawPath(self.path())
+
+    def hoverEnterEvent(self, event):
+        self.hovered = True
+        self.update()
+
+    def hoverLeaveEvent(self, event):
+        self.hovered = False
+        self.update()
+
+    def mouseDoubleClickEvent(self, event):
+        if self.logic_key:
+            sid, sp, did, dp = self.logic_key
+            self.scene().controller.disconnect_nodes(sid, sp, did, dp)
 
     def contextMenuEvent(self, event):
         menu = QMenu()
@@ -165,7 +205,7 @@ class ConnectionItem(QGraphicsPathItem):
 
     def shape(self):
         stroker = QPainterPathStroker()
-        stroker.setWidth(10)
+        stroker.setWidth(20)
         return stroker.createStroke(self.path())
 
 
@@ -398,6 +438,7 @@ class GraphScene(QGraphicsScene):
         self._last_reload_version = 0
         self.drag_start = None
         self.temp_wire = None
+        self.drag_target = None
         self._show_load = False
         self.controller.graphUpdated.connect(self.reconcile)
         self.controller.statsUpdated.connect(self.on_stats_updated)
@@ -516,21 +557,41 @@ class GraphView(QGraphicsView):
             self.scene().drag_start = item
             self.setDragMode(QGraphicsView.NoDrag)
             self.scene().temp_wire = ConnectionItem(item, self.mapToScene(pos))
+            self.scene().temp_wire.temp_mode = True
             self.scene().addItem(self.scene().temp_wire)
         else:
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self.scene().temp_wire:
-            self.scene().temp_wire.end_item = self.mapToScene(event.position().toPoint())
+            pos = self.mapToScene(event.position().toPoint())
+            socket = self.itemAt(event.position().toPoint())
+            if socket and not isinstance(socket, SocketItem):
+                socket = socket.parentItem()
+                if socket and not isinstance(socket, SocketItem):
+                    socket = None
+            self.scene().drag_target = socket
+            start = self.scene().drag_start
+            if socket and isinstance(socket, SocketItem):
+                valid = (start.is_input != socket.is_input) and (start.node_id != socket.node_id)
+                if valid:
+                    self.scene().temp_wire.end_item = socket.scenePos()
+                    self.scene().temp_wire.temp_color = QColor("green")
+                else:
+                    self.scene().temp_wire.end_item = pos
+                    self.scene().temp_wire.temp_color = QColor("red")
+            else:
+                self.scene().temp_wire.end_item = pos
+                self.scene().temp_wire.temp_color = QColor("white")
             self.scene().temp_wire.update_path()
+            self.scene().temp_wire.update()
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if self.scene().temp_wire:
-            end = self.itemAt(event.position().toPoint())
+            end = self.scene().drag_target
             start = self.scene().drag_start
-            if isinstance(end, SocketItem) and start:
+            if end and isinstance(end, SocketItem) and start:
                 if start.is_input != end.is_input and start.node_id != end.node_id:
                     src = start if not start.is_input else end
                     dst = end if end.is_input else start
@@ -538,6 +599,7 @@ class GraphView(QGraphicsView):
             self.scene().removeItem(self.scene().temp_wire)
             self.scene().temp_wire = None
             self.scene().drag_start = None
+            self.scene().drag_target = None
             self.setDragMode(QGraphicsView.ScrollHandDrag)
         super().mouseReleaseEvent(event)
 
