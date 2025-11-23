@@ -470,6 +470,7 @@ class MediaPlayerNode(Node):
     def stop(self):
         if self.worker:
             self.worker.stop()
+            self.worker.join(timeout=0.2)
         self.params["playing"].value = False
         self._push_ui_state()
 

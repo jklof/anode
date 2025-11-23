@@ -317,6 +317,7 @@ class Graph:
 class Engine:
     def __init__(self):
         self.graph = Graph()
+        self.reload_version = 0
         self.running = False
         self.command_queue = queue.Queue()
         self.output_queue = queue.Queue(maxsize=5)
@@ -338,6 +339,7 @@ class Engine:
 
         snap = self.graph.get_snapshot()
         snap["is_running"] = self.running
+        snap["reload_version"] = self.reload_version
         self.output_queue.put(snap)
 
     def _emit_stats(self, stats_data):
@@ -436,6 +438,7 @@ class Engine:
                 for n in self.graph.nodes:
                     n.stop()
                 self.graph = Graph()
+                self.reload_version += 1
                 try:
                     plugin_system.load_plugins()
                 except Exception as e:

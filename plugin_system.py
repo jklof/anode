@@ -49,6 +49,8 @@ def load_plugins(folder="plugins"):
 
                 # Inspect the module for Nodes and UIs
                 for mem_name, obj in inspect.getmembers(mod, inspect.isclass):
+                    if obj.__module__ != name:
+                        continue
                     # Register Logic Class
                     if issubclass(obj, Node) and obj is not Node:
                         NODE_REGISTRY[obj.__name__] = obj

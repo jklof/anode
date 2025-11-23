@@ -3,6 +3,7 @@ import numpy as np
 import sounddevice as sd
 import queue
 import time
+import threading
 from core import Node, IClockProvider, BLOCK_SIZE, SAMPLE_RATE, DTYPE, CHANNELS
 
 
@@ -64,6 +65,7 @@ class AudioOutput(Node, IClockProvider):
         self.in_audio = self.add_input("audio_in")
         self.device = device
         self.queue = queue.Queue(maxsize=4)
+        self.sync_event = threading.Event()
         self.stream = None
         self._active = False
         self._pool = [torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE) for _ in range(10)]
@@ -78,7 +80,8 @@ class AudioOutput(Node, IClockProvider):
     def wait_for_sync(self):
         if self.is_master and self._active:
             while self.queue.full() and self._active:
-                time.sleep(0.002)
+                self.sync_event.wait(timeout=0.005)
+                self.sync_event.clear()
 
     def start(self):
         self._active = True
@@ -110,6 +113,7 @@ class AudioOutput(Node, IClockProvider):
             print(f"{self.name}: {status}")
         try:
             data = self.queue.get_nowait()
+            self.sync_event.set()
             outdata[:] = data.t().numpy()
         except queue.Empty:
             if self.is_master and self._active:

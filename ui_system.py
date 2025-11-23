@@ -286,13 +286,15 @@ class NodeItem(QGraphicsObject):
                     if control["type"] == "float":
                         meta = control["meta"]
                         norm = (new_val - meta["min"]) / (meta["max"] - meta["min"])
-                        widget.setValue(int(norm * 1000))
-                        if "label" in control:
-                            control["label"].setText(f"{name}: {new_val:.2f}")
+                        if not widget.isSliderDown():
+                            widget.setValue(int(norm * 1000))
+                            if "label" in control:
+                                control["label"].setText(f"{name}: {new_val:.2f}")
                     elif control["type"] == "bool":
                         widget.setChecked(bool(new_val))
                     elif control["type"] == "menu":
-                        widget.setCurrentIndex(int(new_val))
+                        if not widget.view().isVisible():
+                            widget.setCurrentIndex(int(new_val))
 
         # Custom Widgets
         if self.widget and hasattr(self.widget, "update_from_params"):
@@ -354,6 +356,7 @@ class GraphScene(QGraphicsScene):
         self.controller = controller
         self.node_items = {}
         self.wire_items = {}
+        self._last_reload_version = 0
         self.drag_start = None
         self.temp_wire = None
         self._show_load = False
@@ -361,6 +364,16 @@ class GraphScene(QGraphicsScene):
         self.controller.statsUpdated.connect(self.on_stats_updated)
 
     def reconcile(self, snapshot: dict):
+        reload_version = snapshot.get("reload_version", 0)
+        if reload_version != self._last_reload_version:
+            self._last_reload_version = reload_version
+            for item in list(self.wire_items.values()):
+                self.removeItem(item)
+            self.wire_items.clear()
+            for item in list(self.node_items.values()):
+                self.removeItem(item)
+            self.node_items.clear()
+
         snap_nodes = snapshot["nodes"]
         snap_ids = {n["id"] for n in snap_nodes}
         snap_conns = set()
