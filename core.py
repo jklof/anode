@@ -126,7 +126,7 @@ class Graph:
 
             # --- CHECK CLOCK STATUS ---
             is_clock_provider = isinstance(n, IClockProvider)
-            is_current_master = (n == self.clock_source)
+            is_current_master = n == self.clock_source
 
             data["nodes"].append(
                 {
@@ -141,7 +141,7 @@ class Graph:
                     "monitor_queue": mon_q,
                     # --- NEW KEYS ---
                     "can_be_master": is_clock_provider,
-                    "is_master": is_current_master
+                    "is_master": is_current_master,
                 }
             )
         for dst in self.nodes:

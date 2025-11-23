@@ -4,7 +4,7 @@ import sounddevice as sd
 import queue
 import time
 import threading
-from base import Node, IClockProvider, BLOCK_SIZE, SAMPLE_RATE, DTYPE, CHANNELS
+from base import Node, IClockProvider, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
 
 
 class SineOscillator(Node):

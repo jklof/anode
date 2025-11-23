@@ -1,5 +1,7 @@
 import torch
-from base import Node, BLOCK_SIZE, DTYPE
+import wave
+import numpy as np
+from base import Node, IClockProvider, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
 
 
 class Note(Node):
@@ -41,3 +43,76 @@ class Selector(Node):
             self.out.buffer.copy_(self.in_a.get_tensor())
         else:
             self.out.buffer.copy_(self.in_b.get_tensor())
+
+
+class FileRecorder(Node, IClockProvider):
+    def __init__(self, name="Recorder"):
+        Node.__init__(self, name)
+        IClockProvider.__init__(self)
+        self.add_string_param("filename", "output.wav")
+        self.add_bool_param("record", False)
+        self.inp = self.add_input("in")
+
+        self._file = None
+        self._recording = False
+        self._frames_written = 0
+
+    def start_clock(self):
+        pass
+
+    def stop_clock(self):
+        pass
+
+    def wait_for_sync(self):
+        # Offline/Fast mode: return immediately
+        pass
+
+    def _open_file(self, filename):
+        self._close_file()
+        try:
+            self._file = wave.open(filename, "wb")
+            self._file.setnchannels(CHANNELS)
+            self._file.setsampwidth(2)  # 16-bit
+            self._file.setframerate(SAMPLE_RATE)
+            print(f"Recorder: Opened {filename}")
+        except Exception as e:
+            print(f"Recorder Error: {e}")
+            self._file = None
+
+    def _close_file(self):
+        if self._file:
+            self._file.close()
+            self._file = None
+            print(f"Recorder: Saved {self._frames_written} frames")
+
+    def on_ui_param_change(self, param_name):
+        if param_name == "record":
+            should_record = self.params["record"].value
+            if should_record and not self._recording:
+                fn = self.params["filename"].value
+                self._open_file(fn)
+                self._recording = True
+                self._frames_written = 0
+            elif not should_record and self._recording:
+                self._recording = False
+                self._close_file()
+
+    def process(self):
+        tensor = self.inp.get_tensor()
+        if self._recording and self._file:
+            data = tensor.t().cpu().numpy()
+            data = np.clip(data, -1.0, 1.0)
+            int_data = (data * 32767).astype(np.int16)
+            try:
+                self._file.writeframes(int_data.tobytes())
+                self._frames_written += BLOCK_SIZE
+            except Exception as e:
+                print(f"Write Error: {e}")
+                self._recording = False
+                self.params["record"].value = False
+                self._close_file()
+
+    def stop(self):
+        if self._recording:
+            self._recording = False
+            self._close_file()
