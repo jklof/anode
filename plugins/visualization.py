@@ -1,4 +1,3 @@
-import torch
 import numpy as np
 import queue
 from base import Node, BLOCK_SIZE, CHANNELS, DTYPE

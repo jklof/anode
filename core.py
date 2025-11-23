@@ -1,17 +1,13 @@
 import torch
-import numpy as np
 import threading
 import time
 import queue
-import uuid
 import json
-import abc
-import traceback
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Tuple
 import logging
 import plugin_system
-from base import BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE, IClockProvider, OutputSlot, InputSlot, Parameter, Node
+from base import BLOCK_SIZE, SAMPLE_RATE, IClockProvider, Node
 
 
 class Graph:
@@ -20,6 +16,13 @@ class Graph:
         self.node_map: Dict[str, Node] = {}
         self.execution_order: List[Node] = []
         self.clock_source: Optional[IClockProvider] = None
+
+    def _get_upstream_nodes(self, node: Node) -> List[Node]:
+        upstream = []
+        for inp in node.inputs.values():
+            for out in inp.connected_outputs:
+                upstream.append(out.parent)
+        return upstream
 
     def add_node(self, node: Node):
         self.nodes.append(node)
@@ -74,24 +77,38 @@ class Graph:
                 n.set_master(n == node)
 
     def recalculate_order(self):
+        # 0=unvisited, 1=visiting, 2=visited
         state = {n.id: 0 for n in self.nodes}
         order = []
 
-        def visit(n):
-            if state[n.id] == 1:
-                return
-            if state[n.id] == 2:
-                return
-            state[n.id] = 1
-            for inp in n.inputs.values():
-                for out in inp.connected_outputs:
-                    visit(out.parent)
-            state[n.id] = 2
-            order.append(n)
+        for root_node in self.nodes:
+            if state[root_node.id] != 0:
+                continue
 
-        for n in self.nodes:
-            if state[n.id] == 0:
-                visit(n)
+            stack = [(root_node, self._get_upstream_nodes(root_node))]
+
+            while stack:
+                parent, children = stack[-1]
+
+                if state[parent.id] == 0:
+                    state[parent.id] = 1
+
+                found_unvisited_child = False
+                while children:
+                    child = children.pop(0)
+                    if state[child.id] == 1:
+                        logging.warning(f"Cycle detected involving node {child.name}")
+                        continue
+                    if state[child.id] == 0:
+                        stack.append((child, self._get_upstream_nodes(child)))
+                        found_unvisited_child = True
+                        break
+
+                if not found_unvisited_child:
+                    stack.pop()
+                    state[parent.id] = 2
+                    order.append(parent)
+
         self.execution_order = order
 
     def get_snapshot(self) -> dict:
@@ -112,6 +129,7 @@ class Graph:
                     "name": n.name,
                     "type": n.__class__.__name__,
                     "pos": n.pos,
+                    "error": n.error_msg,
                     "inputs": list(n.inputs.keys()),
                     "outputs": list(n.outputs.keys()),
                     "params": p_data,
@@ -330,10 +348,12 @@ class Engine:
                     try:
                         t0 = time.perf_counter()
                         node.process()
+                        node.error_msg = None
                         dt = time.perf_counter() - t0
                         stats_buffer[node.id] = (dt / block_duration_sec) * 100.0
                     except Exception as e:
                         logging.exception(f"Error processing node {node.name} (id: {node.id}): {e}")
+                        node.error_msg = str(e)
 
                 now = time.perf_counter()
                 if now >= next_stats_time:

@@ -11,17 +11,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QGraphicsScene,
     QGraphicsView,
-    QLineEdit,
     QCheckBox,
     QComboBox,
-    QDoubleSpinBox,
 )
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot
 from PySide6.QtGui import (
     QPainter,
     QPen,
     QColor,
-    QBrush,
     QPainterPath,
     QLinearGradient,
     QCursor,
@@ -95,7 +92,32 @@ class ConnectionItem(QGraphicsPathItem):
         self.start_item = start_item
         self.end_item = end_item
         self.logic_key = logic_key
+
+        # Store references to parents to manage signals
+        self.start_node = start_item.parentItem() if isinstance(start_item, QGraphicsItem) else None
+        self.end_node = end_item.parentItem() if isinstance(end_item, QGraphicsItem) else None
+
+        # Connect signals locally
+        if self.start_node and hasattr(self.start_node, "positionChanged"):
+            self.start_node.positionChanged.connect(self.update_path)
+        if self.end_node and hasattr(self.end_node, "positionChanged"):
+            self.end_node.positionChanged.connect(self.update_path)
+
         self.update_path()
+
+    def detach(self):
+        """Clean up signal connections before deletion."""
+        try:
+            if self.start_node and hasattr(self.start_node, "positionChanged"):
+                self.start_node.positionChanged.disconnect(self.update_path)
+        except (RuntimeError, TypeError):
+            pass
+
+        try:
+            if self.end_node and hasattr(self.end_node, "positionChanged"):
+                self.end_node.positionChanged.disconnect(self.update_path)
+        except (RuntimeError, TypeError):
+            pass
 
     def update_path(self):
         if isinstance(self.start_item, QGraphicsItem):
@@ -152,6 +174,7 @@ class NodeItem(QGraphicsObject):
 
     def __init__(self, node_data, controller):
         super().__init__()
+        self.error_msg = None
         self.nid = node_data["id"]
         self.node_type = node_data["type"]
         self.node_name = node_data["name"]
@@ -159,6 +182,7 @@ class NodeItem(QGraphicsObject):
         self.monitor_queue = node_data["monitor_queue"]
         self.controller = controller
 
+        self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         self.param_controls = {}
         self._processing_load = 0.0
         self._show_load = False
@@ -267,6 +291,7 @@ class NodeItem(QGraphicsObject):
         new_pos = QPointF(*node_data["pos"])
         if self.pos() != new_pos:
             self.setPos(new_pos)
+            self.update()
 
         # CRITICAL FIX: Check if monitor_queue object changed (due to reload/load)
         new_queue = node_data.get("monitor_queue")
@@ -301,6 +326,11 @@ class NodeItem(QGraphicsObject):
             simple_params = {k: v["value"] for k, v in new_params.items()}
             self.widget.update_from_params(simple_params)
 
+        self.error_msg = node_data.get("error")
+        self.setToolTip(self.error_msg if self.error_msg else self.node_name)
+
+        self.update()
+
     def set_processing_load(self, pct):
         self._processing_load = pct
         self.update()
@@ -317,8 +347,12 @@ class NodeItem(QGraphicsObject):
         painter.setPen(QPen(QColor(20, 20, 20), 1))
         painter.drawRoundedRect(self.boundingRect(), 5, 5)
         grad = QLinearGradient(0, 0, 0, HEADER_HEIGHT)
-        grad.setColorAt(0, QColor(60, 60, 60))
-        grad.setColorAt(1, QColor(50, 50, 50))
+        if self.error_msg:
+            grad.setColorAt(0, QColor(100, 60, 60))
+            grad.setColorAt(1, QColor(80, 50, 50))
+        else:
+            grad.setColorAt(0, QColor(60, 60, 60))
+            grad.setColorAt(1, QColor(50, 50, 50))
         painter.setBrush(grad)
         painter.drawRoundedRect(0, 0, self.width, HEADER_HEIGHT, 5, 5)
 
@@ -336,6 +370,11 @@ class NodeItem(QGraphicsObject):
 
         painter.setPen(QColor("white"))
         painter.drawText(QRectF(0, 0, self.width, HEADER_HEIGHT), Qt.AlignCenter, self.node_name)
+
+        if self.error_msg:
+            painter.setPen(QPen(QColor(255, 0, 0), 3))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(self.boundingRect(), 5, 5)
 
     def contextMenuEvent(self, event):
         menu = QMenu()
@@ -368,6 +407,7 @@ class GraphScene(QGraphicsScene):
         if reload_version != self._last_reload_version:
             self._last_reload_version = reload_version
             for item in list(self.wire_items.values()):
+                item.detach()
                 self.removeItem(item)
             self.wire_items.clear()
             for item in list(self.node_items.values()):
@@ -382,7 +422,9 @@ class GraphScene(QGraphicsScene):
 
         ui_keys = set(self.wire_items.keys())
         for k in ui_keys - snap_conns:
-            self.removeItem(self.wire_items.pop(k))
+            wire = self.wire_items.pop(k)
+            wire.detach()
+            self.removeItem(wire)
 
         ui_ids = set(self.node_items.keys())
         for nid in ui_ids - snap_ids:
@@ -409,12 +451,6 @@ class GraphScene(QGraphicsScene):
                     wire = ConnectionItem(s_item.output_items[sp], d_item.input_items[dp], k)
                     self.addItem(wire)
                     self.wire_items[k] = wire
-
-                    def upd(*args, w=wire):
-                        w.update_path()
-
-                    s_item.positionChanged.connect(upd)
-                    d_item.positionChanged.connect(upd)
         self.update()
 
     def on_stats_updated(self, stats):

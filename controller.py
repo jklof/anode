@@ -1,6 +1,5 @@
 from PySide6.QtCore import QObject, Signal, QTimer
 import uuid
-import traceback
 import logging
 from core import Engine
 

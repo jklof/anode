@@ -69,7 +69,7 @@ class InputSlot:
         if self.connected_outputs:
             self._scratch.zero_()
             for out in self.connected_outputs:
-                self._scratch += out.buffer
+                self._scratch.add_(out.buffer)
             return self._scratch
         if self.param_name and self.param_name in self.parent.params:
             return self.parent.params[self.param_name].get_tensor_cache()
@@ -120,6 +120,7 @@ class Node:
         self.id = str(uuid.uuid4())
         self.name = name
         self.pos = (0, 0)
+        self.error_msg = None
         self.inputs: Dict[str, InputSlot] = {}
         self.outputs: Dict[str, OutputSlot] = {}
         self.params: Dict[str, Parameter] = {}
