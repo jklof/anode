@@ -100,7 +100,14 @@ class FileRecorder(Node, IClockProvider):
     def process(self):
         tensor = self.inp.get_tensor()
         if self._recording and self._file:
-            data = tensor.t().cpu().numpy()
+            # FIX: Ensure we have stereo data for the stereo WAV file
+            if tensor.shape[0] == 1:
+                # Expand (1, N) -> (2, N) for the file writer
+                export_tensor = tensor.expand(2, -1)
+            else:
+                export_tensor = tensor
+
+            data = export_tensor.t().cpu().numpy()
             data = np.clip(data, -1.0, 1.0)
             int_data = (data * 32767).astype(np.int16)
             try:

@@ -52,6 +52,7 @@ class InputSlot:
         self.parent = parent
         self.param_name = param_name
         self.connected_outputs: List[OutputSlot] = []
+        # Allocate max channels (Stereo) but we will slice it dynamically
         self._scratch = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
 
     def connect(self, target: OutputSlot):
@@ -67,12 +68,31 @@ class InputSlot:
 
     def get_tensor(self) -> torch.Tensor:
         if self.connected_outputs:
-            self._scratch.zero_()
+            # Determine if we need Stereo or Mono output
+            max_channels = 1
             for out in self.connected_outputs:
-                self._scratch.add_(out.buffer)
-            return self._scratch
+                if out.buffer.shape[0] > max_channels:
+                    max_channels = out.buffer.shape[0]
+
+            # Create a view of the scratch buffer (no memory allocation)
+            # If max_channels is 1, this is shape (1, 512)
+            # If max_channels is 2, this is shape (2, 512)
+            target = self._scratch[:max_channels]
+
+            target.zero_()
+            for out in self.connected_outputs:
+                # PyTorch add_ handles broadcasting automatically:
+                # (2, N) + (1, N) -> (2, N)
+                # (1, N) + (1, N) -> (1, N)
+                target.add_(out.buffer)
+            return target
+
         if self.param_name and self.param_name in self.parent.params:
             return self.parent.params[self.param_name].get_tensor_cache()
+
+        # Default case: return silence.
+        # We return the full buffer (Stereo) to be safe for uninitialized inputs,
+        # or we could return mono silence. Let's default to full scratch.
         self._scratch.zero_()
         return self._scratch
 

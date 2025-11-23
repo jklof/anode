@@ -39,8 +39,12 @@ class StereoToMono(Node):
 
     def process(self):
         t = self.inp.get_tensor()
-        torch.add(t[0], t[1], out=self.out.buffer[0])
-        self.out.buffer[0].mul_(0.5)
+        # FIX: Check if input is already mono
+        if t.shape[0] == 1:
+            self.out.buffer[0].copy_(t[0])
+        else:
+            torch.add(t[0], t[1], out=self.out.buffer[0])
+            self.out.buffer[0].mul_(0.5)
 
 
 class MonoToStereo(Node):
