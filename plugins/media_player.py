@@ -103,7 +103,8 @@ class MediaStreamWorker(threading.Thread):
             resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
             self.event_callback("status", "Buffering...")
 
-            accumulator = np.zeros((2, 0), dtype=np.float32)
+            frames_list = []
+            total_samples = 0
 
             # --- 4. Decode Loop ---
             for frame in container.decode(stream):
@@ -116,7 +117,8 @@ class MediaStreamWorker(threading.Thread):
                     try:
                         timestamp = int(self.seek_request / stream.time_base)
                         container.seek(timestamp, stream=stream)
-                        accumulator = np.zeros((2, 0), dtype=np.float32)
+                        frames_list = []
+                        total_samples = 0
                         with self.output_queue.mutex:
                             self.output_queue.queue.clear()
                         resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
@@ -140,11 +142,22 @@ class MediaStreamWorker(threading.Thread):
                     elif np_frame.shape[0] > 2:
                         np_frame = np_frame[:2, :]
 
-                    accumulator = np.concatenate((accumulator, np_frame), axis=1)
+                    frames_list.append(np_frame)
+                    total_samples += np_frame.shape[1]
 
-                    while accumulator.shape[1] >= BLOCK_SIZE:
-                        block = accumulator[:, :BLOCK_SIZE]
-                        accumulator = accumulator[:, BLOCK_SIZE:]
+                    while total_samples >= BLOCK_SIZE:
+                        # Concatenate all frames in the list to get enough data
+                        big_accum = np.concatenate(frames_list, axis=1)
+                        # Extract one BLOCK_SIZE block
+                        block = big_accum[:, :BLOCK_SIZE]
+                        # Update frames_list with the remainder, if any
+                        remainder_samples = big_accum.shape[1] - BLOCK_SIZE
+                        if remainder_samples > 0:
+                            frames_list = [big_accum[:, BLOCK_SIZE:]]
+                        else:
+                            frames_list = []
+                        total_samples = remainder_samples
+
                         tensor_block = torch.from_numpy(block.copy())
 
                         inserted = False
