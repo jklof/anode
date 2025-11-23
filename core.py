@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Any, Tuple
 
 # --- Configuration ---
 BLOCK_SIZE = 512
-SAMPLE_RATE = 44100
+SAMPLE_RATE = 48000
 CHANNELS = 2
 DTYPE = torch.float32
 
@@ -44,10 +44,10 @@ class IClockProvider(abc.ABC):
 
 
 class OutputSlot:
-    def __init__(self, name: str, parent: "Node"):
+    def __init__(self, name: str, parent: "Node", channels: int = CHANNELS):
         self.name = name
         self.parent = parent
-        self.buffer = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
+        self.buffer = torch.zeros((channels, BLOCK_SIZE), dtype=DTYPE)
 
 
 class InputSlot:
@@ -133,8 +133,8 @@ class Node:
         self.inputs[name] = slot
         return slot
 
-    def add_output(self, name: str) -> OutputSlot:
-        slot = OutputSlot(name, self)
+    def add_output(self, name: str, channels: int = CHANNELS) -> OutputSlot:
+        slot = OutputSlot(name, self, channels)
         self.outputs[name] = slot
         return slot
 

@@ -14,7 +14,7 @@ class SineOscillator(Node):
         self.add_float_param("amp", 0.5, 0.0, 1.0)
         self.in_freq = self.add_input("freq_in", "freq")
         self.in_amp = self.add_input("amp_in", "amp")
-        self.out_sig = self.add_output("signal")
+        self.out_sig = self.add_output("signal", channels=1)
         self.two_pi = 2 * np.pi
         self.sr_recip = 1.0 / SAMPLE_RATE
         self.phase = 0.0
@@ -28,20 +28,35 @@ class SineOscillator(Node):
         self._phase_buffer.add_(self.phase)
         torch.sin(self._phase_buffer, out=self.out_sig.buffer[0])
         self.out_sig.buffer[0].mul_(amp_sig)
-        self.out_sig.buffer[1].zero_()
         self.phase = self._phase_buffer[-1].item() % self.two_pi
+
+
+class StereoToMono(Node):
+    def __init__(self, name="StereoToMono"):
+        super().__init__(name)
+        self.inp = self.add_input("in")
+        self.out = self.add_output("out", channels=1)
+
+    def process(self):
+        t = self.inp.get_tensor()
+        torch.add(t[0], t[1], out=self.out.buffer[0])
+        self.out.buffer[0].mul_(0.5)
 
 
 class MonoToStereo(Node):
     def __init__(self, name="MonoToStereo"):
         super().__init__(name)
+        self.add_float_param("pan", 0.0, -1.0, 1.0)
         self.inp = self.add_input("in")
-        self.out = self.add_output("out")
+        self.out = self.add_output("out", channels=2)
 
     def process(self):
         t = self.inp.get_tensor()
-        self.out.buffer[0].copy_(t[0])
-        self.out.buffer[1].copy_(t[0])
+        pan = self.params["pan"].value
+        left_gain = (1 - pan) / 2
+        right_gain = (1 + pan) / 2
+        torch.mul(t[0], left_gain, out=self.out.buffer[0])
+        torch.mul(t[0], right_gain, out=self.out.buffer[1])
 
 
 class Gain(Node):
