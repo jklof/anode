@@ -3,7 +3,7 @@ import numpy as np
 import sounddevice as sd
 import queue
 import time
-from core import Node, IClockProvider, BLOCK_SIZE, SAMPLE_RATE, DTYPE
+from core import Node, IClockProvider, BLOCK_SIZE, SAMPLE_RATE, DTYPE, CHANNELS
 
 
 class SineOscillator(Node):
@@ -66,6 +66,8 @@ class AudioOutput(Node, IClockProvider):
         self.queue = queue.Queue(maxsize=4)
         self.stream = None
         self._active = False
+        self._pool = [torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE) for _ in range(10)]
+        self._pool_idx = 0
 
     def start_clock(self):
         pass
@@ -116,10 +118,13 @@ class AudioOutput(Node, IClockProvider):
 
     def process(self):
         audio_data = self.in_audio.get_tensor()
+        pool_tensor = self._pool[self._pool_idx]
+        pool_tensor.copy_(audio_data)
+        self._pool_idx = (self._pool_idx + 1) % 10
         if self.is_master:
-            self.queue.put(audio_data.clone(), block=True)
+            self.queue.put(pool_tensor, block=True)
         else:
             try:
-                self.queue.put_nowait(audio_data.clone())
+                self.queue.put_nowait(pool_tensor)
             except queue.Full:
                 pass

@@ -18,8 +18,8 @@ class WaveformDisplay(Node):
         self.out.buffer.copy_(sig)
 
         if not self.monitor_queue.full():
+            snapshot = sig.cpu().numpy().copy()
             try:
-                snapshot = sig.cpu().numpy().copy()
                 self.monitor_queue.put_nowait(snapshot)
             except:
                 pass

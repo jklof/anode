@@ -25,6 +25,23 @@ HEADER_HEIGHT = 30
 SOCKET_RADIUS = 6
 
 
+class NodeProxy:
+    """
+    Helper object passed to Custom UI Widgets.
+    """
+
+    def __init__(self, node_id, controller, monitor_queue):
+        self.node_id = node_id
+        self.controller = controller
+        self.monitor_queue = monitor_queue
+
+    def set_parameter(self, name, value):
+        self.controller.set_parameter(self.node_id, name, value)
+
+    def update_queue(self, new_queue):
+        self.monitor_queue = new_queue
+
+
 class SocketItem(QGraphicsItem):
     def __init__(self, parent, name, is_input, node_id):
         super().__init__(parent)
@@ -130,6 +147,7 @@ class NodeItem(QGraphicsObject):
         self.param_controls = {}
         self._processing_load = 0.0
         self._show_load = False
+        self.proxy = None
 
         self.setFlag(QGraphicsItem.ItemIsMovable)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -161,12 +179,8 @@ class NodeItem(QGraphicsObject):
         CustomUIClass = plugin_system.get_ui_class(self.node_type)
 
         if CustomUIClass:
-
-            class FakeNodeLogic:
-                def __init__(s, q):
-                    s.monitor_queue = q
-
-            self.widget = CustomUIClass(FakeNodeLogic(self.monitor_queue))
+            self.proxy_obj = NodeProxy(self.nid, self.controller, self.monitor_queue)
+            self.widget = CustomUIClass(self.proxy_obj)
 
         if not self.widget and self.params:
             self.widget = QWidget()
@@ -238,7 +252,17 @@ class NodeItem(QGraphicsObject):
         new_pos = QPointF(*node_data["pos"])
         if self.pos() != new_pos:
             self.setPos(new_pos)
+
+        # CRITICAL FIX: Check if monitor_queue object changed (due to reload/load)
+        new_queue = node_data.get("monitor_queue")
+        if new_queue is not None and self.monitor_queue is not new_queue:
+            self.monitor_queue = new_queue
+            if hasattr(self, "proxy_obj") and self.proxy_obj:
+                self.proxy_obj.update_queue(new_queue)
+
         new_params = node_data["params"]
+
+        # Standard Widgets
         for name, control in self.param_controls.items():
             if name in new_params:
                 new_val = new_params[name]["value"]
@@ -254,6 +278,11 @@ class NodeItem(QGraphicsObject):
                         widget.setChecked(bool(new_val))
                     elif control["type"] == "menu":
                         widget.setCurrentIndex(int(new_val))
+
+        # Custom Widgets
+        if self.widget and hasattr(self.widget, "update_from_params"):
+            simple_params = {k: v["value"] for k, v in new_params.items()}
+            self.widget.update_from_params(simple_params)
 
     def set_processing_load(self, pct):
         self._processing_load = pct
@@ -276,7 +305,6 @@ class NodeItem(QGraphicsObject):
         painter.setBrush(grad)
         painter.drawRoundedRect(0, 0, self.width, HEADER_HEIGHT, 5, 5)
 
-        # Draw Load Bar
         if self._show_load and self._processing_load > 0:
             pct = min(self._processing_load, 100.0)
             bar_width = self.width * (pct / 100.0)
