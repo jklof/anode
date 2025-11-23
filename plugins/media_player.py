@@ -8,7 +8,7 @@ import os
 from typing import Optional, Dict, Any
 
 # --- Node System Imports ---
-from core import Node, BLOCK_SIZE, SAMPLE_RATE, DTYPE
+from base import Node, BLOCK_SIZE, SAMPLE_RATE, DTYPE
 
 # --- Qt Imports ---
 from PySide6.QtWidgets import (

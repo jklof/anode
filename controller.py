@@ -1,5 +1,7 @@
 from PySide6.QtCore import QObject, Signal, QTimer
 import uuid
+import traceback
+import logging
 from core import Engine
 
 
@@ -24,8 +26,8 @@ class AppController(QObject):
                     self.statsUpdated.emit(msg["data"])
                 else:
                     self.graphUpdated.emit(msg)
-            except:
-                pass
+            except Exception:
+                logging.exception("Error processing engine message")
 
     def start_audio(self):
         self.engine.start()

@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 import queue
-from core import Node, BLOCK_SIZE, CHANNELS, DTYPE
+from base import Node, BLOCK_SIZE, CHANNELS, DTYPE
 
 
 class WaveformDisplay(Node):

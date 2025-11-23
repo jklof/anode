@@ -4,7 +4,7 @@ import importlib
 import importlib.util
 import inspect
 from typing import Dict, Type, Any, Optional
-from core import Node
+from base import Node
 
 NODE_REGISTRY: Dict[str, Type[Node]] = {}
 UI_REGISTRY: Dict[str, Type[Any]] = {}

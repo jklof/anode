@@ -1,5 +1,5 @@
 import torch
-from core import Node, BLOCK_SIZE, DTYPE
+from base import Node, BLOCK_SIZE, DTYPE
 
 
 class Note(Node):
