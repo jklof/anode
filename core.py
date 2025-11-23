@@ -123,6 +123,11 @@ class Graph:
             for k, p in n.params.items():
                 p_data[k] = {"value": p._staging, "type": p.type, "meta": p.meta}
             mon_q = getattr(n, "monitor_queue", None)
+
+            # --- CHECK CLOCK STATUS ---
+            is_clock_provider = isinstance(n, IClockProvider)
+            is_current_master = (n == self.clock_source)
+
             data["nodes"].append(
                 {
                     "id": n.id,
@@ -134,6 +139,9 @@ class Graph:
                     "outputs": list(n.outputs.keys()),
                     "params": p_data,
                     "monitor_queue": mon_q,
+                    # --- NEW KEYS ---
+                    "can_be_master": is_clock_provider,
+                    "is_master": is_current_master
                 }
             )
         for dst in self.nodes:

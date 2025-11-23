@@ -221,6 +221,8 @@ class NodeItem(QGraphicsObject):
         self.params = node_data["params"]
         self.monitor_queue = node_data["monitor_queue"]
         self.controller = controller
+        self.can_be_master = node_data.get("can_be_master", False)
+        self.is_master = node_data.get("is_master", False)
 
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         self.param_controls = {}
@@ -333,6 +335,12 @@ class NodeItem(QGraphicsObject):
             self.setPos(new_pos)
             self.update()
 
+        self.can_be_master = node_data.get("can_be_master", False)
+        prev_master = self.is_master
+        self.is_master = node_data.get("is_master", False)
+        if prev_master != self.is_master:
+            self.update()
+
         # CRITICAL FIX: Check if monitor_queue object changed (due to reload/load)
         new_queue = node_data.get("monitor_queue")
         if new_queue is not None and self.monitor_queue is not new_queue:
@@ -411,6 +419,23 @@ class NodeItem(QGraphicsObject):
         painter.setPen(QColor("white"))
         painter.drawText(QRectF(0, 0, self.width, HEADER_HEIGHT), Qt.AlignCenter, self.node_name)
 
+        # --- DRAW CLOCK ICON ---
+        if self.can_be_master:
+            icon_color = QColor("#00FF00") if self.is_master else QColor("#666666")
+            painter.setPen(QPen(icon_color, 1.5))
+            painter.setBrush(Qt.NoBrush)
+
+            # Position: Top right, padding
+            cx = self.width - 15
+            cy = HEADER_HEIGHT / 2
+            r = 6
+
+            # Clock face
+            painter.drawEllipse(QPointF(cx, cy), r, r)
+            # Hands (3 o'clock and 12 o'clockish)
+            painter.drawLine(QPointF(cx, cy), QPointF(cx, cy - 4))
+            painter.drawLine(QPointF(cx, cy), QPointF(cx + 3, cy))
+
         if self.error_msg:
             painter.setPen(QPen(QColor(255, 0, 0), 3))
             painter.setBrush(Qt.NoBrush)
@@ -427,6 +452,18 @@ class NodeItem(QGraphicsObject):
             self.controller.move_node(self.nid, (value.x(), value.y()))
             self.positionChanged.emit()
         return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        # Check if clicking the clock icon area (Top Right)
+        if self.can_be_master:
+            local_pos = event.pos()
+            # Hit box: Top 30px (header), Rightmost 30px
+            if local_pos.y() <= HEADER_HEIGHT and local_pos.x() >= (self.width - 30):
+                self.controller.set_master_clock(self.nid)
+                event.accept()
+                return
+
+        super().mousePressEvent(event)
 
 
 class GraphScene(QGraphicsScene):
