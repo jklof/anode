@@ -1,33 +1,167 @@
 import ctypes
 import logging
+import os
+import queue
+import torch
+from PySide6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
+    QLabel,
+    QFileDialog,
+    QSlider,
+)
+from PySide6.QtCore import Qt, QTimer, QSignalBlocker
+
 from ffi_base import FFINode
 from base import SAMPLE_RATE, BLOCK_SIZE
+
+logger = logging.getLogger(__name__)
+
+
+class NamWidget(QWidget):
+    IS_NODE_UI = True
+    NODE_CLASS_NAME = "NamNode"
+
+    def __init__(self, node_proxy):
+        super().__init__()
+        self.proxy = node_proxy
+        self.setMinimumWidth(220)
+        self.sliders = {}
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        # --- Section 1: File Info ---
+        self.lbl_file = QLabel("No Model Loaded")
+        self.lbl_file.setStyleSheet("color: #aaa; font-size: 10px; margin-bottom: 2px;")
+        self.lbl_file.setWordWrap(True)
+        layout.addWidget(self.lbl_file)
+
+        # --- Section 2: Load Button ---
+        btn_load = QPushButton("Load NAM Model")
+        btn_load.clicked.connect(self.browse)
+        layout.addWidget(btn_load)
+
+        # --- Section 3: Status ---
+        self.lbl_status = QLabel("Idle")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setStyleSheet("color: #666; margin-bottom: 5px;")
+        layout.addWidget(self.lbl_status)
+
+        # --- Section 4: Gain Controls ---
+        # NAM models often need +/- gain adjustment
+        self._add_param_row(layout, "In", "input_gain", 0.0, 4.0)
+        self._add_param_row(layout, "Out", "output_gain", 0.0, 4.0)
+
+        self.timer = QTimer(self)
+        self.timer.interval = 100
+        self.timer.timeout.connect(self.poll_updates)
+        self.timer.start()
+
+    def _add_param_row(self, parent_layout, label_text, param_name, min_v, max_v):
+        row = QHBoxLayout()
+        row.setSpacing(5)
+
+        lbl = QLabel(label_text)
+        lbl.setFixedWidth(30)
+        lbl.setStyleSheet("color: #ccc;")
+
+        val_lbl = QLabel("1.00")
+        val_lbl.setFixedWidth(30)
+        val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        val_lbl.setStyleSheet("color: #ccc; font-size: 10px;")
+
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(0, 1000)
+
+        def on_change(val):
+            float_val = min_v + (val / 1000.0) * (max_v - min_v)
+            self.proxy.set_parameter(param_name, float_val)
+            val_lbl.setText(f"{float_val:.2f}")
+
+        slider.valueChanged.connect(on_change)
+
+        row.addWidget(lbl)
+        row.addWidget(slider)
+        row.addWidget(val_lbl)
+        parent_layout.addLayout(row)
+
+        self.sliders[param_name] = {
+            "slider": slider,
+            "label": val_lbl,
+            "min": min_v,
+            "max": max_v,
+        }
+
+    def browse(self):
+        # Use None parent to prevent embedding crashes
+        f, _ = QFileDialog.getOpenFileName(None, "Open NAM Model", "", "NAM Models (*.nam);;All Files (*.*)")
+        if f:
+            self.lbl_status.setText("Loading...")
+            self.lbl_status.setStyleSheet("color: #FFaa00")
+            self.proxy.set_parameter("model_path", f)
+
+    def poll_updates(self):
+        try:
+            while not self.proxy.monitor_queue.empty():
+                msg = self.proxy.monitor_queue.get_nowait()
+                if "status" in msg:
+                    self.lbl_status.setText(msg["status"])
+                    style = "color: #00FF00" if msg["status"] == "Active" else "color: #FFaa00"
+                    self.lbl_status.setStyleSheet(style)
+                if "filename" in msg:
+                    self.lbl_file.setText(msg["filename"])
+        except:
+            pass
+
+    def update_from_params(self, params):
+        # Update sliders
+        for param_name, data in self.sliders.items():
+            if param_name in params:
+                val = float(params[param_name])
+                data["label"].setText(f"{val:.2f}")
+                norm = (val - data["min"]) / (data["max"] - data["min"])
+                slider_val = int(norm * 1000)
+                slider = data["slider"]
+                if not slider.isSliderDown():
+                    with QSignalBlocker(slider):
+                        slider.setValue(slider_val)
+
+        # Update Filename Label if path is present
+        if "model_path" in params and params["model_path"]:
+            self.lbl_file.setText(os.path.basename(params["model_path"]))
 
 
 class NamNode(FFINode):
     LIB_NAME = "neural_amp"
 
-    def __init__(self, name="Neural Amp"):
+    def __init__(self, name="NAM Amp"):
         super().__init__(name)
         self.add_input("in")
         self.add_output("out")
-        self.add_file_param("model_path", "", filter="NAM Models (*.nam);;All Files (*.*)")
+
+        # Internal params
+        self.add_string_param("model_path", "")
+        self.add_float_param("input_gain", 1.0, 0.0, 4.0)
+        self.add_float_param("output_gain", 1.0, 0.0, 4.0)
+
+        # UI Communication
+        self.monitor_queue = queue.Queue(maxsize=10)
 
         # Bind Custom Function
         if self.lib:
             try:
-                # Bind load function
                 self.lib.load_nam_model.restype = None
-                # Args: handle, path, sample_rate, block_size
                 self.lib.load_nam_model.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_double, ctypes.c_int]
 
-                # Bind Reset function (if available in DLL)
                 if hasattr(self.lib, "reset"):
                     self.lib.reset.restype = None
                     self.lib.reset.argtypes = [ctypes.c_void_p]
-
             except AttributeError as e:
-                print(f"Error: 'load_nam_model' or 'reset' not found in DLL: {e}")
+                print(f"Error: 'load_nam_model' not found in DLL: {e}")
 
     def on_ui_param_change(self, param_name: str):
         super().on_ui_param_change(param_name)
@@ -36,25 +170,53 @@ class NamNode(FFINode):
             self.params[param_name].sync()
             path = self.params["model_path"].value
             if self.lib and self.dsp_handle and path:
+                # Update UI immediately
+                self._push_status("Active", os.path.basename(path))
+
+                # Trigger C++ Load
                 b_path = path.encode("utf-8")
-                # Pass Global Config to C++
-                # The C++ side handles this asynchronously/safely
                 self.lib.load_nam_model(self.dsp_handle, b_path, float(SAMPLE_RATE), int(BLOCK_SIZE))
 
-    def load_state(self, data: dict):
-        """
-        Override to trigger C++ model loading after Python state is restored.
-        """
-        # 1. Restore standard params (pos, parameter values)
-        super().load_state(data)
+    def _push_status(self, status, filename=None):
+        msg = {"status": status}
+        if filename:
+            msg["filename"] = filename
+        if self.monitor_queue.full():
+            try:
+                self.monitor_queue.get_nowait()
+            except:
+                pass
+        self.monitor_queue.put(msg)
 
-        # 2. Explicitly trigger the model load if a path exists
-        # We reuse on_ui_param_change logic to avoid code duplication
+    def process(self):
+        # 1. Apply Input Gain (Pre-NAM)
+        # Using the tensor cache from parameter for efficiency
+        in_tensor = self.inputs["in"].get_tensor()
+        in_gain = self.params["input_gain"].value
+
+        # If gain is not 1.0, we need to scale.
+        # Note: get_tensor() might return a view of scratch, so modifying it in place is okay
+        # as long as we don't affect upstream nodes (which we don't, as it's a pull system).
+        if in_gain != 1.0:
+            in_tensor.mul_(in_gain)
+
+        # 2. Run C++ Processing
+        # FFINode.process() handles the transfer to C++
+        super().process()
+
+        # 3. Apply Output Gain (Post-NAM)
+        out_gain = self.params["output_gain"].value
+        if out_gain != 1.0:
+            # We modify the output buffer directly
+            self.outputs["out"].buffer.mul_(out_gain)
+
+    def load_state(self, data: dict):
+        super().load_state(data)
+        # Trigger reload of model if path exists
         if "model_path" in self.params and self.params["model_path"].value:
             self.on_ui_param_change("model_path")
 
     def start(self):
-        """Called when audio engine starts. Used to reset DSP history."""
         if self.lib and self.dsp_handle and hasattr(self.lib, "reset"):
             try:
                 self.lib.reset(self.dsp_handle)

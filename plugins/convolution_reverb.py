@@ -129,7 +129,6 @@ class ReverbWidget(QWidget):
         layout.addWidget(self.lbl_status)
 
         # --- Section 2: Parameters ---
-        # REMOVED "Mix" - Using independent Dry/Wet levels logic
         self._add_param_row(layout, "Dry", "dry_vol", 0.0, 2.0)
         self._add_param_row(layout, "Wet", "wet_vol", 0.0, 2.0)
 
