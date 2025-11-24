@@ -63,7 +63,8 @@ class MediaStreamWorker(threading.Thread):
                         info = ydl.extract_info(self.source, download=False)
                         url = info["url"]
                         title = info.get("title", title)
-                except Exception:
+                except Exception as e:
+                    logger.error(f"YTDL Error: {e}")
                     self.event_callback("status", "URL Error")
                     return
 
@@ -71,11 +72,13 @@ class MediaStreamWorker(threading.Thread):
 
             # --- 2. Open Stream ---
             self.event_callback("status", "Opening...")
+            # Reconnect options help with network streams stopping randomly
             options = {"reconnect": "1", "reconnect_streamed": "1", "reconnect_delay_max": "10"}
 
             try:
                 container = av.open(url, options=options)
-            except Exception:
+            except Exception as e:
+                logger.error(f"AV Open Error: {e}")
                 self.event_callback("status", "Open Failed")
                 return
 
@@ -99,27 +102,26 @@ class MediaStreamWorker(threading.Thread):
             resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
             self.event_callback("status", "Buffering...")
 
-            frames_list = []
-            total_samples = 0
+            buffer_accum = np.zeros((2, 0), dtype=np.float32)
 
             # --- 4. Decode Loop ---
             for frame in container.decode(stream):
                 if self.stop_event.is_set():
                     break
 
-                # Handle Seek
+                # Handle Seek Request
                 if self.seek_request >= 0:
                     self.event_callback("status", "Seeking...")
                     try:
                         timestamp = int(self.seek_request / stream.time_base)
                         container.seek(timestamp, stream=stream)
-                        frames_list = []
-                        total_samples = 0
+                        # Clear accumulator and queue
+                        buffer_accum = np.zeros((2, 0), dtype=np.float32)
                         with self.output_queue.mutex:
                             self.output_queue.queue.clear()
                         resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.error(f"Seek Error: {e}")
 
                     self.seek_request = -1.0
                     self.event_callback("status", "Buffering...")
@@ -128,49 +130,50 @@ class MediaStreamWorker(threading.Thread):
                 # Resample
                 try:
                     resampled_frames = resampler.resample(frame)
-                except:
+                except Exception:
                     continue
 
+                if not resampled_frames:
+                    continue
+
+                # Convert to numpy and stack
+                # AV returns list of frames (usually 1, but can be more)
                 for r_frame in resampled_frames:
-                    np_frame = r_frame.to_ndarray()
+                    np_frame = r_frame.to_ndarray()  # Shape (Channels, Samples)
+
+                    # Force Stereo
                     if np_frame.shape[0] == 1:
                         np_frame = np.vstack([np_frame, np_frame])
                     elif np_frame.shape[0] > 2:
                         np_frame = np_frame[:2, :]
 
-                    frames_list.append(np_frame)
-                    total_samples += np_frame.shape[1]
+                    buffer_accum = np.hstack([buffer_accum, np_frame])
 
-                    while total_samples >= BLOCK_SIZE:
-                        # Concatenate all frames in the list to get enough data
-                        big_accum = np.concatenate(frames_list, axis=1)
-                        # Extract one BLOCK_SIZE block
-                        block = big_accum[:, :BLOCK_SIZE]
-                        # Update frames_list with the remainder, if any
-                        remainder_samples = big_accum.shape[1] - BLOCK_SIZE
-                        if remainder_samples > 0:
-                            frames_list = [big_accum[:, BLOCK_SIZE:]]
-                        else:
-                            frames_list = []
-                        total_samples = remainder_samples
+                # Push blocks to queue
+                while buffer_accum.shape[1] >= BLOCK_SIZE:
+                    # Extract one block
+                    block = buffer_accum[:, :BLOCK_SIZE]
+                    buffer_accum = buffer_accum[:, BLOCK_SIZE:]
 
-                        tensor_block = torch.from_numpy(block.copy())
+                    tensor_block = torch.from_numpy(block.copy())
 
-                        inserted = False
-                        while not inserted and not self.stop_event.is_set() and self.seek_request < 0:
-                            try:
-                                self.output_queue.put(tensor_block, timeout=0.05)
-                                inserted = True
-                                self.event_callback("status", "Playing")
-                            except queue.Full:
-                                self.event_callback("status", "Ready")
-                                time.sleep(0.05)
+                    # Blocking Put with timeout to allow checking stop_event
+                    inserted = False
+                    while not inserted and not self.stop_event.is_set() and self.seek_request < 0:
+                        try:
+                            self.output_queue.put(tensor_block, timeout=0.1)
+                            inserted = True
+                            self.event_callback("status", "Playing")
+                        except queue.Full:
+                            # If queue is full, just wait and try again
+                            # This throttles the decoding to the playback speed
+                            continue
 
             self.event_callback("status", "Finished")
             self.event_callback("eof", True)
 
         except Exception as e:
-            logger.error(f"Worker Error: {e}")
+            logger.error(f"Worker Crash: {e}")
             self.event_callback("status", "Error")
         finally:
             if container:
@@ -201,8 +204,6 @@ class MediaPlayerWidget(QWidget):
         self.is_dragging = False
         self.stored_title = "No Media"
 
-        # Standard Qt way to define size requirements.
-        # NodeItem respects this automatically.
         self.setMinimumSize(450, 150)
 
         layout = QVBoxLayout(self)
@@ -287,6 +288,7 @@ class MediaPlayerWidget(QWidget):
             self.lbl_title.setText(self.stored_title)
             self.lbl_status.setText("Initializing...")
             self.proxy.set_parameter("file_path", raw)
+            # Auto-play on load
             self.btn_play.setChecked(True)
             self.btn_play.setText("Pause")
             self.proxy.set_parameter("playing", True)
@@ -354,7 +356,8 @@ class MediaPlayerNode(Node):
         self.add_float_param("seek_ratio", -1.0)
         self.add_output("out")
 
-        self.queue = queue.Queue(maxsize=300)
+        # Increase Queue size to prevent buffer underruns
+        self.queue = queue.Queue(maxsize=500)
         self.monitor_queue = queue.Queue(maxsize=50)
         self.worker = None
 
@@ -365,6 +368,25 @@ class MediaPlayerNode(Node):
         self.status_msg = "Idle"
         self.eof = False
         self._last_ui_update = 0.0
+
+    def load_state(self, data: dict):
+        """
+        Override to trigger worker start on load.
+        """
+        super().load_state(data)
+
+        # Restore metadata
+        if "meta" in data:
+            self.current_title = data["meta"].get("title", "No Media")
+            self.total_duration = data["meta"].get("duration", 0.0)
+            self.current_path = data["meta"].get("path", "")
+
+        # Trigger explicit load if path exists
+        if "file_path" in self.params:
+            path = self.params["file_path"].value
+            if path:
+                self.current_path = path
+                self._restart_worker(path)
 
     def on_ui_param_change(self, param_name):
         if param_name in self.params:
@@ -400,17 +422,28 @@ class MediaPlayerNode(Node):
     def _restart_worker(self, path, start_time=0.0):
         if self.worker:
             self.worker.stop()
-            self.worker.join(timeout=2)
+            # Wait for the old thread to actually die before clearing queue
+            # This prevents race conditions where the old thread pushes to
+            # the cleared queue intended for the new thread.
+            try:
+                self.worker.join(timeout=2.0)
+            except RuntimeError:
+                pass  # Avoid deadlock if self-called (shouldn't happen here)
             self.worker = None
 
         with self.queue.mutex:
             self.queue.queue.clear()
+
         self.playback_frames = int(start_time * SAMPLE_RATE)
         self.total_duration = 0.0
         self.eof = False
 
-        self.worker = MediaStreamWorker(path, self.queue, self.worker_cb, start_time=start_time)
-        self.worker.start()
+        if MEDIA_DEPS_AVAILABLE:
+            self.worker = MediaStreamWorker(path, self.queue, self.worker_cb, start_time=start_time)
+            self.worker.start()
+        else:
+            self.status_msg = "Dependencies Missing"
+            self._push_ui_state()
 
     def worker_cb(self, type, data):
         if self.monitor_queue.full():
@@ -428,11 +461,13 @@ class MediaPlayerNode(Node):
             self._push_ui_state()
         elif type == "eof":
             self.eof = True
-            self.params["playing"].value = False
+            # Don't auto-stop playing param immediately, let buffer drain
             self.status_msg = "Finished"
             self._push_ui_state()
 
     def process(self):
+        # If play param is False, we just output silence.
+        # But we keep worker alive (it pauses on full queue).
         if not self.params["playing"].value:
             self.outputs["out"].buffer.zero_()
             return
@@ -442,11 +477,19 @@ class MediaPlayerNode(Node):
             self.outputs["out"].buffer.copy_(data)
             self.playback_frames += BLOCK_SIZE
         except queue.Empty:
+            # Buffer Underrun
             self.outputs["out"].buffer.zero_()
-            if self.worker and not self.eof and self.status_msg != "Buffering...":
-                self.status_msg = "Buffering..."
-                self._push_ui_state()
+            if self.worker and not self.eof:
+                if self.status_msg != "Buffering...":
+                    self.status_msg = "Buffering..."
+                    self._push_ui_state()
+            elif self.eof:
+                # Actual end of song
+                if self.params["playing"].value:
+                    self.params["playing"].set(False)
+                    self._push_ui_state()
 
+        # Update UI less frequently (every ~100ms)
         now = time.monotonic()
         if now - self._last_ui_update > 0.1:
             self._push_ui_state()
@@ -467,6 +510,7 @@ class MediaPlayerNode(Node):
             "time_str": time_str,
             "progress": progress,
             "playing": self.params["playing"].value,
+            "playing_state": self.params["playing"].value,
         }
 
         if self.monitor_queue.full():
@@ -477,26 +521,20 @@ class MediaPlayerNode(Node):
         self.monitor_queue.put(state)
 
     def stop(self):
-        if self.worker:
-            self.worker.stop()
-            self.worker.join(timeout=0.2)
-        self.params["playing"].value = False
-        self._push_ui_state()
+        """Called when audio transport stops. We pause playback."""
+        # For Media Player, we don't necessarily kill the worker on transport stop,
+        # but we definitely stop the logical playback.
+        # However, to be safe and save resources:
+        pass
 
     def remove(self):
+        """Called when node is deleted. Cleanup threads."""
         if self.worker:
             self.worker.stop()
-        super().remove()
+            self.worker.join(timeout=1.0)
+            self.worker = None
 
     def to_dict(self):
         d = super().to_dict()
         d["meta"] = {"title": self.current_title, "duration": self.total_duration, "path": self.current_path}
         return d
-
-    def load_state(self, data):
-        super().load_state(data)
-        if "meta" in data:
-            self.current_title = data["meta"].get("title", "No Media")
-            self.total_duration = data["meta"].get("duration", 0.0)
-            self.current_path = data["meta"].get("path", "")
-            self._push_ui_state()

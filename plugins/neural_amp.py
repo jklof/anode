@@ -38,8 +38,20 @@ class NamNode(FFINode):
             if self.lib and self.dsp_handle and path:
                 b_path = path.encode("utf-8")
                 # Pass Global Config to C++
-                # The C++ side now handles this asynchronously/safely
+                # The C++ side handles this asynchronously/safely
                 self.lib.load_nam_model(self.dsp_handle, b_path, float(SAMPLE_RATE), int(BLOCK_SIZE))
+
+    def load_state(self, data: dict):
+        """
+        Override to trigger C++ model loading after Python state is restored.
+        """
+        # 1. Restore standard params (pos, parameter values)
+        super().load_state(data)
+
+        # 2. Explicitly trigger the model load if a path exists
+        # We reuse on_ui_param_change logic to avoid code duplication
+        if "model_path" in self.params and self.params["model_path"].value:
+            self.on_ui_param_change("model_path")
 
     def start(self):
         """Called when audio engine starts. Used to reset DSP history."""
