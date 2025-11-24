@@ -77,7 +77,6 @@ class Graph:
                 n.set_master(n == node)
 
     def recalculate_order(self):
-        # 0=unvisited, 1=visiting, 2=visited
         state = {n.id: 0 for n in self.nodes}
         order = []
 
@@ -124,7 +123,6 @@ class Graph:
                 p_data[k] = {"value": p._staging, "type": p.type, "meta": p.meta}
             mon_q = getattr(n, "monitor_queue", None)
 
-            # --- CHECK CLOCK STATUS ---
             is_clock_provider = isinstance(n, IClockProvider)
             is_current_master = n == self.clock_source
 
@@ -139,7 +137,6 @@ class Graph:
                     "outputs": list(n.outputs.keys()),
                     "params": p_data,
                     "monitor_queue": mon_q,
-                    # --- NEW KEYS ---
                     "can_be_master": is_clock_provider,
                     "is_master": is_current_master,
                 }
@@ -211,13 +208,23 @@ class Engine:
                     node.pos = pos
                     self.graph.add_node(node)
                     if self.running:
-                        node.start()
+                        try:
+                            node.start()
+                        except:
+                            pass
             elif op == "del":
                 _, nid = cmd
                 if self.running:
                     n = self.graph.node_map.get(nid)
                     if n:
                         n.stop()
+
+                # --- MEMORY CLEANUP ---
+                n = self.graph.node_map.get(nid)
+                if n:
+                    # Clean up C++ handles or other resources
+                    n.remove()
+
                 self.graph.remove_node(nid)
             elif op == "conn":
                 _, sid, sp, did, dp = cmd
@@ -244,6 +251,7 @@ class Engine:
             elif op == "clear":
                 for n in self.graph.nodes:
                     n.stop()
+                    n.remove()
                 self.graph = Graph()
 
             elif op == "save":
@@ -260,6 +268,7 @@ class Engine:
                 _, json_str = cmd
                 for n in self.graph.nodes:
                     n.stop()
+                    n.remove()
                 try:
                     data = json.loads(json_str)
                     new_graph = Graph()
@@ -288,6 +297,7 @@ class Engine:
                 current_json = self.graph.to_json()
                 for n in self.graph.nodes:
                     n.stop()
+                    n.remove()
                 self.graph = Graph()
                 self.reload_version += 1
                 try:
@@ -325,8 +335,22 @@ class Engine:
     def _worker(self):
         print("Engine: Started")
         with torch.no_grad():
+
+            # --- STARTUP CLEANUP ---
+            # 1. Zero out all buffers to prevent "stuck notes" or stale audio glitches
             for node in self.graph.nodes:
-                node.start()
+                for out_slot in node.outputs.values():
+                    out_slot.buffer.zero_()
+                for inp_slot in node.inputs.values():
+                    inp_slot._scratch.zero_()
+
+            # 2. Start nodes safely
+            for node in self.graph.nodes:
+                try:
+                    node.start()
+                except Exception as e:
+                    logging.exception(f"Error starting node {node.name}")
+                    node.error_msg = f"Start Error: {e}"
 
             block_duration_sec = BLOCK_SIZE / SAMPLE_RATE
             stats_interval = 0.1

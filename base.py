@@ -75,24 +75,16 @@ class InputSlot:
                     max_channels = out.buffer.shape[0]
 
             # Create a view of the scratch buffer (no memory allocation)
-            # If max_channels is 1, this is shape (1, 512)
-            # If max_channels is 2, this is shape (2, 512)
             target = self._scratch[:max_channels]
 
             target.zero_()
             for out in self.connected_outputs:
-                # PyTorch add_ handles broadcasting automatically:
-                # (2, N) + (1, N) -> (2, N)
-                # (1, N) + (1, N) -> (1, N)
                 target.add_(out.buffer)
             return target
 
         if self.param_name and self.param_name in self.parent.params:
             return self.parent.params[self.param_name].get_tensor_cache()
 
-        # Default case: return silence.
-        # We return the full buffer (Stereo) to be safe for uninitialized inputs,
-        # or we could return mono silence. Let's default to full scratch.
         self._scratch.zero_()
         return self._scratch
 
@@ -171,10 +163,6 @@ class Node:
         self.params[name] = Parameter(initial_idx, "menu", items=items)
 
     def add_file_param(self, name: str, val: str, filter: str = "All Files (*.*)", mode: str = "open"):
-        """
-        mode: 'open' or 'save'
-        filter: e.g. "WAV Files (*.wav);;All Files (*.*)"
-        """
         self.params[name] = Parameter(val, "file", filter=filter, mode=mode)
 
     def sync(self):
@@ -185,9 +173,15 @@ class Node:
         raise NotImplementedError
 
     def start(self):
+        """Called when the audio engine starts."""
         pass
 
     def stop(self):
+        """Called when the audio engine stops."""
+        pass
+
+    def remove(self):
+        """Called when the node is deleted from the graph."""
         pass
 
     def on_ui_param_change(self, param_name: str):

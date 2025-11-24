@@ -4,8 +4,10 @@
 #include <string>
 #include <memory>
 #include <filesystem>
-#include <cstring> // for memcpy
+#include <cstring>
 #include <stdexcept>
+#include <future>
+#include <chrono>
 
 // Include NAM core headers
 #include "NAM/dsp.h" 
@@ -17,8 +19,6 @@
     #define EXPORT
 #endif
 
-// Forward declare NAM_SAMPLE
-// NOTE: Ensure your build system defines NAM_SAMPLE_FLOAT
 #ifdef NAM_SAMPLE_FLOAT
     #define NAM_SAMPLE float
 #else
@@ -27,87 +27,121 @@
 
 class NamProcessor {
 public:
-    NamProcessor() : _sample_rate(48000.0) {}
+    NamProcessor() : _sample_rate(48000.0), _block_size(512) {}
+
+    // Destructor: Must wait for any background thread to finish
+    ~NamProcessor() {
+        if (_pending_load.valid()) {
+            _pending_load.wait();
+        }
+    }
 
     void load_model(const char* nam_path, double sample_rate, int max_block_size) {
-        if (!nam_path)
-            return;
-        std::string path_str(nam_path);
-        
-        // Prevent reloading if identical
-        if (_dsp && path_str == _nam_file && 
-            std::abs(sample_rate - _sample_rate) < 1e-6) {
+        if (!nam_path) return;
+
+        // 1. REFUSE IF BUSY
+        // If a thread is already running, ignore this request to prevent queuing/blocking.
+        if (_pending_load.valid()) {
             return;
         }
 
-        try {
-            _dsp = nam::get_dsp(std::filesystem::path(path_str));
-            _nam_file = path_str;
-            
-            if (_dsp) {
-                _sample_rate = sample_rate;
-                _dsp->Reset(_sample_rate, max_block_size); 
+        // Save config for resets
+        _sample_rate = sample_rate;
+        _block_size = max_block_size;
+
+        std::string path_str(nam_path);
+
+        // 2. LAUNCH ASYNC TASK
+        // Use std::launch::async to force a new thread
+        _pending_load = std::async(std::launch::async, 
+            [path_str, sample_rate, max_block_size]() -> std::unique_ptr<nam::DSP> {
+                try {
+                    auto dsp = nam::get_dsp(std::filesystem::path(path_str));
+                    if (dsp) {
+                        dsp->Reset(sample_rate, max_block_size);
+                    }
+                    return dsp;
+                } catch (...) {
+                    return nullptr; 
+                }
             }
-        } catch (const std::exception& e) {
-            _dsp.reset();
+        );
+    }
+
+    void reset_state() {
+        if (_dsp) {
+            _dsp->Reset(_sample_rate, _block_size);
         }
     }
 
     void process(float* inputs, float* outputs, int channels, int frames) {
-        // Safety / Silence on error
+        // 3. CHECK FOR COMPLETION (Non-blocking)
+        if (_pending_load.valid()) {
+            // Check status immediately
+            auto status = _pending_load.wait_for(std::chrono::seconds(0));
+            
+            if (status == std::future_status::ready) {
+                try {
+                    auto new_dsp = _pending_load.get();
+                    if (new_dsp) {
+                        // Atomic-like swap of the DSP engine
+                        _dsp = std::move(new_dsp);
+                    }
+                } catch (...) {
+                    // Ignore load errors, continue with old model or pass-through
+                }
+            }
+        }
+
+        // 4. AUDIO PROCESSING
+        // If no model is loaded, PASS THROUGH audio (Bypass)
         if (!_dsp) {
-            std::memset(outputs, 0, channels * frames * sizeof(float));
+            std::memcpy(outputs, inputs, channels * frames * sizeof(float));
             return;
         }
 
-        // 1. Cast pointers (Assumes NAM_SAMPLE is float)
         NAM_SAMPLE* mono_in = (NAM_SAMPLE*)inputs; 
         NAM_SAMPLE* mono_out = (NAM_SAMPLE*)outputs;
 
-        // 2. Process Mono (Channel 0)
         try {
+            // Process Channel 0 (Mono)
             _dsp->process(mono_in, mono_out, frames);
         } catch (...) {
+            // If the DSP crashes, reset it and pass through
             _dsp.reset();
-            std::memset(outputs, 0, channels * frames * sizeof(float));
+            std::memcpy(outputs, inputs, channels * frames * sizeof(float));
             return;
         }
 
-        // 3. broadcast mono -> stereo
+        // Broadcast Channel 0 -> Stereo
+        // (NAM is mono; we duplicate the result to other channels)
         for (int c = 1; c < channels; ++c) {
-            // Calculate offset for the next channel
             float* dest_ptr = outputs + (c * frames);
-            // Copy from Channel 0
             std::memcpy(dest_ptr, mono_out, frames * sizeof(float));
         }
     }
 
 private:
-    std::string _nam_file;
     std::unique_ptr<nam::DSP> _dsp;
+    std::future<std::unique_ptr<nam::DSP>> _pending_load;
     double _sample_rate;
+    int _block_size;
 };
 
+// --- C-ABI ---
 extern "C" {
-
-    EXPORT void* create() {
-        return new (std::nothrow) NamProcessor();
+    EXPORT void* create() { return new (std::nothrow) NamProcessor(); }
+    EXPORT void destroy(void* handle) { if (handle) delete static_cast<NamProcessor*>(handle); }
+    EXPORT void process(void* handle, float* in, float* out, int ch, int fr) {
+        static_cast<NamProcessor*>(handle)->process(in, out, ch, fr);
+    }
+    EXPORT void set_param(void* handle, int param_id, float value) {}
+    
+    EXPORT void load_nam_model(void* handle, const char* path, double sr, int bs) {
+        static_cast<NamProcessor*>(handle)->load_model(path, sr, bs);
     }
 
-    EXPORT void destroy(void* handle) {
-        if (handle) delete static_cast<NamProcessor*>(handle);
-    }
-
-    EXPORT void process(void* handle, float* in_ptr, float* out_ptr, int channels, int frames) {
-        auto* proc = static_cast<NamProcessor*>(handle);
-        proc->process(in_ptr, out_ptr, channels, frames);
-    }
-
-    EXPORT void set_param(void* handle, int param_id, float value) {
-    }
-
-    EXPORT void load_nam_model(void* handle, const char* path, double sample_rate, int max_block_size) {
-        auto* proc = static_cast<NamProcessor*>(handle);
-        proc->load_model(path, sample_rate, max_block_size);
+    EXPORT void reset(void* handle) {
+        static_cast<NamProcessor*>(handle)->reset_state();
     }
 }

@@ -400,6 +400,7 @@ class MediaPlayerNode(Node):
     def _restart_worker(self, path, start_time=0.0):
         if self.worker:
             self.worker.stop()
+            self.worker.join(timeout=2)
             self.worker = None
 
         with self.queue.mutex:

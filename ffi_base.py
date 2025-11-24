@@ -141,7 +141,12 @@ class FFINode(Node):
         self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
 
     def stop(self):
-        # Cleanup when graph stops or node is deleted
+        # CHANGED: Do NOT destroy C++ object on transport stop.
+        # We want the plugin state to persist (like a VST) even if the audio engine stops.
+        pass
+
+    def remove(self):
+        # CHANGED: Destroy C++ object ONLY when the node is deleted from graph.
         if self.lib and self.dsp_handle:
             self.lib.destroy(self.dsp_handle)
             self.dsp_handle = None
