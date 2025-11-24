@@ -32,14 +32,18 @@ class SineOscillator(Node):
 
 
 class StereoToMono(Node):
-    def __init__(self, name="StereoToMono"):
+    def __init__(self, name="To Mono"):
         super().__init__(name)
         self.inp = self.add_input("in")
         self.out = self.add_output("out", channels=1)
 
     def process(self):
         t = self.inp.get_tensor()
-        # FIX: Check if input is already mono
+
+        # FIX: Ensure output buffer is clean.
+        # Since we only write to buffer[0], buffer[1] (if it exists) would retain stale data.
+        self.out.buffer.zero_()
+
         if t.shape[0] == 1:
             self.out.buffer[0].copy_(t[0])
         else:
@@ -48,7 +52,7 @@ class StereoToMono(Node):
 
 
 class MonoToStereo(Node):
-    def __init__(self, name="MonoToStereo"):
+    def __init__(self, name="To Stereo"):
         super().__init__(name)
         self.add_float_param("pan", 0.0, -1.0, 1.0)
         self.inp = self.add_input("in")

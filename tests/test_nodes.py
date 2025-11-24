@@ -44,3 +44,59 @@ def test_sine_oscillator():
     assert torch.all(output <= 1.0)
     # Also check not all zeros (since it's an oscillator)
     assert not torch.allclose(output, torch.zeros_like(output))
+
+
+def test_stereo_to_mono():
+    # Load plugins
+    plugin_system.load_plugins("plugins")
+
+    stereo_to_mono_cls = plugin_system.NODE_REGISTRY.get("StereoToMono")
+    stm = stereo_to_mono_cls()
+
+    # Test 1: Stereo input
+    stereo_input = torch.ones(2, 512, dtype=torch.float32)  # channels=2, BLOCK_SIZE=512
+    stm.inp.connected_outputs = []  # clear connections
+    stm.inp.get_tensor = lambda: stereo_input  # mock get_tensor
+
+    # First, pollute buffer[0] with stale data to simulate ghosting from previous run
+    stm.out.buffer[0].fill_(0.9)
+
+    # Run process - buffer zeroing should ensure clean output
+    stm.process()
+
+    # Assert buffer[0] contains averaged stereo input:
+    # (1.0 + 1.0) / 2 = 1.0 (not 0.5!)
+    expected_mono = torch.full_like(stm.out.buffer[0], 1.0)
+    assert torch.allclose(stm.out.buffer[0], expected_mono)
+
+    # Test 2: Mono input
+    mono_input = torch.ones(1, 512, dtype=torch.float32)  # channels=1, BLOCK_SIZE=512
+    stm.inp.get_tensor = lambda: mono_input  # mock get_tensor
+
+    # Pollute buffer[0] again with stale data
+    stm.out.buffer[0].fill_(0.7)
+
+    # Run process - should properly overwrite with mono input
+    stm.process()
+
+    # Assert buffer[0] contains mono input (1.0s)
+    expected_mono = torch.full_like(stm.out.buffer[0], 1.0)
+    assert torch.allclose(stm.out.buffer[0], expected_mono)
+
+    # Test 3: Test buffer structure - ensure it's truly single channel
+    assert stm.out.buffer.shape[0] == 1  # Only 1 channel
+    assert stm.out.buffer.shape[1] == 512  # BLOCK_SIZE
+
+    # Test 4: Test different stereo values
+    different_stereo = torch.ones(2, 512, dtype=torch.float32)
+    different_stereo[0] = 2.0  # Left channel = 2.0
+    different_stereo[1] = 4.0  # Right channel = 4.0
+
+    stm.inp.get_tensor = lambda: different_stereo
+    stm.out.buffer[0].fill_(0.5)  # Pollute again
+
+    stm.process()
+
+    # Expected: (2.0 + 4.0) / 2 = 3.0
+    expected_mono = torch.full_like(stm.out.buffer[0], 3.0)
+    assert torch.allclose(stm.out.buffer[0], expected_mono)

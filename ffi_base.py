@@ -22,6 +22,8 @@ class FFINode(Node):
         super().__init__(name)
         self.lib = None
         self.dsp_handle = None
+        # Pre-allocate persistent scratch buffer for zero-allocation copying
+        self._ffi_in_buffer = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
         self._load_library()
 
         # Initialize C++ object
@@ -95,26 +97,47 @@ class FFINode(Node):
         if "in" in self.inputs:
             in_tensor = self.inputs["in"].get_tensor()
         else:
-            # Silence if no input connected
-            in_tensor = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
+            # Default to silence if disconnected
+            self._ffi_in_buffer.zero_()
+            in_tensor = self._ffi_in_buffer
 
-        assert in_tensor.dtype == torch.float32, "FFI requires float32 tensors"
+        # 2. Determine Actual Dimensions
+        in_channels = in_tensor.shape[0]
 
         out_slot = self.outputs.get("out")
         if not out_slot:
             return
         out_tensor = out_slot.buffer
+        out_channels = out_tensor.shape[0]
 
-        # 2. Ensure Contiguity (Critical for C pointers)
-        if not in_tensor.is_contiguous():
-            in_tensor = in_tensor.contiguous()
+        # Check output tensor contiguity
+        if not out_tensor.is_contiguous():
+            raise RuntimeError(f"Output tensor is not contiguous. Node: {self.name}")
 
-        # 3. Get Pointers
-        in_ptr = ctypes.cast(in_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
+        # 3. Ensure Contiguity (Critical for C pointers)
+        # Use zero-allocation strategy: pre-allocated scratch buffer for copying non-contiguous tensors
+        if in_tensor.is_contiguous():
+            processing_tensor = in_tensor
+        else:
+            self._ffi_in_buffer.copy_(in_tensor)
+            processing_tensor = self._ffi_in_buffer
+
+        # 4. Calculate Safe Processable Channels
+        # We process whichever is smaller: input available or output capacity.
+        process_channels = min(in_channels, out_channels)
+
+        # 5. Anti-Ghosting: Zero out unused output channels
+        # If input is Mono (1) and Output is Stereo (2), C++ only writes channel 0.
+        # We must zero channel 1 to remove stale data from previous frames.
+        if process_channels < out_channels:
+            out_tensor[process_channels:].zero_()
+
+        # 6. Get Pointers
+        in_ptr = ctypes.cast(processing_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
         out_ptr = ctypes.cast(out_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
 
-        # 4. Call C++
-        self.lib.process(self.dsp_handle, in_ptr, out_ptr, CHANNELS, BLOCK_SIZE)
+        # 7. Call C++ with ACTUAL channel count
+        self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
 
     def stop(self):
         # Cleanup when graph stops or node is deleted

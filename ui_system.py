@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QCheckBox,
     QComboBox,
+    QLineEdit,  # Added
+    QSpinBox,  # Added
 )
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot
 from PySide6.QtGui import (
@@ -327,6 +329,24 @@ class NodeItem(QGraphicsObject):
             self.layout.addWidget(combo)
             control_ref["widget"] = combo
 
+        elif ptype == "string":
+            lbl = QLabel(name)
+            le = QLineEdit(str(val))
+            le.returnPressed.connect(lambda: self.controller.set_parameter(self.nid, name, le.text()))
+            self.layout.addWidget(lbl)
+            self.layout.addWidget(le)
+            control_ref["widget"] = le
+
+        elif ptype == "int":
+            lbl = QLabel(name)
+            sp = QSpinBox()
+            sp.setRange(meta.get("min", 0), meta.get("max", 100))
+            sp.setValue(int(val))
+            sp.valueChanged.connect(lambda v: self.controller.set_parameter(self.nid, name, v))
+            self.layout.addWidget(lbl)
+            self.layout.addWidget(sp)
+            control_ref["widget"] = sp
+
         self.param_controls[name] = control_ref
 
     def update_from_snapshot(self, node_data):
@@ -354,6 +374,10 @@ class NodeItem(QGraphicsObject):
         for name, control in self.param_controls.items():
             if name in new_params:
                 new_val = new_params[name]["value"]
+                # Skip if widget wasn't created (e.g. unsupported type)
+                if "widget" not in control:
+                    continue
+
                 widget = control["widget"]
                 with QSignalBlocker(widget):
                     if control["type"] == "float":
@@ -368,6 +392,11 @@ class NodeItem(QGraphicsObject):
                     elif control["type"] == "menu":
                         if not widget.view().isVisible():
                             widget.setCurrentIndex(int(new_val))
+                    elif control["type"] == "string":
+                        if widget.text() != str(new_val) and not widget.hasFocus():
+                            widget.setText(str(new_val))
+                    elif control["type"] == "int":
+                        widget.setValue(int(new_val))
 
         # Custom Widgets
         if self.widget and hasattr(self.widget, "update_from_params"):

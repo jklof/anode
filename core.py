@@ -206,7 +206,7 @@ class Engine:
                 _, type_name, nid, pos = cmd
                 cls = plugin_system.NODE_REGISTRY.get(type_name)
                 if cls:
-                    node = cls(name=type_name)
+                    node = cls()
                     node.id = nid
                     node.pos = pos
                     self.graph.add_node(node)

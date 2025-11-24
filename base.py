@@ -136,9 +136,9 @@ class Parameter:
 
 
 class Node:
-    def __init__(self, name: str):
+    def __init__(self, name: str = ""):
         self.id = str(uuid.uuid4())
-        self.name = name
+        self.name = name if name else self.__class__.__name__
         self.pos = (0, 0)
         self.error_msg = None
         self.inputs: Dict[str, InputSlot] = {}
