@@ -170,6 +170,13 @@ class Node:
     def add_menu_param(self, name: str, items: List[str], initial_idx=0):
         self.params[name] = Parameter(initial_idx, "menu", items=items)
 
+    def add_file_param(self, name: str, val: str, filter: str = "All Files (*.*)", mode: str = "open"):
+        """
+        mode: 'open' or 'save'
+        filter: e.g. "WAV Files (*.wav);;All Files (*.*)"
+        """
+        self.params[name] = Parameter(val, "file", filter=filter, mode=mode)
+
     def sync(self):
         for p in self.params.values():
             p.sync()

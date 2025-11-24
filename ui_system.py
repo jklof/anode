@@ -13,8 +13,10 @@ from PySide6.QtWidgets import (
     QGraphicsView,
     QCheckBox,
     QComboBox,
-    QLineEdit,  # Added
-    QSpinBox,  # Added
+    QLineEdit,
+    QSpinBox,
+    QPushButton,
+    QFileDialog,
 )
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot
 from PySide6.QtGui import (
@@ -28,6 +30,7 @@ from PySide6.QtGui import (
     QPainterPathStroker,
 )
 import plugin_system
+import os
 
 NODE_WIDTH = 160
 HEADER_HEIGHT = 30
@@ -347,6 +350,60 @@ class NodeItem(QGraphicsObject):
             self.layout.addWidget(sp)
             control_ref["widget"] = sp
 
+        elif ptype == "file":
+            # Stacked Vertical Layout: Label on top, [Input + Button] below
+            container = QWidget()
+            vbox = QVBoxLayout(container)
+            vbox.setContentsMargins(0, 0, 0, 0)
+            vbox.setSpacing(2)
+
+            lbl = QLabel(name)
+            lbl.setStyleSheet("color: #ccc; font-size: 10px;")
+            vbox.addWidget(lbl)
+
+            hbox_w = QWidget()
+            hbox = QHBoxLayout(hbox_w)
+            hbox.setContentsMargins(0, 0, 0, 0)
+            hbox.setSpacing(2)
+
+            le = QLineEdit(str(val))
+            # Critical: Ensure input is wide enough to see path, forcing node expansion
+            le.setMinimumWidth(200)
+            le.setToolTip(str(val))
+            le.editingFinished.connect(lambda: self.controller.set_parameter(self.nid, name, le.text()))
+
+            btn = QPushButton("...")
+            btn.setFixedWidth(25)
+            btn.setFixedHeight(22)
+
+            def open_dlg():
+                start = ""
+                curr = le.text()
+                if curr and os.path.exists(curr):
+                    start = curr if os.path.isdir(curr) else os.path.dirname(curr)
+
+                filt = meta.get("filter", "All Files (*.*)")
+                if meta.get("mode") == "save":
+                    path, _ = QFileDialog.getSaveFileName(None, f"Save {name}", start, filt)
+                else:
+                    path, _ = QFileDialog.getOpenFileName(None, f"Open {name}", start, filt)
+
+                if path:
+                    le.setText(path)
+                    le.setToolTip(path)
+                    # Scroll cursor to end so filename is visible
+                    le.setCursorPosition(len(path))
+                    self.controller.set_parameter(self.nid, name, path)
+
+            btn.clicked.connect(open_dlg)
+
+            hbox.addWidget(le)
+            hbox.addWidget(btn)
+            vbox.addWidget(hbox_w)
+
+            self.layout.addWidget(container)
+            control_ref["widget"] = le
+
         self.param_controls[name] = control_ref
 
     def update_from_snapshot(self, node_data):
@@ -397,6 +454,12 @@ class NodeItem(QGraphicsObject):
                             widget.setText(str(new_val))
                     elif control["type"] == "int":
                         widget.setValue(int(new_val))
+                    elif control["type"] == "file":
+                        new_txt = str(new_val)
+                        if widget.text() != new_txt and not widget.hasFocus():
+                            widget.setText(new_txt)
+                            widget.setToolTip(new_txt)
+                            widget.setCursorPosition(len(new_txt))
 
         # Custom Widgets
         if self.widget and hasattr(self.widget, "update_from_params"):

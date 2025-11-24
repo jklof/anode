@@ -49,7 +49,7 @@ class FileRecorder(Node, IClockProvider):
     def __init__(self, name="Recorder"):
         Node.__init__(self, name)
         IClockProvider.__init__(self)
-        self.add_string_param("filename", "output.wav")
+        self.add_file_param("filename", "output.wav", filter="WAV Files (*.wav)", mode="save")
         self.add_bool_param("record", False)
         self.inp = self.add_input("in")
 
