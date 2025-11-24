@@ -1,0 +1,22 @@
+[project]
+name = "anode"
+version = "0.1.0"
+# Add other metadata like authors, description, etc.
+
+# --- Build System Definition ---
+# This section tells pip to use scikit-build-core instead of the default setuptools.
+[build-system]
+requires = ["scikit-build-core"]
+build-backend = "scikit_build_core.build"
+
+# --- Scikit-Build Configuration ---
+# This section tells scikit-build-core how to run CMake.
+[tool.scikit-build]
+# Point to the directory containing the main CMakeLists.txt
+cmake.source-dir = "cpp"
+
+# Tell it where to install the built libraries.
+# The "" means install relative to the package root (e.g., src/my_app/).
+# This ensures the .dll is treated as part of the `my_app.plugins` module.
+install.strip = false
+wheel.packages = [""]

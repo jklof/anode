@@ -346,7 +346,6 @@ class MediaPlayerWidget(QWidget):
 
 
 class MediaPlayerNode(Node):
-    NODE_TYPE = "Media Player"
 
     def __init__(self, name="Media Player"):
         super().__init__(name)

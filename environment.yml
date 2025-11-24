@@ -1,0 +1,33 @@
+name: anode-dev
+
+channels:
+  - conda-forge
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+
+dependencies:
+  - cmake
+  - cxx-compiler
+  - python=3.11
+  - pip
+  - pyside6
+  - pytorch
+  - torchaudio
+  - numpy
+  - pysoundfile
+  - mido
+  - scipy
+  - librosa
+  - onnxruntime
+  - resampy
+  - portaudio
+
+  - pip:
+    - sounddevice
+    - pydub
+    - pytubefix
+    - pylibrb
+    - kokoro-onnx
+    - misaki[en]
+    - openai-whisper
+    - webrtcvad-wheels
