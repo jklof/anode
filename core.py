@@ -192,9 +192,9 @@ class Engine:
         snap["reload_version"] = self.reload_version
         self.output_queue.put(snap)
 
-    def _emit_stats(self, stats_data):
+    def _emit_telemetry(self, cpu_load, node_data):
         if not self.output_queue.full():
-            self.output_queue.put({"type": "stats", "data": stats_data})
+            self.output_queue.put({"type": "telemetry", "cpu_load": cpu_load, "node_data": node_data})
 
     def _apply_command(self, cmd):
         try:
@@ -353,8 +353,8 @@ class Engine:
                     node.error_msg = f"Start Error: {e}"
 
             block_duration_sec = BLOCK_SIZE / SAMPLE_RATE
-            stats_interval = 0.1
-            next_stats_time = time.perf_counter() + stats_interval
+            telemetry_interval = 0.1
+            next_telemetry_time = time.perf_counter() + telemetry_interval
             stats_buffer = {}
 
             while self.running:
@@ -388,9 +388,20 @@ class Engine:
                         node.error_msg = str(e)
 
                 now = time.perf_counter()
-                if now >= next_stats_time:
-                    self._emit_stats(stats_buffer.copy())
-                    next_stats_time = now + stats_interval
+                if now >= next_telemetry_time:
+                    global_cpu = sum(stats_buffer.values()) / len(stats_buffer) if stats_buffer else 0.0
+                    node_data = {}
+                    for node in self.graph.nodes:
+                        try:
+                            telemetry = node.get_telemetry()
+                            if node.id in stats_buffer:
+                                telemetry["cpu_load"] = stats_buffer[node.id]
+                            node_data[node.id] = telemetry
+                        except Exception as e:
+                            logging.exception(f"Telemetry fetch failed for node {node.name} ({node.id}): {e}")
+                            node_data[node.id] = {}
+                    self._emit_telemetry(global_cpu, node_data)
+                    next_telemetry_time = now + telemetry_interval
 
         for n in self.graph.nodes:
             n.stop()

@@ -184,6 +184,9 @@ class Node:
         """Called when the node is deleted from the graph."""
         pass
 
+    def get_telemetry(self) -> dict:
+        return {}
+
     def on_ui_param_change(self, param_name: str):
         pass
 

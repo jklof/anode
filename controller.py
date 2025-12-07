@@ -6,7 +6,7 @@ from core import Engine
 
 class AppController(QObject):
     graphUpdated = Signal(dict)
-    statsUpdated = Signal(dict)
+    telemetryUpdated = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -21,8 +21,8 @@ class AppController(QObject):
         while not self.engine.output_queue.empty():
             try:
                 msg = self.engine.output_queue.get_nowait()
-                if msg.get("type") == "stats":
-                    self.statsUpdated.emit(msg["data"])
+                if msg.get("type") == "telemetry":
+                    self.telemetryUpdated.emit(msg)
                 else:
                     self.graphUpdated.emit(msg)
             except Exception:

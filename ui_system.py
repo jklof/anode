@@ -570,7 +570,7 @@ class GraphScene(QGraphicsScene):
         self.drag_target = None
         self._show_load = False
         self.controller.graphUpdated.connect(self.reconcile)
-        self.controller.statsUpdated.connect(self.on_stats_updated)
+        self.controller.telemetryUpdated.connect(self.on_telemetry_updated)
 
     def reconcile(self, snapshot: dict):
         reload_version = snapshot.get("reload_version", 0)
@@ -623,10 +623,12 @@ class GraphScene(QGraphicsScene):
                     self.wire_items[k] = wire
         self.update()
 
-    def on_stats_updated(self, stats):
-        for nid, load in stats.items():
+    def on_telemetry_updated(self, data):
+        node_data = data.get("node_data", {})
+        for nid, telemetry in node_data.items():
             if nid in self.node_items:
-                self.node_items[nid].set_processing_load(load)
+                if "cpu_load" in telemetry:
+                    self.node_items[nid].set_processing_load(telemetry["cpu_load"])
 
     def toggle_load_view(self, show):
         self._show_load = show
