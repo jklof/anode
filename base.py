@@ -67,7 +67,25 @@ class InputSlot:
                 self.connected_outputs.remove(target)
 
     def get_tensor(self) -> torch.Tensor:
+        """
+        Retrieves the input audio buffer.
+
+        CRITICAL WARNING: READ-ONLY REFERENCE
+        To optimize performance, this method often returns a direct reference to an
+        upstream node's output buffer.
+
+        You must NOT modify the returned tensor in-place (e.g., do NOT use +=, *=, .add_, .mul_).
+        Doing so will corrupt the signal for other nodes connected to the same source.
+
+        If you need to mutate the input data (e.g. apply gain), you must either:
+        1. Use out-of-place operations (e.g. `out = inp * 0.5`)
+        2. Clone the tensor first (e.g. `work_buffer = inp.clone()`)
+        """
         if self.connected_outputs:
+            # Zero-Copy Optimization: If only one output connected, return it directly (Read-Only)
+            if len(self.connected_outputs) == 1:
+                return self.connected_outputs[0].buffer  # Read-Only! Do not modify.
+
             # Determine if we need Stereo or Mono output
             max_channels = 1
             for out in self.connected_outputs:

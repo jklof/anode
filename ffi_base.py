@@ -78,6 +78,10 @@ class FFINode(Node):
         self.lib.set_param.restype = None
         self.lib.set_param.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_float]
 
+    def _preprocess_input(self, in_tensor: torch.Tensor, scratch_buffer: torch.Tensor) -> torch.Tensor:
+        """Hook for subclasses to modify input tensor before C++ processing. Default pass-through."""
+        return in_tensor
+
     def on_ui_param_change(self, param_name: str):
         """Automatically pushes UI changes to C++."""
         super().on_ui_param_change(param_name)
@@ -92,18 +96,19 @@ class FFINode(Node):
         if not self.lib or not self.dsp_handle:
             return
 
-        # 1. Get Tensors
-        # Assuming single input named 'in' and single output named 'out' for simplicity
-        # You can extend this logic for multiple ports if needed.
+        # 1. Get Raw Tensor from Input Slot
         if "in" in self.inputs:
-            in_tensor = self.inputs["in"].get_tensor()
+            raw_tensor = self.inputs["in"].get_tensor()
         else:
             # Default to silence if disconnected
             self._ffi_in_buffer.zero_()
-            in_tensor = self._ffi_in_buffer
+            raw_tensor = self._ffi_in_buffer
+
+        # Allow subclasses to preprocess (e.g., apply gain)
+        processed_tensor = self._preprocess_input(raw_tensor, self._ffi_in_buffer)
 
         # 2. Determine Actual Dimensions
-        in_channels = in_tensor.shape[0]
+        in_channels = processed_tensor.shape[0]
 
         out_slot = self.outputs.get("out")
         if not out_slot:
@@ -117,10 +122,10 @@ class FFINode(Node):
 
         # 3. Ensure Contiguity (Critical for C pointers)
         # Use zero-allocation strategy: pre-allocated scratch buffer for copying non-contiguous tensors
-        if in_tensor.is_contiguous():
-            processing_tensor = in_tensor
+        if processed_tensor.is_contiguous():
+            processing_tensor = processed_tensor
         else:
-            self._ffi_in_buffer.copy_(in_tensor)
+            self._ffi_in_buffer.copy_(processed_tensor)
             processing_tensor = self._ffi_in_buffer
 
         # 4. Calculate Safe Processable Channels

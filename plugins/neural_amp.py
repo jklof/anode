@@ -188,23 +188,20 @@ class NamNode(FFINode):
                 pass
         self.monitor_queue.put(msg)
 
+    def _preprocess_input(self, in_tensor: torch.Tensor, scratch_buffer: torch.Tensor) -> torch.Tensor:
+        gain = self.params["input_gain"].value
+        if gain == 1.0:
+            return in_tensor  # Zero-copy path
+        else:
+            scratch_buffer.copy_(in_tensor)
+            scratch_buffer.mul_(gain)
+            return scratch_buffer
+
     def process(self):
-        # 1. Apply Input Gain (Pre-NAM)
-        # Using the tensor cache from parameter for efficiency
-        in_tensor = self.inputs["in"].get_tensor()
-        in_gain = self.params["input_gain"].value
-
-        # If gain is not 1.0, we need to scale.
-        # Note: get_tensor() might return a view of scratch, so modifying it in place is okay
-        # as long as we don't affect upstream nodes (which we don't, as it's a pull system).
-        if in_gain != 1.0:
-            in_tensor.mul_(in_gain)
-
-        # 2. Run C++ Processing
-        # FFINode.process() handles the transfer to C++
+        # Run C++ Processing (which includes _preprocess_input for input gain)
         super().process()
 
-        # 3. Apply Output Gain (Post-NAM)
+        # Apply Output Gain (Post-NAM)
         out_gain = self.params["output_gain"].value
         if out_gain != 1.0:
             # We modify the output buffer directly
