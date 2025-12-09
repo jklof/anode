@@ -26,12 +26,12 @@ class RingBuffer:
         # Ensure we don't write beyond capacity
         if np_data.ndim == 2:
             # Handle stereo or multi-channel
-            np_data = np_data[:self.channels].T  # Transpose to (frames, channels)
+            np_data = np_data[: self.channels].T  # Transpose to (frames, channels)
         else:
             # If mono, duplicate to stereo
             mono = np_data[0].reshape(-1, 1)
             np_data = np.tile(mono, (1, self.channels))
-        self.storage[start_idx:start_idx + self.block_size, :] = np_data
+        self.storage[start_idx : start_idx + self.block_size, :] = np_data
         self.write_count += 1
         return True
 
@@ -41,7 +41,7 @@ class RingBuffer:
         # Calculate start index
         start_idx = (self.read_count % self.capacity_blocks) * self.block_size
         # Copy data to outdata
-        block_data = self.storage[start_idx:start_idx + self.block_size, :]
+        block_data = self.storage[start_idx : start_idx + self.block_size, :]
         outdata[:] = block_data
         self.read_count += 1
         return True
@@ -139,7 +139,9 @@ class AudioOutput(Node, IClockProvider):
 
     def wait_for_sync(self):
         if self.is_master and self._active:
-            while (self.ring_buffer.write_count - self.ring_buffer.read_count) >= self.ring_buffer.capacity_blocks and self._active:
+            while (
+                self.ring_buffer.write_count - self.ring_buffer.read_count
+            ) >= self.ring_buffer.capacity_blocks and self._active:
                 time.sleep(0.005)
 
     def start(self):

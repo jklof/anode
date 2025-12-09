@@ -234,6 +234,7 @@ class NodeItem(QGraphicsObject):
         self._processing_load = 0.0
         self._show_load = False
         self.proxy = None
+        self.widget = None
 
         self.setFlag(QGraphicsItem.ItemIsMovable)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -244,6 +245,7 @@ class NodeItem(QGraphicsObject):
         self.input_items = {}
         self.output_items = {}
 
+        # 1. Create Sockets Immediately
         y = HEADER_HEIGHT + 10
         for name in node_data["inputs"]:
             item = SocketItem(self, name, True, self.nid)
@@ -258,8 +260,16 @@ class NodeItem(QGraphicsObject):
             self.output_items[name] = item
             y_out += 20
 
+        # Calculate initial height based on sockets
         self.height = max(y, y_out) + 10
 
+        # UI Construction (Proxy/Widget) is DEFERRED to build_ui()
+        # This ensures the NodeItem is in the scene before QComboBox/Complex widgets init.
+
+    def build_ui(self):
+        """
+        Called by GraphScene AFTER adding this item to the scene.
+        """
         self.proxy = QGraphicsProxyWidget(self)
         self.widget = None
         CustomUIClass = plugin_system.get_ui_class(self.node_type)
@@ -282,8 +292,12 @@ class NodeItem(QGraphicsObject):
             w_width = max(self.width - 20, self.widget.minimumSize().width())
             w_height = self.widget.minimumSize().height() if CustomUIClass else self.widget.sizeHint().height()
             self.proxy.resize(w_width, w_height)
+
+            # Expand Node if UI is wider/taller
             self.width = w_width + 20
             self.height += w_height + 10
+
+            # 2. Relayout Output Sockets if width changed
             for item in self.output_items.values():
                 item.setX(self.width)
 
@@ -606,7 +620,13 @@ class GraphScene(QGraphicsScene):
                 item = NodeItem(n_data, self.controller)
                 item.setPos(*n_data["pos"])
                 item.set_show_load(self._show_load)
+
+                # 1. Add item to scene (essential before building UI)
                 self.addItem(item)
+
+                # 2. Build UI now that scene is valid
+                item.build_ui()
+
                 self.node_items[nid] = item
             else:
                 self.node_items[nid].update_from_snapshot(n_data)
