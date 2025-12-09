@@ -100,3 +100,52 @@ def test_stereo_to_mono():
     # Expected: (2.0 + 4.0) / 2 = 3.0
     expected_mono = torch.full_like(stm.out.buffer[0], 3.0)
     assert torch.allclose(stm.out.buffer[0], expected_mono)
+
+
+def test_reverb_mix_logic():
+    """
+    Test the dry/wet mixing math in ConvolutionReverb.
+    """
+    plugin_system.load_plugins("plugins")
+    Reverb = plugin_system.NODE_REGISTRY.get("ConvolutionReverb")
+    node = Reverb()
+    
+    # Mock input: Constant 1.0
+    input_tensor = torch.ones(2, 512)
+    node.inputs["in"].get_tensor = lambda: input_tensor
+    
+    # 1. Test Full Dry (Mix = 0.0)
+    node.params["mix"].set(0.0)
+    node.sync()
+    node.process()
+    # Output should be exactly input (1.0)
+    assert torch.allclose(node.outputs["out"].buffer, input_tensor)
+    
+    # 2. Test Full Wet (Mix = 1.0)
+    # Since we haven't loaded an IR, the convolution result is 0.0 (silence)
+    # So output should be 0.0
+    node.params["mix"].set(1.0)
+    node.sync()
+    node.process()
+    assert torch.allclose(node.outputs["out"].buffer, torch.zeros_like(input_tensor))
+    
+    # 3. Test 50% Mix
+    # Expected: (1.0 * 0.5) + (0.0 * 0.5) = 0.5
+    node.params["mix"].set(0.5)
+    node.sync()
+    node.process()
+    expected = torch.full_like(node.outputs["out"].buffer, 0.5)
+    assert torch.allclose(node.outputs["out"].buffer, expected)
+
+def test_nam_parameter_mapping():
+    """
+    Verify NAM parameters 'drive' and 'level' are registered correctly.
+    """
+    plugin_system.load_plugins("plugins")
+    Nam = plugin_system.NODE_REGISTRY.get("NamNode")
+    node = Nam()
+    
+    assert "drive" in node.params
+    assert "level" in node.params
+    assert node.params["drive"].value == 1.0
+    assert node.params["level"].value == 1.0

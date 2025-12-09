@@ -1,5 +1,6 @@
 import pytest
 from core import Graph
+from base import Node, IClockProvider
 
 
 class MockNode:
@@ -129,3 +130,39 @@ def test_cycle_detection():
     # For the test, just ensure it doesn't crash and graph is still operational
     assert len(graph.nodes) == 2
     assert len(graph.execution_order) == 2  # Even in cycle, order should be calculated
+
+
+def test_clock_switching():
+    graph = Graph()
+    
+    # Mock two clock providers
+    class ClockNode(Node, IClockProvider):
+        def __init__(self, name):
+            Node.__init__(self, name)
+            IClockProvider.__init__(self)
+
+        def start_clock(self): pass
+        def stop_clock(self): pass
+        def wait_for_sync(self): pass
+            
+    c1 = ClockNode("Clock 1")
+    c2 = ClockNode("Clock 2")
+    
+    graph.add_node(c1)
+    graph.add_node(c2)
+    
+    # First added node usually becomes default
+    assert graph.clock_source == c1
+    assert c1.is_master
+    assert not c2.is_master
+    
+    # Switch to C2
+    graph.set_master_clock(c2)
+    
+    assert graph.clock_source == c2
+    assert c2.is_master
+    assert not c1.is_master
+    
+    # Switch back
+    graph.set_master_clock(c1)
+    assert graph.clock_source == c1
