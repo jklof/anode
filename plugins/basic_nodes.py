@@ -87,3 +87,55 @@ class Gain(Node):
         t = self.inp.get_tensor()
         mod = self.gain_mod.get_tensor()
         torch.mul(t, mod, out=self.out.buffer)
+
+
+class ChannelSplitter(Node):
+    category = "Utilities"
+    label = "Channel Splitter"
+
+    def __init__(self, name=""):
+        super().__init__(name)
+        self.inp = self.add_input("in")
+        # Create outputs and store in a list for loop-based processing
+        self.outputs_list = [
+            self.add_output("left", channels=1),
+            self.add_output("right", channels=1)
+        ]
+
+    def process(self):
+        t = self.inp.get_tensor()
+        in_channels = t.shape[0]
+
+        # Loop-based logic (Future-proof for N channels)
+        for i, out_slot in enumerate(self.outputs_list):
+            out_slot.buffer.zero_()
+            if i < in_channels:
+                # Copy input channel 'i' to output buffer channel 0 (since output is mono)
+                out_slot.buffer[0].copy_(t[i])
+
+
+class ChannelJoiner(Node):
+    category = "Utilities"
+    label = "Channel Joiner"
+
+    def __init__(self, name=""):
+        super().__init__(name)
+        # Create inputs and store in a list
+        self.inputs_list = [
+            self.add_input("left"),
+            self.add_input("right")
+        ]
+        self.out = self.add_output("out", channels=2)
+
+    def process(self):
+        out_buffer = self.out.buffer
+        out_buffer.zero_()
+        max_out_channels = out_buffer.shape[0]
+
+        # Loop-based logic
+        for i, inp_slot in enumerate(self.inputs_list):
+            if i < max_out_channels:
+                sig = inp_slot.get_tensor()
+                # Copy 1st channel of mono source to ith channel of output
+                if sig.shape[0] > 0:
+                    out_buffer[i].copy_(sig[0])

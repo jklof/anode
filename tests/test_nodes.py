@@ -144,8 +144,61 @@ def test_nam_parameter_mapping():
     plugin_system.load_plugins("plugins")
     Nam = plugin_system.NODE_REGISTRY.get("NamNode")
     node = Nam()
-    
+
     assert "drive" in node.params
     assert "level" in node.params
     assert node.params["drive"].value == 1.0
     assert node.params["level"].value == 1.0
+
+
+def test_split_join_nodes():
+    # Load plugins
+    plugin_system.load_plugins("plugins")
+
+    # Instantiate ChannelSplitter and ChannelJoiner
+    splitter_cls = plugin_system.NODE_REGISTRY.get("ChannelSplitter")
+    splitter = splitter_cls()
+
+    joiner_cls = plugin_system.NODE_REGISTRY.get("ChannelJoiner")
+    joiner = joiner_cls()
+
+    # Test Splitter:
+    # Mock input tensor: shape (2, 512). Ch0=1.0, Ch1=2.0.
+    splitter_input = torch.ones(2, 512, dtype=torch.float32)
+    splitter_input[0].fill_(1.0)
+    splitter_input[1].fill_(2.0)
+    splitter.inp.connected_outputs = []  # clear connections
+    splitter.inp.get_tensor = lambda: splitter_input  # mock get_tensor
+
+    # Process
+    splitter.process()
+
+    # Assert outputs_list[0] buffer contains 1.0
+    expected_left = torch.full_like(splitter.outputs_list[0].buffer[0], 1.0)
+    assert torch.allclose(splitter.outputs_list[0].buffer[0], expected_left)
+
+    # Assert outputs_list[1] buffer contains 2.0
+    expected_right = torch.full_like(splitter.outputs_list[1].buffer[0], 2.0)
+    assert torch.allclose(splitter.outputs_list[1].buffer[0], expected_right)
+
+    # Test Joiner:
+    # Mock input 1 tensor: shape (1, 512). Val=0.5.
+    left_input = torch.full((1, 512), 0.5, dtype=torch.float32)
+    joiner.inputs_list[0].connected_outputs = []  # clear connections
+    joiner.inputs_list[0].get_tensor = lambda: left_input  # mock get_tensor
+
+    # Mock input 2 tensor: shape (1, 512). Val=0.8.
+    right_input = torch.full((1, 512), 0.8, dtype=torch.float32)
+    joiner.inputs_list[1].connected_outputs = []  # clear connections
+    joiner.inputs_list[1].get_tensor = lambda: right_input  # mock get_tensor
+
+    # Process
+    joiner.process()
+
+    # Assert output buffer Ch0 contains 0.5
+    expected_ch0 = torch.full_like(joiner.out.buffer[0], 0.5)
+    assert torch.allclose(joiner.out.buffer[0], expected_ch0)
+
+    # Assert output buffer Ch1 contains 0.8
+    expected_ch1 = torch.full_like(joiner.out.buffer[1], 0.8)
+    assert torch.allclose(joiner.out.buffer[1], expected_ch1)
