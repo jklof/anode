@@ -4,7 +4,6 @@ from base import Node
 
 
 class WaveformDisplay(Node):
-    CUSTOM_UI = "WaveformWidget"
 
     def __init__(self, name="Scope"):
         super().__init__(name)
