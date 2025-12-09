@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QSizePolicy,
 )
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QPalette, QColor
+from PySide6.QtCore import Qt
 from controller import AppController
 from ui_system import GraphScene, GraphView
 import plugin_system
@@ -166,8 +167,46 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def set_dark_theme(app):
+    """
+    Apply a consistent dark theme using the Fusion style and a custom palette.
+    This ensures Linux/Windows/Mac all look the same.
+    """
+    app.setStyle("Fusion")
+
+    palette = QPalette()
+    dark_gray = QColor(53, 53, 53)
+    gray = QColor(128, 128, 128)
+    black = QColor(25, 25, 25)
+    blue = QColor(42, 130, 218)
+
+    palette.setColor(QPalette.Window, dark_gray)
+    palette.setColor(QPalette.WindowText, Qt.white)
+    palette.setColor(QPalette.Base, black)
+    palette.setColor(QPalette.AlternateBase, dark_gray)
+    palette.setColor(QPalette.ToolTipBase, Qt.white)
+    palette.setColor(QPalette.ToolTipText, Qt.white)
+    palette.setColor(QPalette.Text, Qt.white)
+    palette.setColor(QPalette.Button, dark_gray)
+    palette.setColor(QPalette.ButtonText, Qt.white)
+    palette.setColor(QPalette.BrightText, Qt.red)
+    palette.setColor(QPalette.Link, blue)
+    palette.setColor(QPalette.Highlight, blue)
+    palette.setColor(QPalette.HighlightedText, Qt.black)
+
+    # Disabled colors
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, gray)
+    palette.setColor(QPalette.Disabled, QPalette.Text, gray)
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, gray)
+    palette.setColor(QPalette.Disabled, QPalette.Highlight, QColor(80, 80, 80))
+    palette.setColor(QPalette.Disabled, QPalette.HighlightedText, gray)
+
+    app.setPalette(palette)
+
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    set_dark_theme(app)
     w = MainWindow()
     w.show()
     sys.exit(app.exec())
