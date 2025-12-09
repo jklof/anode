@@ -146,9 +146,12 @@ class Parameter:
 
 
 class Node:
+    category: str = "Uncategorized"
+    label: str = ""
+
     def __init__(self, name: str = ""):
         self.id = str(uuid.uuid4())
-        self.name = name if name else self.__class__.__name__
+        self.name = name if name else (getattr(self, "label", "") or self.__class__.__name__)
         self.pos = (0, 0)
         self.error_msg = None
         self.inputs: Dict[str, InputSlot] = {}

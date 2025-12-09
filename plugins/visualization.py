@@ -4,8 +4,10 @@ from base import Node
 
 
 class WaveformDisplay(Node):
+    category = "Visual"
+    label = "Oscilloscope"
 
-    def __init__(self, name="Scope"):
+    def __init__(self, name=""):
         super().__init__(name)
         self.inp = self.add_input("in")
         self.out = self.add_output("out")

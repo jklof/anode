@@ -137,8 +137,10 @@ class NamWidget(QWidget):
 
 class NamNode(FFINode):
     LIB_NAME = "neural_amp"
+    category = "Effects"
+    label = "Neural Amp Modeler"
 
-    def __init__(self, name="NAM Amp"):
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_input("in")
         self.add_output("out")

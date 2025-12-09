@@ -348,8 +348,10 @@ class MediaPlayerWidget(QWidget):
 
 
 class MediaPlayerNode(Node):
+    category = "I/O"
+    label = "Media Player"
 
-    def __init__(self, name="Media Player"):
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_string_param("file_path", "")
         self.add_bool_param("playing", False)

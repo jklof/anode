@@ -48,7 +48,10 @@ class RingBuffer:
 
 
 class AudioOutput(Node, IClockProvider):
-    def __init__(self, name="Speakers", device=None):
+    category = "I/O"
+    label = "Audio Output"
+
+    def __init__(self, name="", device=None):
         Node.__init__(self, name)
         IClockProvider.__init__(self)
         self.in_audio = self.add_input("audio_in")

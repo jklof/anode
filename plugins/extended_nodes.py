@@ -5,7 +5,10 @@ from base import Node, IClockProvider, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
 
 
 class Note(Node):
-    def __init__(self, name="Note"):
+    category = "Visual"
+    label = "Comment / Note"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_string_param("text", "Hello World")
 
@@ -14,7 +17,10 @@ class Note(Node):
 
 
 class Noise(Node):
-    def __init__(self, name="Noise"):
+    category = "Sources"
+    label = "White Noise"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_bool_param("enabled", True)
         self.add_float_param("amp", 0.1)
@@ -30,7 +36,10 @@ class Noise(Node):
 
 
 class Selector(Node):
-    def __init__(self, name="Sel"):
+    category = "Utilities"
+    label = "A/B Selector"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_menu_param("source", ["Input A", "Input B"])
         self.in_a = self.add_input("A")
@@ -46,7 +55,10 @@ class Selector(Node):
 
 
 class FileRecorder(Node, IClockProvider):
-    def __init__(self, name="Recorder"):
+    category = "I/O"
+    label = "File Recorder"
+
+    def __init__(self, name=""):
         Node.__init__(self, name)
         IClockProvider.__init__(self)
         self.add_file_param("filename", "output.wav", filter="WAV Files (*.wav)", mode="save")

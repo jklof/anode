@@ -666,11 +666,20 @@ class GraphScene(QGraphicsScene):
         menu = QMenu()
         add_menu = menu.addMenu("Add Node")
         click_pos = event.scenePos()
-        for name in sorted(plugin_system.NODE_REGISTRY.keys()):
-            action = add_menu.addAction(name)
-            action.triggered.connect(
-                lambda c=False, n=name, p=(click_pos.x(), click_pos.y()): self.controller.add_node(n, p)
-            )
+        structure = {}
+        for class_name, cls in plugin_system.NODE_REGISTRY.items():
+            cat = getattr(cls, "category", "Uncategorized")
+            lbl = getattr(cls, "label", class_name)
+            structure.setdefault(cat, []).append((lbl, class_name))
+        for category in sorted(structure.keys()):
+            sub_menu = add_menu.addMenu(category)
+            nodes = structure[category]
+            nodes.sort(key=lambda x: x[0])  # Sort by label
+            for lbl, class_name in nodes:
+                action = sub_menu.addAction(lbl)
+                action.triggered.connect(
+                    lambda c=False, n=class_name, p=(click_pos.x(), click_pos.y()): self.controller.add_node(n, p)
+                )
         menu.exec(event.screenPos())
         event.accept()
 

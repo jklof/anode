@@ -8,7 +8,10 @@ class CppGain(FFINode):
     # Map 'vol' param to ID 0 in C++
     PARAM_MAP = {"vol": 0}
 
-    def __init__(self, name="FastGain"):
+    category = "Utilities"
+    label = "Fast Gain (C++)"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_input("in")
         self.add_output("out")

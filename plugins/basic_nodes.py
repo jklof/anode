@@ -4,7 +4,10 @@ from base import Node, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
 
 
 class SineOscillator(Node):
-    def __init__(self, name="Sine"):
+    category = "Sources"
+    label = "Sine Oscillator"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_float_param("freq", 440.0, 20.0, 20000.0)
         self.add_float_param("amp", 0.5, 0.0, 1.0)
@@ -28,7 +31,10 @@ class SineOscillator(Node):
 
 
 class StereoToMono(Node):
-    def __init__(self, name="To Mono"):
+    category = "Utilities"
+    label = "Stereo to Mono"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.inp = self.add_input("in")
         self.out = self.add_output("out", channels=1)
@@ -48,7 +54,10 @@ class StereoToMono(Node):
 
 
 class MonoToStereo(Node):
-    def __init__(self, name="To Stereo"):
+    category = "Utilities"
+    label = "Mono to Stereo"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_float_param("pan", 0.0, -1.0, 1.0)
         self.inp = self.add_input("in")
@@ -64,7 +73,10 @@ class MonoToStereo(Node):
 
 
 class Gain(Node):
-    def __init__(self, name="Gain"):
+    category = "Utilities"
+    label = "Gain"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_float_param("vol", 1.0, 0.0, 2.0)
         self.inp = self.add_input("in")

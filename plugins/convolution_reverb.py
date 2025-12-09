@@ -201,7 +201,10 @@ class ReverbWidget(QWidget):
 
 
 class ConvolutionReverb(Node):
-    def __init__(self, name="Reverb"):
+    category = "Effects"
+    label = "Convolution Reverb"
+
+    def __init__(self, name=""):
         super().__init__(name)
         self.add_input("in")
         self.add_output("out")
