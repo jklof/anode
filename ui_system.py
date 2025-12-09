@@ -280,9 +280,11 @@ class NodeItem(QGraphicsObject):
 
         if not self.widget and self.params:
             self.widget = QWidget()
+            self.widget.setObjectName("genericNodeContainer")  # Give it an ID
             self.layout = QVBoxLayout()
             self.widget.setLayout(self.layout)
-            self.widget.setStyleSheet("background-color: transparent; color: white;")
+            # NEW LINE: Target ID for transparency, use wildcard for text color
+            self.widget.setStyleSheet("#genericNodeContainer { background-color: transparent; } * { color: #e0e0e0; }")
             for p_name, p_data in self.params.items():
                 self._create_param_widget(p_name, p_data)
 
