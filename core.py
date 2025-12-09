@@ -362,7 +362,7 @@ class Engine:
                 while not self.command_queue.empty():
                     cmd = self.command_queue.get_nowait()
                     self._apply_command(cmd)
-                    if cmd[0] in ["add", "del", "conn", "disconn", "clear", "load", "reload"]:
+                    if cmd[0] in ["add", "del", "conn", "disconn", "clear", "load", "reload", "clock"]:
                         dirty = True
 
                 if dirty:

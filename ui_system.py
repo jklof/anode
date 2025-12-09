@@ -549,7 +549,8 @@ class NodeItem(QGraphicsObject):
 
     def contextMenuEvent(self, event):
         menu = QMenu()
-        menu.addAction("Set Master Clock", lambda: self.controller.set_master_clock(self.nid))
+        if self.can_be_master:
+            menu.addAction("Set Master Clock", lambda: self.controller.set_master_clock(self.nid))
         menu.addAction("Delete", lambda: self.controller.delete_node(self.nid))
         menu.exec(event.screenPos())
 
