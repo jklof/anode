@@ -129,8 +129,7 @@ class ReverbWidget(QWidget):
         layout.addWidget(self.lbl_status)
 
         # --- Section 2: Parameters ---
-        self._add_param_row(layout, "Dry", "dry_vol", 0.0, 2.0)
-        self._add_param_row(layout, "Wet", "wet_vol", 0.0, 2.0)
+        self._add_param_row(layout, "Mix", "mix", 0.0, 1.0)
 
         self.timer = QTimer(self)
         self.timer.interval = 100
@@ -207,9 +206,7 @@ class ConvolutionReverb(Node):
         self.add_input("in")
         self.add_output("out")
 
-        # REMOVED "mix"
-        self.add_float_param("dry_vol", 1.0, 0.0, 2.0)
-        self.add_float_param("wet_vol", 1.0, 0.0, 2.0)
+        self.add_float_param("mix", 0.5, 0.0, 1.0)
         self.add_string_param("ir_path", "")
 
         self.loader_queue = queue.Queue()
@@ -283,15 +280,14 @@ class ConvolutionReverb(Node):
         except queue.Empty:
             pass
 
-        # 2. Prepare Dry Gain immediately
-        # Logic Change: Independent Levels
-        dry_gain = self.params["dry_vol"].value
+        # 2. Get mix parameter
+        mix_val = self.params["mix"].value
 
         # 3. Bypass / Not Ready
         if not self.dsp_ready and self.ir_ffts is None:
-            # Pass ONLY dry signal (scaled by dry_vol)
+            # Output input signal scaled by (1.0 - mix)
             self.outputs["out"].buffer.copy_(input_tensor)
-            self.outputs["out"].buffer.mul_(dry_gain)
+            self.outputs["out"].buffer.mul_(1.0 - mix_val)
             return
 
         # 4. Initialize buffers
@@ -333,21 +329,20 @@ class ConvolutionReverb(Node):
         result = time_domain[:, :PARTITION_SIZE] + self.overlap_buffer
         self.overlap_buffer = time_domain[:, PARTITION_SIZE:]
 
-        # 6. Mix (Summation)
-        # Logic Change: Independent Summing
-        wet_gain = self.params["wet_vol"].value
+        # 6. Mix
+        dry_signal = input_tensor * (1.0 - mix_val)
+        wet_signal = result * mix_val
 
-        dry_sig = input_tensor
+        # Handle channel mismatches for dry_signal
         if in_channels == 1 and out_channels == 2:
-            dry_sig = dry_sig.expand(2, -1)
+            dry_signal = dry_signal.expand(2, -1)
         elif in_channels == 2 and out_channels == 1:
-            dry_sig = dry_sig[:1, :]
+            dry_signal = dry_signal[:1, :]
 
         target_buff = self.outputs["out"].buffer
         target_buff.zero_()
         copy_ch = min(target_buff.shape[0], out_channels)
 
-        # output = (dry * dry_vol) + (wet * wet_vol)
-        target_buff[:copy_ch].copy_(dry_sig[:copy_ch])
-        target_buff[:copy_ch].mul_(dry_gain)
-        target_buff[:copy_ch].add_(result[:copy_ch], alpha=wet_gain)
+        # output = dry_signal + wet_signal
+        target_buff[:copy_ch].copy_(dry_signal[:copy_ch])
+        target_buff[:copy_ch].add_(wet_signal[:copy_ch])

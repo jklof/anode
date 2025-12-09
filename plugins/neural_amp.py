@@ -53,8 +53,8 @@ class NamWidget(QWidget):
 
         # --- Section 4: Gain Controls ---
         # NAM models often need +/- gain adjustment
-        self._add_param_row(layout, "In", "input_gain", 0.0, 4.0)
-        self._add_param_row(layout, "Out", "output_gain", 0.0, 4.0)
+        self._add_param_row(layout, "Drive", "drive", 0.0, 4.0)
+        self._add_param_row(layout, "Level", "level", 0.0, 4.0)
 
         self.timer = QTimer(self)
         self.timer.interval = 100
@@ -145,8 +145,8 @@ class NamNode(FFINode):
 
         # Internal params
         self.add_string_param("model_path", "")
-        self.add_float_param("input_gain", 1.0, 0.0, 4.0)
-        self.add_float_param("output_gain", 1.0, 0.0, 4.0)
+        self.add_float_param("drive", 1.0, 0.0, 4.0)
+        self.add_float_param("level", 1.0, 0.0, 4.0)
 
         # UI Communication
         self.monitor_queue = queue.Queue(maxsize=10)
@@ -189,7 +189,7 @@ class NamNode(FFINode):
         self.monitor_queue.put(msg)
 
     def _preprocess_input(self, in_tensor: torch.Tensor, scratch_buffer: torch.Tensor) -> torch.Tensor:
-        gain = self.params["input_gain"].value
+        gain = self.params["drive"].value
         if gain == 1.0:
             return in_tensor  # Zero-copy path
         else:
@@ -202,7 +202,7 @@ class NamNode(FFINode):
         super().process()
 
         # Apply Output Gain (Post-NAM)
-        out_gain = self.params["output_gain"].value
+        out_gain = self.params["level"].value
         if out_gain != 1.0:
             # We modify the output buffer directly
             self.outputs["out"].buffer.mul_(out_gain)
