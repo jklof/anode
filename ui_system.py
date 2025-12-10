@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QCursor,
     QTransform,
     QPainterPathStroker,
+    QMouseEvent,
 )
 from PySide6.QtSvg import QSvgRenderer
 from ui_icons import create_colored_logo
@@ -553,6 +554,11 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(self.boundingRect(), 5, 5)
 
+        if self.isSelected():
+            painter.setPen(QPen(QColor("#00ccff"), 2.0))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(self.boundingRect(), 5, 5)
+
     def contextMenuEvent(self, event):
         menu = QMenu()
         if self.can_be_master:
@@ -692,9 +698,10 @@ class GraphView(QGraphicsView):
     def __init__(self, scene):
         super().__init__(scene)
         self.setRenderHint(QPainter.Antialiasing)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self._panning_mode = False
 
         svg_bytes = create_colored_logo("white")
         self._logo_renderer = QSvgRenderer(svg_bytes)
@@ -721,6 +728,18 @@ class GraphView(QGraphicsView):
             self.fitInView(self.scene().itemsBoundingRect().adjusted(-50, -50, 50, 50), Qt.KeepAspectRatio)
 
     def mousePressEvent(self, event):
+        self._panning_mode = False
+        if event.button() == Qt.MiddleButton or (
+            event.button() == Qt.LeftButton and event.modifiers() & Qt.AltModifier
+        ):
+            self._panning_mode = True
+            self.setDragMode(QGraphicsView.ScrollHandDrag)
+            fake_event = QMouseEvent(
+                event.type(), event.position(), event.globalPosition(), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier
+            )
+            super().mousePressEvent(fake_event)
+            return
+
         pos = event.position().toPoint()
         item = self.itemAt(pos)
         if isinstance(item, SocketItem):
@@ -770,7 +789,10 @@ class GraphView(QGraphicsView):
             self.scene().temp_wire = None
             self.scene().drag_start = None
             self.scene().drag_target = None
-            self.setDragMode(QGraphicsView.ScrollHandDrag)
+            self.setDragMode(QGraphicsView.RubberBandDrag)
+        if self._panning_mode:
+            self.setDragMode(QGraphicsView.RubberBandDrag)
+            self._panning_mode = False
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
