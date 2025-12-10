@@ -56,10 +56,7 @@ class NamWidget(QWidget):
         self._add_param_row(layout, "Drive", "drive", 0.0, 4.0)
         self._add_param_row(layout, "Level", "level", 0.0, 4.0)
 
-        self.timer = QTimer(self)
-        self.timer.interval = 100
-        self.timer.timeout.connect(self.poll_updates)
-        self.timer.start()
+
 
     def _add_param_row(self, parent_layout, label_text, param_name, min_v, max_v):
         row = QHBoxLayout()
@@ -104,18 +101,13 @@ class NamWidget(QWidget):
             self.lbl_status.setStyleSheet("color: #FFaa00")
             self.proxy.set_parameter("model_path", f)
 
-    def poll_updates(self):
-        try:
-            while not self.proxy.monitor_queue.empty():
-                msg = self.proxy.monitor_queue.get_nowait()
-                if "status" in msg:
-                    self.lbl_status.setText(msg["status"])
-                    style = "color: #00FF00" if msg["status"] == "Active" else "color: #FFaa00"
-                    self.lbl_status.setStyleSheet(style)
-                if "filename" in msg:
-                    self.lbl_file.setText(msg["filename"])
-        except:
-            pass
+    def on_telemetry(self, data: dict):
+        if "status" in data:
+            self.lbl_status.setText(data["status"])
+            style = "color: #00FF00" if data["status"] == "Active" else "color: #FFaa00"
+            self.lbl_status.setStyleSheet(style)
+        if "filename" in data:
+            self.lbl_file.setText(data["filename"])
 
     def update_from_params(self, params):
         # Update sliders
@@ -150,8 +142,9 @@ class NamNode(FFINode):
         self.add_float_param("drive", 1.0, 0.0, 4.0)
         self.add_float_param("level", 1.0, 0.0, 4.0)
 
-        # UI Communication
-        self.monitor_queue = queue.Queue(maxsize=10)
+        # Status tracking for telemetry
+        self._status = "Idle"
+        self._current_filename = "No Model"
 
         # Bind Custom Function
         if self.lib:
@@ -172,23 +165,16 @@ class NamNode(FFINode):
             self.params[param_name].sync()
             path = self.params["model_path"].value
             if self.lib and self.dsp_handle and path:
-                # Update UI immediately
-                self._push_status("Active", os.path.basename(path))
+                # Update status
+                self._status = "Active"
+                self._current_filename = os.path.basename(path)
 
                 # Trigger C++ Load
                 b_path = path.encode("utf-8")
                 self.lib.load_nam_model(self.dsp_handle, b_path, float(SAMPLE_RATE), int(BLOCK_SIZE))
 
-    def _push_status(self, status, filename=None):
-        msg = {"status": status}
-        if filename:
-            msg["filename"] = filename
-        if self.monitor_queue.full():
-            try:
-                self.monitor_queue.get_nowait()
-            except:
-                pass
-        self.monitor_queue.put(msg)
+    def get_telemetry(self) -> dict:
+        return {"status": self._status, "filename": self._current_filename}
 
     def _preprocess_input(self, in_tensor: torch.Tensor, scratch_buffer: torch.Tensor) -> torch.Tensor:
         gain = self.params["drive"].value

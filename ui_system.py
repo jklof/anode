@@ -500,6 +500,12 @@ class NodeItem(QGraphicsObject):
         self._show_load = show
         self.update()
 
+    def propagate_telemetry(self, data: dict):
+        if "cpu_load" in data:
+            self.set_processing_load(data["cpu_load"])
+        if self.widget and hasattr(self.widget, "on_telemetry"):
+            self.widget.on_telemetry(data)
+
     def boundingRect(self):
         return QRectF(0, 0, self.width, self.height)
 
@@ -660,8 +666,8 @@ class GraphScene(QGraphicsScene):
         node_data = data.get("node_data", {})
         for nid, telemetry in node_data.items():
             if nid in self.node_items:
-                if "cpu_load" in telemetry:
-                    self.node_items[nid].set_processing_load(telemetry["cpu_load"])
+                node_item = self.node_items[nid]
+                node_item.propagate_telemetry(telemetry)
 
     def toggle_load_view(self, show):
         self._show_load = show

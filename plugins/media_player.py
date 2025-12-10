@@ -267,10 +267,7 @@ class MediaPlayerWidget(QWidget):
         r5.addWidget(self.lbl_time)
         layout.addLayout(r5)
 
-        self.timer = QTimer(self)
-        self.timer.interval = 50
-        self.timer.timeout.connect(self.poll_updates)
-        self.timer.start()
+
 
     def browse(self):
         f, _ = QFileDialog.getOpenFileName(None, "Open Audio File", "", "Audio (*.mp3 *.wav *.flac *.m4a);;All (*.*)")
@@ -306,32 +303,23 @@ class MediaPlayerWidget(QWidget):
         self.proxy.set_parameter("seek_ratio", val)
         QTimer.singleShot(200, lambda: setattr(self, "is_dragging", False))
 
-    def poll_updates(self):
-        try:
-            while not self.proxy.monitor_queue.empty():
-                data = self.proxy.monitor_queue.get_nowait()
-
-                if "status" in data:
-                    self.lbl_status.setText(data["status"])
-                if "title" in data:
-                    self.stored_title = data["title"]
-                    self.lbl_title.setText(self.stored_title)
-
-                if "time_str" in data:
-                    self.lbl_time.setText(data["time_str"])
-
-                if "progress" in data and not self.is_dragging:
-                    self.slider.setEnabled(True)
-                    self.slider.setValue(int(data["progress"] * 1000))
-
-                if "playing_state" in data:
-                    is_playing = data["playing_state"]
-                    self.btn_play.setChecked(is_playing)
-                    self.btn_play.setText("Pause" if is_playing else "Play")
-                    if not is_playing and self.slider.value() > 950:
-                        self.slider.setValue(1000)
-        except:
-            pass
+    def on_telemetry(self, data: dict):
+        if "status" in data:
+            self.lbl_status.setText(data["status"])
+        if "title" in data:
+            self.stored_title = data["title"]
+            self.lbl_title.setText(data["title"])
+        if "time_str" in data:
+            self.lbl_time.setText(data["time_str"])
+        if "progress" in data and not self.is_dragging:
+            self.slider.setEnabled(True)
+            self.slider.setValue(int(data["progress"] * 1000))
+        if "playing_state" in data:
+            is_playing = data["playing_state"]
+            self.btn_play.setChecked(is_playing)
+            self.btn_play.setText("Pause" if is_playing else "Play")
+            if not is_playing and self.slider.value() > 950:
+                self.slider.setValue(1000)
 
     def update_from_params(self, params):
         if "file_path" in params:
@@ -360,7 +348,6 @@ class MediaPlayerNode(Node):
 
         # Increase Queue size to prevent buffer underruns
         self.queue = queue.Queue(maxsize=500)
-        self.monitor_queue = queue.Queue(maxsize=50)
         self.worker = None
 
         self.current_path = ""
@@ -369,7 +356,6 @@ class MediaPlayerNode(Node):
         self.current_title = "No Media"
         self.status_msg = "Idle"
         self.eof = False
-        self._last_ui_update = 0.0
 
     def load_state(self, data: dict):
         """
@@ -404,7 +390,6 @@ class MediaPlayerNode(Node):
             should_play = self.params["playing"].value
             if should_play and (self.eof or self.worker is None) and self.current_path:
                 self._restart_worker(self.current_path)
-            self._push_ui_state()
 
         elif param_name == "seek_ratio":
             val = self.params["seek_ratio"].value
@@ -419,7 +404,6 @@ class MediaPlayerNode(Node):
                 self.playback_frames = int(target_time * SAMPLE_RATE)
                 self.eof = False
                 self.params["seek_ratio"].value = -1.0
-                self._push_ui_state()
 
     def _restart_worker(self, path, start_time=0.0):
         if self.worker:
@@ -441,31 +425,22 @@ class MediaPlayerNode(Node):
         self.eof = False
 
         if MEDIA_DEPS_AVAILABLE:
-            self.worker = MediaStreamWorker(path, self.queue, self.worker_cb, start_time=start_time)
+            self.worker = MediaStreamWorker(path, self.queue, lambda type, data: self._handle_worker_event(type, data), start_time=start_time)
             self.worker.start()
         else:
             self.status_msg = "Dependencies Missing"
-            self._push_ui_state()
 
-    def worker_cb(self, type, data):
-        if self.monitor_queue.full():
-            try:
-                self.monitor_queue.get_nowait()
-            except:
-                pass
-        self.monitor_queue.put({type: data})
-
+    def _handle_worker_event(self, type, data):
         if type == "meta":
             if "duration" in data:
                 self.total_duration = data["duration"]
             if "title" in data:
                 self.current_title = data["title"]
-            self._push_ui_state()
+        elif type == "status":
+            self.status_msg = data
         elif type == "eof":
             self.eof = True
-            # Don't auto-stop playing param immediately, let buffer drain
             self.status_msg = "Finished"
-            self._push_ui_state()
 
     def process(self):
         # If play param is False, we just output silence.
@@ -484,20 +459,12 @@ class MediaPlayerNode(Node):
             if self.worker and not self.eof:
                 if self.status_msg != "Buffering...":
                     self.status_msg = "Buffering..."
-                    self._push_ui_state()
             elif self.eof:
                 # Actual end of song
                 if self.params["playing"].value:
                     self.params["playing"].set(False)
-                    self._push_ui_state()
 
-        # Update UI less frequently (every ~100ms)
-        now = time.monotonic()
-        if now - self._last_ui_update > 0.1:
-            self._push_ui_state()
-            self._last_ui_update = now
-
-    def _push_ui_state(self):
+    def get_telemetry(self) -> dict:
         sec = self.playback_frames / SAMPLE_RATE
         dur_str = f"{int(self.total_duration//60):02}:{int(self.total_duration%60):02}"
         time_str = f"{int(sec//60):02}:{int(sec%60):02} / {dur_str}"
@@ -506,21 +473,13 @@ class MediaPlayerNode(Node):
         if self.total_duration > 0:
             progress = np.clip(sec / self.total_duration, 0.0, 1.0)
 
-        state = {
+        return {
             "status": self.status_msg,
             "title": self.current_title,
             "time_str": time_str,
             "progress": progress,
-            "playing": self.params["playing"].value,
             "playing_state": self.params["playing"].value,
         }
-
-        if self.monitor_queue.full():
-            try:
-                self.monitor_queue.get_nowait()
-            except:
-                pass
-        self.monitor_queue.put(state)
 
     def stop(self):
         """Called when audio transport stops. We pause playback."""

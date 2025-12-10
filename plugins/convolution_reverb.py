@@ -131,10 +131,7 @@ class ReverbWidget(QWidget):
         # --- Section 2: Parameters ---
         self._add_param_row(layout, "Mix", "mix", 0.0, 1.0)
 
-        self.timer = QTimer(self)
-        self.timer.interval = 100
-        self.timer.timeout.connect(self.poll_updates)
-        self.timer.start()
+
 
     def _add_param_row(self, parent_layout, label_text, param_name, min_v, max_v):
         row = QHBoxLayout()
@@ -172,18 +169,13 @@ class ReverbWidget(QWidget):
             self.lbl_status.setText("Requesting...")
             self.proxy.set_parameter("ir_path", f)
 
-    def poll_updates(self):
-        try:
-            while not self.proxy.monitor_queue.empty():
-                msg = self.proxy.monitor_queue.get_nowait()
-                if "status" in msg:
-                    self.lbl_status.setText(msg["status"])
-                    style = "color: #00FF00" if msg["status"] == "Ready" else "color: #FFaa00"
-                    self.lbl_status.setStyleSheet(style)
-                if "filename" in msg:
-                    self.lbl_file.setText(msg["filename"])
-        except:
-            pass
+    def on_telemetry(self, data: dict):
+        if "status" in data:
+            self.lbl_status.setText(data["status"])
+            style = "color: #00FF00" if data["status"] == "Ready" else "color: #FFaa00"
+            self.lbl_status.setStyleSheet(style)
+        if "filename" in data:
+            self.lbl_file.setText(data["filename"])
 
     def update_from_params(self, params):
         for param_name, data in self.sliders.items():
@@ -213,9 +205,12 @@ class ConvolutionReverb(Node):
         self.add_string_param("ir_path", "")
 
         self.loader_queue = queue.Queue()
-        self.monitor_queue = queue.Queue(maxsize=10)
         self.loading = False
         self.current_ir_path = ""
+
+        # Status tracking for telemetry
+        self._status = "Idle"
+        self._current_filename = "No IR Loaded"
 
         # DSP State
         self.ir_ffts = None
@@ -241,20 +236,13 @@ class ConvolutionReverb(Node):
     def _start_loading(self, path):
         self.loading = True
         self.current_ir_path = path
-        self._push_status("Loading...", os.path.basename(path))
+        self._status = "Loading..."
+        self._current_filename = os.path.basename(path)
         t = IrLoaderThread(path, self.loader_queue)
         t.start()
 
-    def _push_status(self, status, filename=None):
-        msg = {"status": status}
-        if filename:
-            msg["filename"] = filename
-        if self.monitor_queue.full():
-            try:
-                self.monitor_queue.get_nowait()
-            except:
-                pass
-        self.monitor_queue.put(msg)
+    def get_telemetry(self) -> dict:
+        return {"status": self._status, "filename": self._current_filename}
 
     def _init_buffers(self, num_partitions, ir_channels, audio_channels):
         num_bins = FFT_SIZE // 2 + 1
@@ -276,10 +264,12 @@ class ConvolutionReverb(Node):
                 self.dsp_ready = False
                 self.current_ir_path = data["path"]
                 self.loading = False
-                self._push_status("Ready", os.path.basename(data["path"]))
+                self._status = "Ready"
+                self._current_filename = os.path.basename(data["path"])
             elif msg[0] == "error":
                 self.loading = False
-                self._push_status("Error", "Load Failed")
+                self._status = "Error"
+                self._current_filename = "Load Failed"
         except queue.Empty:
             pass
 
