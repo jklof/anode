@@ -21,6 +21,8 @@ dependencies:
   - onnxruntime
   - resampy
   - portaudio
+  - av
+  - yt-dlp
 
   - pip:
     - sounddevice
