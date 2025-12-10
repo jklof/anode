@@ -14,6 +14,8 @@ from controller import AppController
 from ui_system import GraphScene, GraphView
 import plugin_system
 
+from ui_icons import create_icon
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -35,9 +37,9 @@ class MainWindow(QMainWindow):
         self.create_default_patch()
 
     def create_default_patch(self):
-        id_osc = self.controller.add_node("SineOscillator", (100, 100))
-        id_conv = self.controller.add_node("MonoToStereo", (300, 100))
-        id_out = self.controller.add_node("AudioOutput", (500, 100))
+        id_osc = self.controller.add_node("SineOscillator", (-275, 0))
+        id_conv = self.controller.add_node("MonoToStereo", (-75, 0))
+        id_out = self.controller.add_node("AudioOutput", (125, 0))
         if id_osc and id_conv and id_out:
             self.controller.connect_nodes(id_osc, "signal", id_conv, "in")
             self.controller.connect_nodes(id_conv, "out", id_out, "audio_in")
@@ -46,14 +48,17 @@ class MainWindow(QMainWindow):
         self.act_new = QAction("&New", self)
         self.act_new.setShortcut(QKeySequence.New)
         self.act_new.triggered.connect(self.controller.clear)
+        self.act_new.setIcon(create_icon("new_file"))
 
         self.act_open = QAction("&Open...", self)
         self.act_open.setShortcut(QKeySequence.Open)
         self.act_open.triggered.connect(self.handle_load)
+        self.act_open.setIcon(create_icon("open_folder"))
 
         self.act_save = QAction("&Save...", self)
         self.act_save.setShortcut(QKeySequence.Save)
         self.act_save.triggered.connect(self.handle_save)
+        self.act_save.setIcon(create_icon("save"))
 
         self.act_exit = QAction("&Exit", self)
         self.act_exit.setShortcut(QKeySequence.Quit)
@@ -62,23 +67,28 @@ class MainWindow(QMainWindow):
         self.act_start = QAction("&Start Audio", self)
         self.act_start.setShortcut("F5")
         self.act_start.triggered.connect(self.start_audio_action)
+        self.act_start.setIcon(create_icon("play"))
 
         self.act_stop = QAction("&Stop Audio", self)
         self.act_stop.setShortcut("F6")
         self.act_stop.triggered.connect(self.stop_audio_action)
         self.act_stop.setEnabled(False)
+        self.act_stop.setIcon(create_icon("stop"))
 
         self.act_zoom_in = QAction("Zoom &In", self)
         self.act_zoom_in.setShortcut(QKeySequence.ZoomIn)
         self.act_zoom_in.triggered.connect(self.view.zoom_in)
+        self.act_zoom_in.setIcon(create_icon("zoom_in"))
 
         self.act_zoom_out = QAction("Zoom &Out", self)
         self.act_zoom_out.setShortcut(QKeySequence.ZoomOut)
         self.act_zoom_out.triggered.connect(self.view.zoom_out)
+        self.act_zoom_out.setIcon(create_icon("zoom_out"))
 
         self.act_zoom_fit = QAction("Zoom to &Fit", self)
         self.act_zoom_fit.setShortcut("Ctrl+0")
         self.act_zoom_fit.triggered.connect(self.view.zoom_to_fit)
+        self.act_zoom_fit.setIcon(create_icon("zoom_fit"))
 
         self.act_show_load = QAction("Show Processing &Load", self)
         self.act_show_load.setCheckable(True)

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFileDialog,
 )
-from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot, QLineF
 from PySide6.QtGui import (
     QPainter,
     QPen,
@@ -29,8 +29,12 @@ from PySide6.QtGui import (
     QTransform,
     QPainterPathStroker,
 )
+from PySide6.QtSvg import QSvgRenderer
+from ui_icons import create_colored_logo
+
 import plugin_system
 import os
+import math
 
 NODE_WIDTH = 160
 HEADER_HEIGHT = 30
@@ -692,6 +696,9 @@ class GraphView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
+        svg_bytes = create_colored_logo("white")
+        self._logo_renderer = QSvgRenderer(svg_bytes)
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
             super().wheelEvent(event)
@@ -775,3 +782,62 @@ class GraphView(QGraphicsView):
                     sid, sp, did, dp = item.logic_key
                     self.scene().controller.disconnect_nodes(sid, sp, did, dp)
         super().keyPressEvent(event)
+
+    def drawBackground(self, painter: QPainter, rect: QRectF):
+        """
+        Draws a two-level grid as the background. The `rect` is the exposed
+        area in scene coordinates, provided by the QGraphicsView framework.
+        """
+        super().drawBackground(painter, rect)
+
+        if self._logo_renderer and self._logo_renderer.isValid():
+            scale = 0.2
+            w = self._logo_renderer.defaultSize().width() * scale
+            h = self._logo_renderer.defaultSize().height() * scale
+            logo_rect = QRectF(-w / 2, -h / 2, w, h)
+            if rect.intersects(logo_rect):
+                painter.save()
+                painter.setOpacity(0.04)
+                self._logo_renderer.render(painter, logo_rect)
+                painter.restore()
+
+        grid_size_fine = 15
+        grid_size_coarse = 150
+
+        color_fine = QColor(40, 40, 40)
+        color_coarse = QColor(50, 50, 50)
+
+        pen_fine = QPen(color_fine, 1.0)
+        pen_coarse = QPen(color_coarse, 1.5)
+
+        # 'rect' is already the scene area to be drawn.
+        # Use floor division to find the first grid line inside or to the left/top of the rect.
+        left = int(math.floor(rect.left() / grid_size_fine)) * grid_size_fine
+        top = int(math.floor(rect.top() / grid_size_fine)) * grid_size_fine
+
+        lines_fine, lines_coarse = [], []
+
+        # Draw vertical lines
+        x = float(left)
+        while x < rect.right():
+            line = QLineF(x, rect.top(), x, rect.bottom())
+            if x % grid_size_coarse == 0:
+                lines_coarse.append(line)
+            else:
+                lines_fine.append(line)
+            x += grid_size_fine
+
+        # Draw horizontal lines
+        y = float(top)
+        while y < rect.bottom():
+            line = QLineF(rect.left(), y, rect.right(), y)
+            if y % grid_size_coarse == 0:
+                lines_coarse.append(line)
+            else:
+                lines_fine.append(line)
+            y += grid_size_fine
+
+        painter.setPen(pen_fine)
+        painter.drawLines(lines_fine)
+        painter.setPen(pen_coarse)
+        painter.drawLines(lines_coarse)

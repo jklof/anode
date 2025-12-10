@@ -97,10 +97,7 @@ class ChannelSplitter(Node):
         super().__init__(name)
         self.inp = self.add_input("in")
         # Create outputs and store in a list for loop-based processing
-        self.outputs_list = [
-            self.add_output("left", channels=1),
-            self.add_output("right", channels=1)
-        ]
+        self.outputs_list = [self.add_output("left", channels=1), self.add_output("right", channels=1)]
 
     def process(self):
         t = self.inp.get_tensor()
@@ -121,10 +118,7 @@ class ChannelJoiner(Node):
     def __init__(self, name=""):
         super().__init__(name)
         # Create inputs and store in a list
-        self.inputs_list = [
-            self.add_input("left"),
-            self.add_input("right")
-        ]
+        self.inputs_list = [self.add_input("left"), self.add_input("right")]
         self.out = self.add_output("out", channels=2)
 
     def process(self):

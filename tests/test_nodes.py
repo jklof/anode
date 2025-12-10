@@ -109,18 +109,18 @@ def test_reverb_mix_logic():
     plugin_system.load_plugins("plugins")
     Reverb = plugin_system.NODE_REGISTRY.get("ConvolutionReverb")
     node = Reverb()
-    
+
     # Mock input: Constant 1.0
     input_tensor = torch.ones(2, 512)
     node.inputs["in"].get_tensor = lambda: input_tensor
-    
+
     # 1. Test Full Dry (Mix = 0.0)
     node.params["mix"].set(0.0)
     node.sync()
     node.process()
     # Output should be exactly input (1.0)
     assert torch.allclose(node.outputs["out"].buffer, input_tensor)
-    
+
     # 2. Test Full Wet (Mix = 1.0)
     # Since we haven't loaded an IR, the convolution result is 0.0 (silence)
     # So output should be 0.0
@@ -128,7 +128,7 @@ def test_reverb_mix_logic():
     node.sync()
     node.process()
     assert torch.allclose(node.outputs["out"].buffer, torch.zeros_like(input_tensor))
-    
+
     # 3. Test 50% Mix
     # Expected: (1.0 * 0.5) + (0.0 * 0.5) = 0.5
     node.params["mix"].set(0.5)
@@ -136,6 +136,7 @@ def test_reverb_mix_logic():
     node.process()
     expected = torch.full_like(node.outputs["out"].buffer, 0.5)
     assert torch.allclose(node.outputs["out"].buffer, expected)
+
 
 def test_nam_parameter_mapping():
     """
