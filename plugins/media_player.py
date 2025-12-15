@@ -267,8 +267,6 @@ class MediaPlayerWidget(QWidget):
         r5.addWidget(self.lbl_time)
         layout.addLayout(r5)
 
-
-
     def browse(self):
         f, _ = QFileDialog.getOpenFileName(None, "Open Audio File", "", "Audio (*.mp3 *.wav *.flac *.m4a);;All (*.*)")
         if f:
@@ -425,7 +423,9 @@ class MediaPlayerNode(Node):
         self.eof = False
 
         if MEDIA_DEPS_AVAILABLE:
-            self.worker = MediaStreamWorker(path, self.queue, lambda type, data: self._handle_worker_event(type, data), start_time=start_time)
+            self.worker = MediaStreamWorker(
+                path, self.queue, lambda type, data: self._handle_worker_event(type, data), start_time=start_time
+            )
             self.worker.start()
         else:
             self.status_msg = "Dependencies Missing"

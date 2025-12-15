@@ -6,6 +6,7 @@ from base import Node
 class WaveformDisplay(Node):
     category = "Visual"
     label = "Oscilloscope"
+    VISUAL_WIDTH = 128
 
     def __init__(self, name=""):
         super().__init__(name)
@@ -22,9 +23,13 @@ class WaveformDisplay(Node):
         # OPTIMIZATION: Check queue BEFORE converting data.
         # This prevents allocating numpy arrays that will just be thrown away.
         if not self.monitor_queue.full():
+            # Downsample to target visual width before copying to reduce memory overhead
+            num_samples = sig.shape[-1]  # Last dimension is samples
+            step = max(1, num_samples // self.VISUAL_WIDTH)
+            downsampled_sig = sig[..., ::step]  # Slice along samples dimension
             # We must copy() to ensure thread safety (detach from DSP memory)
             # using .numpy() on CPU tensor is cheap, the .copy() is the cost.
-            snapshot = sig.cpu().numpy().copy()
+            snapshot = downsampled_sig.cpu().numpy().copy()
             self.monitor_queue.put_nowait(snapshot)
 
 
@@ -94,10 +99,6 @@ try:
             painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
             painter.drawLine(0, int(center_y), w, int(center_y))
 
-            # OPTIMIZATION: Downsampling (LOD)
-            # If we have 512 samples but width is 250px, step by 2.
-            step = max(1, num_samples // w)
-
             for ch in range(min(num_channels, 2)):  # Limit to 2 channels for viz
                 pen_color = self.channel_colors[ch % 2]
                 painter.setPen(QPen(pen_color, 1.5))
@@ -106,11 +107,11 @@ try:
                 chan_data = self.data[ch]
 
                 # OPTIMIZATION: Fast Point Mapping
-                # Create X coordinates (0 to w)
-                x_coords = np.linspace(0, w, num=len(chan_data[::step]))
+                # Data is already downsampled to visual resolution, map directly to widget width
+                x_coords = np.linspace(0, w, num=num_samples)
 
                 # Create Y coordinates (inverted and scaled)
-                y_coords = center_y - (chan_data[::step] * scale_y)
+                y_coords = center_y - (chan_data * scale_y)
 
                 # Combine into QPointF objects
                 points = [QPointF(x, y) for x, y in zip(x_coords, y_coords)]

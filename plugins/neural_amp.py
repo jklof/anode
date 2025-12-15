@@ -56,8 +56,6 @@ class NamWidget(QWidget):
         self._add_param_row(layout, "Drive", "drive", 0.0, 4.0)
         self._add_param_row(layout, "Level", "level", 0.0, 4.0)
 
-
-
     def _add_param_row(self, parent_layout, label_text, param_name, min_v, max_v):
         row = QHBoxLayout()
         row.setSpacing(5)
