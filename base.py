@@ -95,9 +95,11 @@ class InputSlot:
             # Create a view of the scratch buffer (no memory allocation)
             target = self._scratch[:max_channels]
 
-            target.zero_()
-            for out in self.connected_outputs:
-                target.add_(out.buffer)
+            # Directly copy the buffer from the first connected output into target
+            target.copy_(self.connected_outputs[0].buffer[:max_channels])
+            # Then add the remaining connected outputs
+            for out in self.connected_outputs[1:]:
+                target.add_(out.buffer[:max_channels])
             return target
 
         if self.param_name and self.param_name in self.parent.params:
