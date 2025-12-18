@@ -29,6 +29,8 @@ from PySide6.QtGui import (
     QTransform,
     QPainterPathStroker,
     QMouseEvent,
+    QPixmap,
+    QBrush,
 )
 from PySide6.QtSvg import QSvgRenderer
 from ui_icons import create_colored_logo
@@ -712,6 +714,23 @@ class GraphView(QGraphicsView):
         svg_bytes = create_colored_logo("white")
         self._logo_renderer = QSvgRenderer(svg_bytes)
 
+        self._generate_grid_texture()
+
+    def _generate_grid_texture(self):
+        pixmap = QPixmap(150, 150)
+        pixmap.fill(QColor(30, 30, 30))
+        painter = QPainter(pixmap)
+        painter.setPen(QPen(QColor(50, 50, 50), 1.5))
+        painter.drawLine(0, 0, 150, 0)
+        painter.drawLine(0, 0, 0, 150)
+        painter.setPen(QPen(QColor(40, 40, 40), 1.0))
+        for i in range(15, 150, 15):
+            if i != 0:
+                painter.drawLine(i, 0, i, 150)
+                painter.drawLine(0, i, 150, i)
+        painter.end()
+        self.setBackgroundBrush(QBrush(pixmap))
+
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
             super().wheelEvent(event)
@@ -813,7 +832,7 @@ class GraphView(QGraphicsView):
 
     def drawBackground(self, painter: QPainter, rect: QRectF):
         """
-        Draws a two-level grid as the background. The `rect` is the exposed
+        Draws the background. The `rect` is the exposed
         area in scene coordinates, provided by the QGraphicsView framework.
         """
         super().drawBackground(painter, rect)
@@ -828,44 +847,3 @@ class GraphView(QGraphicsView):
                 painter.setOpacity(0.04)
                 self._logo_renderer.render(painter, logo_rect)
                 painter.restore()
-
-        grid_size_fine = 15
-        grid_size_coarse = 150
-
-        color_fine = QColor(40, 40, 40)
-        color_coarse = QColor(50, 50, 50)
-
-        pen_fine = QPen(color_fine, 1.0)
-        pen_coarse = QPen(color_coarse, 1.5)
-
-        # 'rect' is already the scene area to be drawn.
-        # Use floor division to find the first grid line inside or to the left/top of the rect.
-        left = int(math.floor(rect.left() / grid_size_fine)) * grid_size_fine
-        top = int(math.floor(rect.top() / grid_size_fine)) * grid_size_fine
-
-        lines_fine, lines_coarse = [], []
-
-        # Draw vertical lines
-        x = float(left)
-        while x < rect.right():
-            line = QLineF(x, rect.top(), x, rect.bottom())
-            if x % grid_size_coarse == 0:
-                lines_coarse.append(line)
-            else:
-                lines_fine.append(line)
-            x += grid_size_fine
-
-        # Draw horizontal lines
-        y = float(top)
-        while y < rect.bottom():
-            line = QLineF(rect.left(), y, rect.right(), y)
-            if y % grid_size_coarse == 0:
-                lines_coarse.append(line)
-            else:
-                lines_fine.append(line)
-            y += grid_size_fine
-
-        painter.setPen(pen_fine)
-        painter.drawLines(lines_fine)
-        painter.setPen(pen_coarse)
-        painter.drawLines(lines_coarse)
