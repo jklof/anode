@@ -69,8 +69,10 @@ class AudioOutput(Node, IClockProvider):
     def wait_for_sync(self):
         if self.is_master and self._active:
             while (
-                self.ring_buffer.write_count - self.ring_buffer.read_count
-            ) >= self.ring_buffer.capacity_blocks and self._active:
+                (self.ring_buffer.write_count - self.ring_buffer.read_count) >= self.ring_buffer.capacity_blocks
+                and self._active
+                and not self.abort_flag
+            ):
                 time.sleep(0.005)
 
     def start(self):

@@ -120,7 +120,7 @@ class Graph:
         for n in self.nodes:
             p_data = {}
             for k, p in n.params.items():
-                p_data[k] = {"value": p._staging, "type": p.type, "meta": p.meta}
+                p_data[k] = {"value": p.get_staging_safe(), "type": p.type, "meta": p.meta}
             mon_q = getattr(n, "monitor_queue", None)
 
             is_clock_provider = isinstance(n, IClockProvider)
@@ -169,6 +169,7 @@ class Engine:
         self.graph = Graph()
         self.reload_version = 0
         self.running = False
+        self.abort_flag = False
         self.command_queue = queue.Queue()
         self.output_queue = queue.Queue(maxsize=5)
         self.thread = None
@@ -418,6 +419,9 @@ class Engine:
 
     def stop(self):
         self.running = False
+        self.abort_flag = True
+        if self.graph.clock_source:
+            self.graph.clock_source.abort_flag = True
         if self.thread:
             self.thread.join()
         self._emit_snapshot()

@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import uuid
 import abc
+import threading
 from typing import Dict, List, Any
 
 # --- Configuration ---
@@ -15,6 +16,7 @@ DTYPE = torch.float32
 class IClockProvider(abc.ABC):
     def __init__(self):
         self._is_master_clock = False
+        self.abort_flag = False
 
     def set_master(self, is_master: bool):
         self._is_master_clock = is_master
@@ -115,25 +117,28 @@ class Parameter:
         self._staging = value
         self.type = param_type
         self.meta = kwargs
+        self._lock = threading.Lock()
         self._tensor_cache = torch.tensor([0.0], dtype=DTYPE).expand(CHANNELS, BLOCK_SIZE).clone()
         self._update_cache()
 
     def set(self, val: Any):
-        if self.type == "float":
-            self._staging = np.clip(float(val), self.meta.get("min", 0.0), self.meta.get("max", 1.0))
-        elif self.type == "int":
-            self._staging = int(np.clip(val, self.meta.get("min", 0), self.meta.get("max", 100)))
-        elif self.type == "bool":
-            self._staging = bool(val)
-        elif self.type == "menu":
-            self._staging = int(val)
-        else:
-            self._staging = val
+        with self._lock:
+            if self.type == "float":
+                self._staging = np.clip(float(val), self.meta.get("min", 0.0), self.meta.get("max", 1.0))
+            elif self.type == "int":
+                self._staging = int(np.clip(val, self.meta.get("min", 0), self.meta.get("max", 100)))
+            elif self.type == "bool":
+                self._staging = bool(val)
+            elif self.type == "menu":
+                self._staging = int(val)
+            else:
+                self._staging = val
 
     def sync(self):
-        if self.value != self._staging:
-            self.value = self._staging
-            self._update_cache()
+        with self._lock:
+            if self.value != self._staging:
+                self.value = self._staging
+                self._update_cache()
 
     def _update_cache(self):
         if self.type in ["float", "int", "bool"]:
@@ -144,7 +149,12 @@ class Parameter:
                 pass
 
     def get_tensor_cache(self):
-        return self._tensor_cache
+        with self._lock:
+            return self._tensor_cache
+
+    def get_staging_safe(self):
+        with self._lock:
+            return self._staging
 
 
 class Node:
@@ -218,7 +228,7 @@ class Node:
             "id": self.id,
             "type": self.__class__.__name__,
             "name": self.name,
-            "params": {k: v._staging for k, v in self.params.items()},
+            "params": {k: v.get_staging_safe() for k, v in self.params.items()},
             "pos": self.pos,
         }
 
