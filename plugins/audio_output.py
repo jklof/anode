@@ -2,6 +2,7 @@ import torch
 import numpy as np
 import sounddevice as sd
 import time
+import threading
 from base import Node, IClockProvider, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
 
 
@@ -15,14 +16,19 @@ class RingBuffer:
         self.storage = np.zeros((self.total_frames, channels), dtype=np.float32)
         self.write_count = 0
         self.read_count = 0
+        self._lock = threading.Lock()
+
+    def get_counts(self):
+        with self._lock:
+            return self.write_count, self.read_count
 
     def write(self, tensor_data):
-        if (self.write_count - self.read_count) >= self.capacity_blocks:
-            return False
+        with self._lock:
+            if (self.write_count - self.read_count) >= self.capacity_blocks:
+                return False
+            start_idx = (self.write_count % self.capacity_blocks) * self.block_size
         # Convert tensor to numpy
         np_data = tensor_data.detach().cpu().numpy()
-        # Calculate start index
-        start_idx = (self.write_count % self.capacity_blocks) * self.block_size
         # Ensure we don't write beyond capacity
         if np_data.ndim == 2:
             # Handle stereo or multi-channel
@@ -32,18 +38,20 @@ class RingBuffer:
             mono = np_data[0].reshape(-1, 1)
             np_data = np.tile(mono, (1, self.channels))
         self.storage[start_idx : start_idx + self.block_size, :] = np_data
-        self.write_count += 1
+        with self._lock:
+            self.write_count += 1
         return True
 
     def read(self, outdata):
-        if (self.write_count - self.read_count) == 0:
-            return False
-        # Calculate start index
-        start_idx = (self.read_count % self.capacity_blocks) * self.block_size
+        with self._lock:
+            if (self.write_count - self.read_count) == 0:
+                return False
+            start_idx = (self.read_count % self.capacity_blocks) * self.block_size
         # Copy data to outdata
         block_data = self.storage[start_idx : start_idx + self.block_size, :]
         outdata[:] = block_data
-        self.read_count += 1
+        with self._lock:
+            self.read_count += 1
         return True
 
 
@@ -68,11 +76,15 @@ class AudioOutput(Node, IClockProvider):
 
     def wait_for_sync(self):
         if self.is_master and self._active:
-            while (
-                (self.ring_buffer.write_count - self.ring_buffer.read_count) >= self.ring_buffer.capacity_blocks
-                and self._active
-                and not self.abort_flag
-            ):
+            while True:
+                write_count, read_count = self.ring_buffer.get_counts()
+                diff = write_count - read_count
+                if not (
+                    diff >= self.ring_buffer.capacity_blocks
+                    and self._active
+                    and not self.abort_flag
+                ):
+                    break
                 time.sleep(0.005)
 
     def start(self):
@@ -92,8 +104,9 @@ class AudioOutput(Node, IClockProvider):
             self.stream.close()
             self.stream = None
         # Reset ring buffer
-        self.ring_buffer.write_count = 0
-        self.ring_buffer.read_count = 0
+        with self.ring_buffer._lock:
+            self.ring_buffer.write_count = 0
+            self.ring_buffer.read_count = 0
 
     def _callback(self, outdata, frames, time, status):
         if not self._active:
