@@ -413,6 +413,9 @@ class Engine:
         if self.running:
             return
         self.running = True
+        self.abort_flag = False
+        if self.graph.clock_source:
+            self.graph.clock_source.abort_flag = False
         self._emit_snapshot()
         self.thread = threading.Thread(target=self._worker)
         self.thread.start()
