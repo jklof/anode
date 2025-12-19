@@ -194,7 +194,7 @@ def set_dark_theme(app):
     palette.setColor(QPalette.WindowText, Qt.white)
     palette.setColor(QPalette.Base, black)
     palette.setColor(QPalette.AlternateBase, dark_gray)
-    palette.setColor(QPalette.ToolTipBase, Qt.white)
+    palette.setColor(QPalette.ToolTipBase, black)
     palette.setColor(QPalette.ToolTipText, Qt.white)
     palette.setColor(QPalette.Text, Qt.white)
     palette.setColor(QPalette.Button, dark_gray)
@@ -210,6 +210,15 @@ def set_dark_theme(app):
     palette.setColor(QPalette.Disabled, QPalette.ButtonText, gray)
     palette.setColor(QPalette.Disabled, QPalette.Highlight, QColor(80, 80, 80))
     palette.setColor(QPalette.Disabled, QPalette.HighlightedText, gray)
+
+    app.setStyleSheet("""
+        QToolTip {
+            color: #ffffff;
+            background-color: #2b2b2b;
+            border: 1px solid #767676;
+            padding: 2px;
+        }
+    """)
 
     app.setPalette(palette)
 
