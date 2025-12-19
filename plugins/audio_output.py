@@ -106,7 +106,7 @@ class AudioOutput(Node, IClockProvider):
         audio_data = self.in_audio.get_tensor()
         start_time = time.time()
         timeout = 0.010  # 10ms timeout to prevent deadlocks
-        while not self.ring_buffer.write(audio_data) and self._active:
+        while not self.ring_buffer.write(audio_data) and self._active and not self.abort_flag:
             time.sleep(0.001)
             if time.time() - start_time > timeout:
                 break  # Prevent deadlock
