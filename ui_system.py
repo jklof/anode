@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFileDialog,
 )
-from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot, QLineF
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot, QLineF, QCoreApplication
 from PySide6.QtGui import (
     QPainter,
     QPen,
@@ -31,6 +31,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPixmap,
     QBrush,
+    QKeySequence,
 )
 from PySide6.QtSvg import QSvgRenderer
 from ui_icons import create_colored_logo
@@ -38,6 +39,9 @@ from ui_icons import create_colored_logo
 import plugin_system
 import os
 import math
+import json
+import uuid
+import base
 
 NODE_WIDTH = 160
 HEADER_HEIGHT = 30
@@ -702,6 +706,9 @@ class NodeItem(QGraphicsObject):
             if hasattr(self, "proxy_obj") and self.proxy_obj:
                 self.proxy_obj.update_queue(new_queue)
 
+        # Cache the latest params data for thread-safe access by clipboard operations
+        self.params = node_data["params"]
+
         new_params = node_data["params"]
 
         # Update Smart Widgets
@@ -904,6 +911,129 @@ class GraphScene(QGraphicsScene):
         for item in self.node_items.values():
             item.set_show_load(show)
 
+    def get_selected_structure(self):
+        """
+        Returns a dict containing selected nodes and connections.
+        Only includes connections where both source and destination nodes are selected.
+        Thread-safe: operates solely on UI snapshot data, no access to audio thread.
+        """
+        selected_nodes = []
+        selected_connections = []
+        
+        # Get selected nodes - extract all data directly from NodeItem instances
+        for item in self.selectedItems():
+            if isinstance(item, NodeItem):
+                # Extract params data from the cached params (updated via update_from_snapshot)
+                params_data = {}
+                for param_name, param_data in item.params.items():
+                    params_data[param_name] = {
+                        "value": param_data["value"],
+                        "type": param_data["type"],
+                        "meta": param_data["meta"]
+                    }
+                
+                selected_nodes.append({
+                    "id": item.nid,
+                    "name": item.node_name,
+                    "type": item.node_type,
+                    "pos": (item.pos().x(), item.pos().y()),
+                    "params": params_data,
+                    "inputs": list(item.input_items.keys()),
+                    "outputs": list(item.output_items.keys()),
+                    "can_be_master": item.can_be_master,
+                    "is_master": item.is_master
+                })
+        
+        # Get selected connections where both nodes are selected
+        selected_node_ids = {node["id"] for node in selected_nodes}
+        for item in self.selectedItems():
+            if isinstance(item, ConnectionItem) and item.logic_key:
+                src_id, src_port, dst_id, dst_port = item.logic_key
+                if src_id in selected_node_ids and dst_id in selected_node_ids:
+                    selected_connections.append({
+                        "src_id": src_id,
+                        "src_port": src_port,
+                        "dst_id": dst_id,
+                        "dst_port": dst_port
+                    })
+        
+        return {
+            "nodes": selected_nodes,
+            "connections": selected_connections
+        }
+
+    def copy_selection(self):
+        """Copy selected nodes and connections to clipboard."""
+        structure = self.get_selected_structure()
+        if not structure["nodes"]:
+            return
+        
+        # Serialize to JSON and copy to clipboard
+        json_data = json.dumps(structure, indent=2)
+        clipboard = QCoreApplication.instance().clipboard()
+        clipboard.setText(json_data)
+
+    def paste_selection(self):
+        """Paste nodes and connections from clipboard."""
+        clipboard = QCoreApplication.instance().clipboard()
+        clipboard_text = clipboard.text()
+        
+        if not clipboard_text:
+            return
+        
+        try:
+            structure = json.loads(clipboard_text)
+        except json.JSONDecodeError:
+            return
+        
+        if not structure.get("nodes"):
+            return
+        
+        # Generate new UUIDs for pasted nodes
+        id_map = {}
+        for node in structure["nodes"]:
+            old_id = node["id"]
+            new_id = str(uuid.uuid4())
+            id_map[old_id] = new_id
+        
+        # Create new node data with updated IDs and positions
+        new_nodes = []
+        for node in structure["nodes"]:
+            new_node = node.copy()
+            new_node["id"] = id_map[node["id"]]
+            # Offset position to avoid overlapping
+            new_node["pos"] = (node["pos"][0] + 50, node["pos"][1] + 50)
+            new_nodes.append(new_node)
+        
+        # Create new connections with updated IDs
+        new_connections = []
+        for conn in structure["connections"]:
+            if conn["src_id"] in id_map and conn["dst_id"] in id_map:
+                new_connections.append({
+                    "src_id": id_map[conn["src_id"]],
+                    "src_port": conn["src_port"],
+                    "dst_id": id_map[conn["dst_id"]],
+                    "dst_port": conn["dst_port"]
+                })
+        
+        # Add nodes to the graph
+        for node in new_nodes:
+            # Create the node with specific ID and parameters
+            self.controller.add_node_with_id(node["type"], node["pos"], node["id"], node["params"])
+        
+        # Add connections
+        for conn in new_connections:
+            self.controller.connect_nodes(
+                conn["src_id"], conn["src_port"], 
+                conn["dst_id"], conn["dst_port"]
+            )
+
+    def selectAll(self):
+        """Select all nodes in the scene."""
+        for item in self.items():
+            if isinstance(item, NodeItem):
+                item.setSelected(True)
+
     def contextMenuEvent(self, event):
         item = self.itemAt(event.scenePos(), QTransform())
         if item:
@@ -1056,6 +1186,12 @@ class GraphView(QGraphicsView):
                 elif isinstance(item, ConnectionItem) and item.logic_key:
                     sid, sp, did, dp = item.logic_key
                     self.scene().controller.disconnect_nodes(sid, sp, did, dp)
+        elif event.key() == Qt.Key_C and event.modifiers() & Qt.ControlModifier:
+            self.scene().copy_selection()
+        elif event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier:
+            self.scene().paste_selection()
+        elif event.key() == Qt.Key_A and event.modifiers() & Qt.ControlModifier:
+            self.scene().selectAll()
         super().keyPressEvent(event)
 
     def drawBackground(self, painter: QPainter, rect: QRectF):

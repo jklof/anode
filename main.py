@@ -97,6 +97,18 @@ class MainWindow(QMainWindow):
         self.act_reload = QAction("&Reload Plugins", self)
         self.act_reload.triggered.connect(self.controller.reload_plugins)
 
+        self.act_copy = QAction("&Copy", self)
+        self.act_copy.setShortcut(QKeySequence.Copy)
+        self.act_copy.triggered.connect(self.view.scene().copy_selection)
+
+        self.act_paste = QAction("&Paste", self)
+        self.act_paste.setShortcut(QKeySequence.Paste)
+        self.act_paste.triggered.connect(self.view.scene().paste_selection)
+
+        self.act_select_all = QAction("Select &All", self)
+        self.act_select_all.setShortcut(QKeySequence.SelectAll)
+        self.act_select_all.triggered.connect(self.view.scene().selectAll)
+
     def _create_menus(self):
         menubar = self.menuBar()
         file = menubar.addMenu("&File")

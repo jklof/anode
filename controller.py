@@ -39,6 +39,21 @@ class AppController(QObject):
         self.engine.push_command(("add", node_type_name, new_id, pos))
         return new_id
 
+    def add_node_with_id(self, node_type_name, pos, node_id, params=None):
+        """
+        Add a node with a specific ID and initial parameters.
+        This is used for clipboard paste functionality.
+        """
+        if params:
+            # Send add command
+            self.engine.push_command(("add", node_type_name, node_id, pos))
+            # Send parameter commands for each parameter
+            for param_name, param_data in params.items():
+                self.engine.push_command(("param", node_id, param_name, param_data["value"]))
+        else:
+            self.engine.push_command(("add", node_type_name, node_id, pos))
+        return node_id
+
     def delete_node(self, node_id):
         self.engine.push_command(("del", node_id))
 
