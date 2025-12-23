@@ -68,24 +68,24 @@ class NodeProxy:
     def create_param_widget(self, param_name):
         """
         Create a smart parameter widget for the given parameter name.
-        
+
         Args:
             param_name: Name of the parameter to create a widget for
-            
+
         Returns:
             QWidget: The appropriate smart widget instance
         """
         if param_name not in self.node_item.params:
             raise ValueError(f"Parameter '{param_name}' not found in node parameters")
-            
+
         p_data = self.node_item.params[param_name]
         ptype = p_data["type"]
         meta = p_data["meta"]
         val = p_data["value"]
-        
+
         def callback(new_value):
             self.controller.set_parameter(self.node_id, param_name, new_value)
-            
+
         return ParamWidgetFactory.create(param_name, ptype, meta, val, callback)
 
 
@@ -251,48 +251,48 @@ class ConnectionItem(QGraphicsPathItem):
 
 class FloatParamWidget(QWidget):
     """Smart widget for float parameters with slider and label."""
-    
+
     def __init__(self, param_name, metadata, current_value, callback):
         super().__init__()
         self.param_name = param_name
         self.metadata = metadata
         self.current_value = current_value
         self.callback = callback
-        
+
         # Layout setup
         self.layout = QVBoxLayout()
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.layout)
-        
+
         # Label
         self.label = QLabel(f"{param_name}: {current_value:.2f}")
         self.layout.addWidget(self.label)
-        
+
         # Slider
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, 1000)
         self._update_slider_from_value(current_value)
         self.slider.valueChanged.connect(self._on_slider_changed)
         self.layout.addWidget(self.slider)
-        
+
     def _update_slider_from_value(self, value):
         """Update slider position based on float value."""
         norm = (value - self.metadata["min"]) / (self.metadata["max"] - self.metadata["min"])
         self.slider.setValue(int(norm * 1000))
-        
+
     def _on_slider_changed(self, value):
         """Handle slider value changes."""
         f = self.metadata["min"] + (value / 1000.0) * (self.metadata["max"] - self.metadata["min"])
         self.callback(f)
         self.label.setText(f"{self.param_name}: {f:.2f}")
-        
+
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
         if abs(self.current_value - new_value) < 1e-6:  # Check if value actually changed
             return
-            
+
         self.current_value = new_value
-        
+
         # Check if slider is being dragged to prevent fighting the user
         if not self.slider.isSliderDown():
             with QSignalBlocker(self.slider):
@@ -302,79 +302,79 @@ class FloatParamWidget(QWidget):
 
 class BoolParamWidget(QWidget):
     """Smart widget for boolean parameters with checkbox."""
-    
+
     def __init__(self, param_name, metadata, current_value, callback):
         super().__init__()
         self.param_name = param_name
         self.metadata = metadata
         self.current_value = bool(current_value)
         self.callback = callback
-        
+
         # Layout setup
         self.layout = QHBoxLayout()
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.layout)
-        
+
         # Checkbox
         self.checkbox = QCheckBox(param_name)
         self.checkbox.setChecked(self.current_value)
         self.checkbox.toggled.connect(self._on_checkbox_toggled)
         self.layout.addWidget(self.checkbox)
-        
+
     def _on_checkbox_toggled(self, checked):
         """Handle checkbox state changes."""
         self.callback(checked)
-        
+
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
         new_value = bool(new_value)
         if self.current_value == new_value:
             return
-            
+
         self.current_value = new_value
-        
+
         with QSignalBlocker(self.checkbox):
             self.checkbox.setChecked(new_value)
 
 
 class MenuParamWidget(QWidget):
     """Smart widget for menu parameters with combo box."""
-    
+
     def __init__(self, param_name, metadata, current_value, callback):
         super().__init__()
         self.param_name = param_name
         self.metadata = metadata
         self.current_value = int(current_value)
         self.callback = callback
-        
+
         # Layout setup
         self.layout = QVBoxLayout()
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.layout)
-        
+
         # Label
         self.label = QLabel(param_name)
         self.layout.addWidget(self.label)
-        
+
         # Combo box
         self.combo = QComboBox()
         self.combo.addItems(metadata.get("items", []))
         self.combo.setCurrentIndex(self.current_value)
         self.combo.currentIndexChanged.connect(self._on_combo_changed)
         self.layout.addWidget(self.combo)
-        
+
     def _on_combo_changed(self, index):
         """Handle combo box index changes."""
         self.callback(index)
-        
+
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
         new_value = int(new_value)
         if self.current_value == new_value:
             return
-            
+
         self.current_value = new_value
-        
+
         # Check if combo box dropdown is visible to prevent fighting the user
         if not self.combo.view().isVisible():
             with QSignalBlocker(self.combo):
@@ -383,52 +383,52 @@ class MenuParamWidget(QWidget):
 
 class FileParamWidget(QWidget):
     """Smart widget for file parameters with line edit and browse button."""
-    
+
     def __init__(self, param_name, metadata, current_value, callback):
         super().__init__()
         self.param_name = param_name
         self.metadata = metadata
         self.current_value = str(current_value)
         self.callback = callback
-        
+
         # Main layout (vertical)
         self.layout = QVBoxLayout()
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.layout.setSpacing(2)
         self.setLayout(self.layout)
-        
+
         # Label
         self.label = QLabel(param_name)
         self.label.setStyleSheet("color: #ccc; font-size: 10px;")
         self.layout.addWidget(self.label)
-        
+
         # Container for line edit and button
         self.container = QWidget()
         self.hbox = QHBoxLayout(self.container)
         self.hbox.setContentsMargins(0, 0, 0, 0)
         self.hbox.setSpacing(2)
-        
+
         # Line edit
         self.line_edit = QLineEdit(self.current_value)
         self.line_edit.setMinimumWidth(200)
         self.line_edit.setToolTip(self.current_value)
         self.line_edit.editingFinished.connect(self._on_editing_finished)
         self.hbox.addWidget(self.line_edit)
-        
+
         # Browse button
         self.button = QPushButton("...")
         self.button.setFixedWidth(25)
         self.button.setFixedHeight(22)
         self.button.clicked.connect(self._on_browse_clicked)
         self.hbox.addWidget(self.button)
-        
+
         self.layout.addWidget(self.container)
-        
+
     def _on_editing_finished(self):
         """Handle line edit text changes."""
         text = self.line_edit.text()
         self.callback(text)
-        
+
     def _on_browse_clicked(self):
         """Handle browse button click."""
         start = ""
@@ -447,15 +447,15 @@ class FileParamWidget(QWidget):
             self.line_edit.setToolTip(path)
             self.line_edit.setCursorPosition(len(path))
             self.callback(path)
-            
+
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
         new_value = str(new_value)
         if self.current_value == new_value:
             return
-            
+
         self.current_value = new_value
-        
+
         # Check if line edit has focus to prevent fighting the user
         if not self.line_edit.hasFocus():
             with QSignalBlocker(self.line_edit):
@@ -466,41 +466,41 @@ class FileParamWidget(QWidget):
 
 class StringParamWidget(QWidget):
     """Smart widget for string parameters with line edit."""
-    
+
     def __init__(self, param_name, metadata, current_value, callback):
         super().__init__()
         self.param_name = param_name
         self.metadata = metadata
         self.current_value = str(current_value)
         self.callback = callback
-        
+
         # Layout setup
         self.layout = QVBoxLayout()
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.layout)
-        
+
         # Label
         self.label = QLabel(param_name)
         self.layout.addWidget(self.label)
-        
+
         # Line edit
         self.line_edit = QLineEdit(self.current_value)
         self.line_edit.returnPressed.connect(self._on_return_pressed)
         self.layout.addWidget(self.line_edit)
-        
+
     def _on_return_pressed(self):
         """Handle line edit return key press."""
         text = self.line_edit.text()
         self.callback(text)
-        
+
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
         new_value = str(new_value)
         if self.current_value == new_value:
             return
-            
+
         self.current_value = new_value
-        
+
         # Check if line edit has focus to prevent fighting the user
         if not self.line_edit.hasFocus():
             with QSignalBlocker(self.line_edit):
@@ -509,61 +509,61 @@ class StringParamWidget(QWidget):
 
 class IntParamWidget(QWidget):
     """Smart widget for integer parameters with spin box."""
-    
+
     def __init__(self, param_name, metadata, current_value, callback):
         super().__init__()
         self.param_name = param_name
         self.metadata = metadata
         self.current_value = int(current_value)
         self.callback = callback
-        
+
         # Layout setup
         self.layout = QVBoxLayout()
         self.layout.setContentsMargins(0, 0, 0, 0)
         self.setLayout(self.layout)
-        
+
         # Label
         self.label = QLabel(param_name)
         self.layout.addWidget(self.label)
-        
+
         # Spin box
         self.spin_box = QSpinBox()
         self.spin_box.setRange(metadata.get("min", 0), metadata.get("max", 100))
         self.spin_box.setValue(self.current_value)
         self.spin_box.valueChanged.connect(self._on_value_changed)
         self.layout.addWidget(self.spin_box)
-        
+
     def _on_value_changed(self, value):
         """Handle spin box value changes."""
         self.callback(value)
-        
+
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
         new_value = int(new_value)
         if self.current_value == new_value:
             return
-            
+
         self.current_value = new_value
-        
+
         with QSignalBlocker(self.spin_box):
             self.spin_box.setValue(new_value)
 
 
 class ParamWidgetFactory:
     """Factory for creating smart parameter widgets."""
-    
+
     @staticmethod
     def create(param_name, param_type, metadata, current_value, callback):
         """
         Create the appropriate smart widget for the given parameter.
-        
+
         Args:
             param_name: Name of the parameter
             param_type: Type of the parameter (e.g., "float", "bool", "menu", etc.)
             metadata: Metadata dictionary for the parameter
             current_value: Current value of the parameter
             callback: Function to call when the parameter value changes
-            
+
         Returns:
             QWidget: The appropriate smart widget instance
         """
@@ -658,15 +658,17 @@ class NodeItem(QGraphicsObject):
             self.layout = QVBoxLayout()
             self.widget.setLayout(self.layout)
             # NEW LINE: Target ID for transparency, use specific CSS for text color to avoid breaking complex widgets
-            self.widget.setStyleSheet("#genericNodeContainer { background-color: transparent; } QLabel, QCheckBox, QLineEdit, QSpinBox { color: #e0e0e0; }")
+            self.widget.setStyleSheet(
+                "#genericNodeContainer { background-color: transparent; } QLabel, QCheckBox, QLineEdit, QSpinBox { color: #e0e0e0; }"
+            )
             for p_name, p_data in self.params.items():
                 ptype = p_data["type"]
                 meta = p_data["meta"]
                 val = p_data["value"]
-                
+
                 def callback(new_value):
                     self.controller.set_parameter(self.nid, p_name, new_value)
-                    
+
                 widget = ParamWidgetFactory.create(p_name, ptype, meta, val, callback)
                 self.layout.addWidget(widget)
                 self.param_controls[p_name] = {"widget": widget, "type": ptype}
@@ -685,7 +687,6 @@ class NodeItem(QGraphicsObject):
             # 2. Relayout Output Sockets if width changed
             for item in self.output_items.values():
                 item.setX(self.width)
-
 
     def update_from_snapshot(self, node_data):
         new_pos = QPointF(*node_data["pos"])
@@ -919,7 +920,7 @@ class GraphScene(QGraphicsScene):
         """
         selected_nodes = []
         selected_connections = []
-        
+
         # Get selected nodes - extract all data directly from NodeItem instances
         for item in self.selectedItems():
             if isinstance(item, NodeItem):
@@ -929,45 +930,41 @@ class GraphScene(QGraphicsScene):
                     params_data[param_name] = {
                         "value": param_data["value"],
                         "type": param_data["type"],
-                        "meta": param_data["meta"]
+                        "meta": param_data["meta"],
                     }
-                
-                selected_nodes.append({
-                    "id": item.nid,
-                    "name": item.node_name,
-                    "type": item.node_type,
-                    "pos": (item.pos().x(), item.pos().y()),
-                    "params": params_data,
-                    "inputs": list(item.input_items.keys()),
-                    "outputs": list(item.output_items.keys()),
-                    "can_be_master": item.can_be_master,
-                    "is_master": item.is_master
-                })
-        
+
+                selected_nodes.append(
+                    {
+                        "id": item.nid,
+                        "name": item.node_name,
+                        "type": item.node_type,
+                        "pos": (item.pos().x(), item.pos().y()),
+                        "params": params_data,
+                        "inputs": list(item.input_items.keys()),
+                        "outputs": list(item.output_items.keys()),
+                        "can_be_master": item.can_be_master,
+                        "is_master": item.is_master,
+                    }
+                )
+
         # Get selected connections where both nodes are selected
         selected_node_ids = {node["id"] for node in selected_nodes}
         for item in self.selectedItems():
             if isinstance(item, ConnectionItem) and item.logic_key:
                 src_id, src_port, dst_id, dst_port = item.logic_key
                 if src_id in selected_node_ids and dst_id in selected_node_ids:
-                    selected_connections.append({
-                        "src_id": src_id,
-                        "src_port": src_port,
-                        "dst_id": dst_id,
-                        "dst_port": dst_port
-                    })
-        
-        return {
-            "nodes": selected_nodes,
-            "connections": selected_connections
-        }
+                    selected_connections.append(
+                        {"src_id": src_id, "src_port": src_port, "dst_id": dst_id, "dst_port": dst_port}
+                    )
+
+        return {"nodes": selected_nodes, "connections": selected_connections}
 
     def copy_selection(self):
         """Copy selected nodes and connections to clipboard."""
         structure = self.get_selected_structure()
         if not structure["nodes"]:
             return
-        
+
         # Serialize to JSON and copy to clipboard
         json_data = json.dumps(structure, indent=2)
         clipboard = QCoreApplication.instance().clipboard()
@@ -977,25 +974,25 @@ class GraphScene(QGraphicsScene):
         """Paste nodes and connections from clipboard."""
         clipboard = QCoreApplication.instance().clipboard()
         clipboard_text = clipboard.text()
-        
+
         if not clipboard_text:
             return
-        
+
         try:
             structure = json.loads(clipboard_text)
         except json.JSONDecodeError:
             return
-        
+
         if not structure.get("nodes"):
             return
-        
+
         # Generate new UUIDs for pasted nodes
         id_map = {}
         for node in structure["nodes"]:
             old_id = node["id"]
             new_id = str(uuid.uuid4())
             id_map[old_id] = new_id
-        
+
         # Create new node data with updated IDs and positions
         new_nodes = []
         for node in structure["nodes"]:
@@ -1004,29 +1001,28 @@ class GraphScene(QGraphicsScene):
             # Offset position to avoid overlapping
             new_node["pos"] = (node["pos"][0] + 50, node["pos"][1] + 50)
             new_nodes.append(new_node)
-        
+
         # Create new connections with updated IDs
         new_connections = []
         for conn in structure["connections"]:
             if conn["src_id"] in id_map and conn["dst_id"] in id_map:
-                new_connections.append({
-                    "src_id": id_map[conn["src_id"]],
-                    "src_port": conn["src_port"],
-                    "dst_id": id_map[conn["dst_id"]],
-                    "dst_port": conn["dst_port"]
-                })
-        
+                new_connections.append(
+                    {
+                        "src_id": id_map[conn["src_id"]],
+                        "src_port": conn["src_port"],
+                        "dst_id": id_map[conn["dst_id"]],
+                        "dst_port": conn["dst_port"],
+                    }
+                )
+
         # Add nodes to the graph
         for node in new_nodes:
             # Create the node with specific ID and parameters
             self.controller.add_node_with_id(node["type"], node["pos"], node["id"], node["params"])
-        
+
         # Add connections
         for conn in new_connections:
-            self.controller.connect_nodes(
-                conn["src_id"], conn["src_port"], 
-                conn["dst_id"], conn["dst_port"]
-            )
+            self.controller.connect_nodes(conn["src_id"], conn["src_port"], conn["dst_id"], conn["dst_port"])
 
     def selectAll(self):
         """Select all nodes in the scene."""

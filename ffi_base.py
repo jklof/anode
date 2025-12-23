@@ -37,9 +37,13 @@ class FFINode(Node):
         if not self.LIB_NAME:
             return
 
-        # Determine extension
-        ext = ".dll" if sys.platform == "win32" else ".dylib" if sys.platform == "darwin" else ".so"
-        lib_filename = f"{self.LIB_NAME}{ext}"
+        # Determine full name with extension
+        if sys.platform == "win32":
+            lib_filename = f"{self.LIB_NAME}.dll"
+        elif sys.platform == "darwin":
+            lib_filename = f"lib{self.LIB_NAME}.dylib"
+        else:
+            lib_filename = f"{self.LIB_NAME}.so"
 
         # Look in the same folder as the defining python file
         # This handles the case where plugins are in subfolders

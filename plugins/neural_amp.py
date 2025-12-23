@@ -54,10 +54,9 @@ class NamWidget(QWidget):
         # NAM models often need +/- gain adjustment
         self.drive_widget = self.proxy.create_param_widget("drive")
         self.level_widget = self.proxy.create_param_widget("level")
-        
+
         layout.addWidget(self.drive_widget)
         layout.addWidget(self.level_widget)
-
 
     def browse(self):
         # Use None parent to prevent embedding crashes

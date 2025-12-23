@@ -79,11 +79,7 @@ class AudioOutput(Node, IClockProvider):
             while True:
                 write_count, read_count = self.ring_buffer.get_counts()
                 diff = write_count - read_count
-                if not (
-                    diff >= self.ring_buffer.capacity_blocks
-                    and self._active
-                    and not self.abort_flag
-                ):
+                if not (diff >= self.ring_buffer.capacity_blocks and self._active and not self.abort_flag):
                     break
                 time.sleep(0.005)
 

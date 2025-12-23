@@ -136,7 +136,6 @@ class ReverbWidget(QWidget):
         self.mix_widget = self.proxy.create_param_widget("mix")
         layout.addWidget(self.mix_widget)
 
-
     def browse(self):
         f, _ = QFileDialog.getOpenFileName(None, "Open Impulse Response", "", "Audio Files (*.wav *.flac *.mp3)")
         if f:
