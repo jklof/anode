@@ -49,16 +49,40 @@ class NodeProxy:
     Helper object passed to Custom UI Widgets.
     """
 
-    def __init__(self, node_id, controller, monitor_queue):
+    def __init__(self, node_id, controller, monitor_queue, node_item):
         self.node_id = node_id
         self.controller = controller
         self.monitor_queue = monitor_queue
+        self.node_item = node_item
 
     def set_parameter(self, name, value):
         self.controller.set_parameter(self.node_id, name, value)
 
     def update_queue(self, new_queue):
         self.monitor_queue = new_queue
+
+    def create_param_widget(self, param_name):
+        """
+        Create a smart parameter widget for the given parameter name.
+        
+        Args:
+            param_name: Name of the parameter to create a widget for
+            
+        Returns:
+            QWidget: The appropriate smart widget instance
+        """
+        if param_name not in self.node_item.params:
+            raise ValueError(f"Parameter '{param_name}' not found in node parameters")
+            
+        p_data = self.node_item.params[param_name]
+        ptype = p_data["type"]
+        meta = p_data["meta"]
+        val = p_data["value"]
+        
+        def callback(new_value):
+            self.controller.set_parameter(self.node_id, param_name, new_value)
+            
+        return ParamWidgetFactory.create(param_name, ptype, meta, val, callback)
 
 
 class SocketItem(QGraphicsItem):
@@ -621,7 +645,7 @@ class NodeItem(QGraphicsObject):
         CustomUIClass = plugin_system.get_ui_class(self.node_type)
 
         if CustomUIClass:
-            self.proxy_obj = NodeProxy(self.nid, self.controller, self.monitor_queue)
+            self.proxy_obj = NodeProxy(self.nid, self.controller, self.monitor_queue, self)
             self.widget = CustomUIClass(self.proxy_obj)
 
         if not self.widget and self.params:
@@ -629,10 +653,19 @@ class NodeItem(QGraphicsObject):
             self.widget.setObjectName("genericNodeContainer")  # Give it an ID
             self.layout = QVBoxLayout()
             self.widget.setLayout(self.layout)
-            # NEW LINE: Target ID for transparency, use wildcard for text color
-            self.widget.setStyleSheet("#genericNodeContainer { background-color: transparent; } * { color: #e0e0e0; }")
+            # NEW LINE: Target ID for transparency, use specific CSS for text color to avoid breaking complex widgets
+            self.widget.setStyleSheet("#genericNodeContainer { background-color: transparent; } QLabel, QCheckBox, QLineEdit, QSpinBox { color: #e0e0e0; }")
             for p_name, p_data in self.params.items():
-                self._create_param_widget(p_name, p_data)
+                ptype = p_data["type"]
+                meta = p_data["meta"]
+                val = p_data["value"]
+                
+                def callback(new_value):
+                    self.controller.set_parameter(self.nid, p_name, new_value)
+                    
+                widget = ParamWidgetFactory.create(p_name, ptype, meta, val, callback)
+                self.layout.addWidget(widget)
+                self.param_controls[p_name] = {"widget": widget, "type": ptype}
 
         if self.widget:
             self.proxy.setWidget(self.widget)
@@ -649,17 +682,6 @@ class NodeItem(QGraphicsObject):
             for item in self.output_items.values():
                 item.setX(self.width)
 
-    def _create_param_widget(self, name, p_data):
-        ptype = p_data["type"]
-        meta = p_data["meta"]
-        val = p_data["value"]
-        
-        def callback(new_value):
-            self.controller.set_parameter(self.nid, name, new_value)
-            
-        widget = ParamWidgetFactory.create(name, ptype, meta, val, callback)
-        self.layout.addWidget(widget)
-        self.param_controls[name] = {"widget": widget, "type": ptype}
 
     def update_from_snapshot(self, node_data):
         new_pos = QPointF(*node_data["pos"])
@@ -682,14 +704,10 @@ class NodeItem(QGraphicsObject):
 
         new_params = node_data["params"]
 
-        # Standard Widgets
+        # Update Smart Widgets
         for name, control in self.param_controls.items():
             if name in new_params:
                 new_val = new_params[name]["value"]
-                # Skip if widget wasn't created (e.g. unsupported type)
-                if "widget" not in control:
-                    continue
-
                 widget = control["widget"]
                 if hasattr(widget, "update_from_backend"):
                     widget.update_from_backend(new_val)
