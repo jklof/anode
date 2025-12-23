@@ -107,7 +107,6 @@ class ReverbWidget(QWidget):
         super().__init__()
         self.proxy = node_proxy
         self.setMinimumWidth(220)
-        self.sliders = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -129,37 +128,9 @@ class ReverbWidget(QWidget):
         layout.addWidget(self.lbl_status)
 
         # --- Section 2: Parameters ---
-        self._add_param_row(layout, "Mix", "mix", 0.0, 1.0)
+        self.mix_widget = self.proxy.create_param_widget("mix")
+        layout.addWidget(self.mix_widget)
 
-    def _add_param_row(self, parent_layout, label_text, param_name, min_v, max_v):
-        row = QHBoxLayout()
-        row.setSpacing(5)
-
-        lbl = QLabel(label_text)
-        lbl.setFixedWidth(30)
-        lbl.setStyleSheet("color: #ccc;")
-
-        val_lbl = QLabel("0.00")
-        val_lbl.setFixedWidth(30)
-        val_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        val_lbl.setStyleSheet("color: #ccc; font-size: 10px;")
-
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(0, 1000)
-
-        def on_change(val):
-            float_val = min_v + (val / 1000.0) * (max_v - min_v)
-            self.proxy.set_parameter(param_name, float_val)
-            val_lbl.setText(f"{float_val:.2f}")
-
-        slider.valueChanged.connect(on_change)
-
-        row.addWidget(lbl)
-        row.addWidget(slider)
-        row.addWidget(val_lbl)
-        parent_layout.addLayout(row)
-
-        self.sliders[param_name] = {"slider": slider, "label": val_lbl, "min": min_v, "max": max_v}
 
     def browse(self):
         f, _ = QFileDialog.getOpenFileName(None, "Open Impulse Response", "", "Audio Files (*.wav *.flac *.mp3)")
@@ -176,18 +147,9 @@ class ReverbWidget(QWidget):
             self.lbl_file.setText(data["filename"])
 
     def update_from_params(self, params):
-        for param_name, data in self.sliders.items():
-            if param_name in params:
-                val = float(params[param_name])
-                data["label"].setText(f"{val:.2f}")
-
-                norm = (val - data["min"]) / (data["max"] - data["min"])
-                slider_val = int(norm * 1000)
-
-                slider = data["slider"]
-                if not slider.isSliderDown():
-                    with QSignalBlocker(slider):
-                        slider.setValue(slider_val)
+        # Update smart widgets
+        if "mix" in params:
+            self.mix_widget.update_from_backend(params["mix"])
 
 
 class ConvolutionReverb(Node):
