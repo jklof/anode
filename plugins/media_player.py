@@ -201,7 +201,6 @@ class MediaPlayerWidget(QWidget):
     def __init__(self, node_proxy):
         super().__init__()
         self.proxy = node_proxy
-        self.is_dragging = False
         self.stored_title = "No Media"
 
         self.setMinimumSize(450, 150)
@@ -243,7 +242,6 @@ class MediaPlayerWidget(QWidget):
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, 1000)
         self.slider.setEnabled(False)
-        self.slider.sliderPressed.connect(self.on_slider_press)
         self.slider.sliderReleased.connect(self.on_slider_release)
         layout.addWidget(self.slider)
 
@@ -293,13 +291,9 @@ class MediaPlayerWidget(QWidget):
         self.btn_play.setText("Pause" if playing else "Play")
         self.proxy.set_parameter("playing", playing)
 
-    def on_slider_press(self):
-        self.is_dragging = True
-
     def on_slider_release(self):
         val = self.slider.value() / 1000.0
         self.proxy.set_parameter("seek_ratio", val)
-        QTimer.singleShot(200, lambda: setattr(self, "is_dragging", False))
 
     def on_telemetry(self, data: dict):
         if "status" in data:
@@ -309,7 +303,7 @@ class MediaPlayerWidget(QWidget):
             self.lbl_title.setText(data["title"])
         if "time_str" in data:
             self.lbl_time.setText(data["time_str"])
-        if "progress" in data and not self.is_dragging:
+        if "progress" in data and not self.slider.isSliderDown():
             self.slider.setEnabled(True)
             self.slider.setValue(int(data["progress"] * 1000))
         if "playing_state" in data:

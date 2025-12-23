@@ -99,6 +99,11 @@ class IrLoaderThread(threading.Thread):
             self.result_queue.put(("error", str(e)))
 
 
+# ==============================================================================
+# UI Class
+# ==============================================================================
+
+
 class ReverbWidget(QWidget):
     IS_NODE_UI = True
     NODE_CLASS_NAME = "ConvolutionReverb"
