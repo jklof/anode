@@ -221,6 +221,345 @@ class ConnectionItem(QGraphicsPathItem):
         return stroker.createStroke(self.path())
 
 
+class FloatParamWidget(QWidget):
+    """Smart widget for float parameters with slider and label."""
+    
+    def __init__(self, param_name, metadata, current_value, callback):
+        super().__init__()
+        self.param_name = param_name
+        self.metadata = metadata
+        self.current_value = current_value
+        self.callback = callback
+        
+        # Layout setup
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.layout)
+        
+        # Label
+        self.label = QLabel(f"{param_name}: {current_value:.2f}")
+        self.layout.addWidget(self.label)
+        
+        # Slider
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 1000)
+        self._update_slider_from_value(current_value)
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        self.layout.addWidget(self.slider)
+        
+    def _update_slider_from_value(self, value):
+        """Update slider position based on float value."""
+        norm = (value - self.metadata["min"]) / (self.metadata["max"] - self.metadata["min"])
+        self.slider.setValue(int(norm * 1000))
+        
+    def _on_slider_changed(self, value):
+        """Handle slider value changes."""
+        f = self.metadata["min"] + (value / 1000.0) * (self.metadata["max"] - self.metadata["min"])
+        self.callback(f)
+        self.label.setText(f"{self.param_name}: {f:.2f}")
+        
+    def update_from_backend(self, new_value):
+        """Update widget from backend value changes."""
+        if abs(self.current_value - new_value) < 1e-6:  # Check if value actually changed
+            return
+            
+        self.current_value = new_value
+        
+        # Check if slider is being dragged to prevent fighting the user
+        if not self.slider.isSliderDown():
+            with QSignalBlocker(self.slider):
+                self._update_slider_from_value(new_value)
+                self.label.setText(f"{self.param_name}: {new_value:.2f}")
+
+
+class BoolParamWidget(QWidget):
+    """Smart widget for boolean parameters with checkbox."""
+    
+    def __init__(self, param_name, metadata, current_value, callback):
+        super().__init__()
+        self.param_name = param_name
+        self.metadata = metadata
+        self.current_value = bool(current_value)
+        self.callback = callback
+        
+        # Layout setup
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.layout)
+        
+        # Checkbox
+        self.checkbox = QCheckBox(param_name)
+        self.checkbox.setChecked(self.current_value)
+        self.checkbox.toggled.connect(self._on_checkbox_toggled)
+        self.layout.addWidget(self.checkbox)
+        
+    def _on_checkbox_toggled(self, checked):
+        """Handle checkbox state changes."""
+        self.callback(checked)
+        
+    def update_from_backend(self, new_value):
+        """Update widget from backend value changes."""
+        new_value = bool(new_value)
+        if self.current_value == new_value:
+            return
+            
+        self.current_value = new_value
+        
+        with QSignalBlocker(self.checkbox):
+            self.checkbox.setChecked(new_value)
+
+
+class MenuParamWidget(QWidget):
+    """Smart widget for menu parameters with combo box."""
+    
+    def __init__(self, param_name, metadata, current_value, callback):
+        super().__init__()
+        self.param_name = param_name
+        self.metadata = metadata
+        self.current_value = int(current_value)
+        self.callback = callback
+        
+        # Layout setup
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.layout)
+        
+        # Label
+        self.label = QLabel(param_name)
+        self.layout.addWidget(self.label)
+        
+        # Combo box
+        self.combo = QComboBox()
+        self.combo.addItems(metadata.get("items", []))
+        self.combo.setCurrentIndex(self.current_value)
+        self.combo.currentIndexChanged.connect(self._on_combo_changed)
+        self.layout.addWidget(self.combo)
+        
+    def _on_combo_changed(self, index):
+        """Handle combo box index changes."""
+        self.callback(index)
+        
+    def update_from_backend(self, new_value):
+        """Update widget from backend value changes."""
+        new_value = int(new_value)
+        if self.current_value == new_value:
+            return
+            
+        self.current_value = new_value
+        
+        # Check if combo box dropdown is visible to prevent fighting the user
+        if not self.combo.view().isVisible():
+            with QSignalBlocker(self.combo):
+                self.combo.setCurrentIndex(new_value)
+
+
+class FileParamWidget(QWidget):
+    """Smart widget for file parameters with line edit and browse button."""
+    
+    def __init__(self, param_name, metadata, current_value, callback):
+        super().__init__()
+        self.param_name = param_name
+        self.metadata = metadata
+        self.current_value = str(current_value)
+        self.callback = callback
+        
+        # Main layout (vertical)
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(2)
+        self.setLayout(self.layout)
+        
+        # Label
+        self.label = QLabel(param_name)
+        self.label.setStyleSheet("color: #ccc; font-size: 10px;")
+        self.layout.addWidget(self.label)
+        
+        # Container for line edit and button
+        self.container = QWidget()
+        self.hbox = QHBoxLayout(self.container)
+        self.hbox.setContentsMargins(0, 0, 0, 0)
+        self.hbox.setSpacing(2)
+        
+        # Line edit
+        self.line_edit = QLineEdit(self.current_value)
+        self.line_edit.setMinimumWidth(200)
+        self.line_edit.setToolTip(self.current_value)
+        self.line_edit.editingFinished.connect(self._on_editing_finished)
+        self.hbox.addWidget(self.line_edit)
+        
+        # Browse button
+        self.button = QPushButton("...")
+        self.button.setFixedWidth(25)
+        self.button.setFixedHeight(22)
+        self.button.clicked.connect(self._on_browse_clicked)
+        self.hbox.addWidget(self.button)
+        
+        self.layout.addWidget(self.container)
+        
+    def _on_editing_finished(self):
+        """Handle line edit text changes."""
+        text = self.line_edit.text()
+        self.callback(text)
+        
+    def _on_browse_clicked(self):
+        """Handle browse button click."""
+        start = ""
+        curr = self.line_edit.text()
+        if curr and os.path.exists(curr):
+            start = curr if os.path.isdir(curr) else os.path.dirname(curr)
+
+        filt = self.metadata.get("filter", "All Files (*.*)")
+        if self.metadata.get("mode") == "save":
+            path, _ = QFileDialog.getSaveFileName(None, f"Save {self.param_name}", start, filt)
+        else:
+            path, _ = QFileDialog.getOpenFileName(None, f"Open {self.param_name}", start, filt)
+
+        if path:
+            self.line_edit.setText(path)
+            self.line_edit.setToolTip(path)
+            self.line_edit.setCursorPosition(len(path))
+            self.callback(path)
+            
+    def update_from_backend(self, new_value):
+        """Update widget from backend value changes."""
+        new_value = str(new_value)
+        if self.current_value == new_value:
+            return
+            
+        self.current_value = new_value
+        
+        # Check if line edit has focus to prevent fighting the user
+        if not self.line_edit.hasFocus():
+            with QSignalBlocker(self.line_edit):
+                self.line_edit.setText(new_value)
+                self.line_edit.setToolTip(new_value)
+                self.line_edit.setCursorPosition(len(new_value))
+
+
+class StringParamWidget(QWidget):
+    """Smart widget for string parameters with line edit."""
+    
+    def __init__(self, param_name, metadata, current_value, callback):
+        super().__init__()
+        self.param_name = param_name
+        self.metadata = metadata
+        self.current_value = str(current_value)
+        self.callback = callback
+        
+        # Layout setup
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.layout)
+        
+        # Label
+        self.label = QLabel(param_name)
+        self.layout.addWidget(self.label)
+        
+        # Line edit
+        self.line_edit = QLineEdit(self.current_value)
+        self.line_edit.returnPressed.connect(self._on_return_pressed)
+        self.layout.addWidget(self.line_edit)
+        
+    def _on_return_pressed(self):
+        """Handle line edit return key press."""
+        text = self.line_edit.text()
+        self.callback(text)
+        
+    def update_from_backend(self, new_value):
+        """Update widget from backend value changes."""
+        new_value = str(new_value)
+        if self.current_value == new_value:
+            return
+            
+        self.current_value = new_value
+        
+        # Check if line edit has focus to prevent fighting the user
+        if not self.line_edit.hasFocus():
+            with QSignalBlocker(self.line_edit):
+                self.line_edit.setText(new_value)
+
+
+class IntParamWidget(QWidget):
+    """Smart widget for integer parameters with spin box."""
+    
+    def __init__(self, param_name, metadata, current_value, callback):
+        super().__init__()
+        self.param_name = param_name
+        self.metadata = metadata
+        self.current_value = int(current_value)
+        self.callback = callback
+        
+        # Layout setup
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.layout)
+        
+        # Label
+        self.label = QLabel(param_name)
+        self.layout.addWidget(self.label)
+        
+        # Spin box
+        self.spin_box = QSpinBox()
+        self.spin_box.setRange(metadata.get("min", 0), metadata.get("max", 100))
+        self.spin_box.setValue(self.current_value)
+        self.spin_box.valueChanged.connect(self._on_value_changed)
+        self.layout.addWidget(self.spin_box)
+        
+    def _on_value_changed(self, value):
+        """Handle spin box value changes."""
+        self.callback(value)
+        
+    def update_from_backend(self, new_value):
+        """Update widget from backend value changes."""
+        new_value = int(new_value)
+        if self.current_value == new_value:
+            return
+            
+        self.current_value = new_value
+        
+        with QSignalBlocker(self.spin_box):
+            self.spin_box.setValue(new_value)
+
+
+class ParamWidgetFactory:
+    """Factory for creating smart parameter widgets."""
+    
+    @staticmethod
+    def create(param_name, param_type, metadata, current_value, callback):
+        """
+        Create the appropriate smart widget for the given parameter.
+        
+        Args:
+            param_name: Name of the parameter
+            param_type: Type of the parameter (e.g., "float", "bool", "menu", etc.)
+            metadata: Metadata dictionary for the parameter
+            current_value: Current value of the parameter
+            callback: Function to call when the parameter value changes
+            
+        Returns:
+            QWidget: The appropriate smart widget instance
+        """
+        if param_type == "float":
+            return FloatParamWidget(param_name, metadata, current_value, callback)
+        elif param_type == "bool":
+            return BoolParamWidget(param_name, metadata, current_value, callback)
+        elif param_type == "menu":
+            return MenuParamWidget(param_name, metadata, current_value, callback)
+        elif param_type == "file":
+            return FileParamWidget(param_name, metadata, current_value, callback)
+        elif param_type == "string":
+            return StringParamWidget(param_name, metadata, current_value, callback)
+        elif param_type == "int":
+            return IntParamWidget(param_name, metadata, current_value, callback)
+        else:
+            # Fallback for unsupported types
+            widget = QWidget()
+            layout = QVBoxLayout()
+            layout.addWidget(QLabel(f"Unsupported parameter type: {param_type}"))
+            widget.setLayout(layout)
+            return widget
+
+
 class NodeItem(QGraphicsObject):
     positionChanged = Signal()
 
@@ -311,123 +650,16 @@ class NodeItem(QGraphicsObject):
                 item.setX(self.width)
 
     def _create_param_widget(self, name, p_data):
-        c = QWidget()
-        l = QHBoxLayout(c)
-        l.setContentsMargins(0, 0, 0, 0)
         ptype = p_data["type"]
         meta = p_data["meta"]
         val = p_data["value"]
-        control_ref = {"type": ptype, "meta": meta}
-
-        if ptype == "float":
-            lbl = QLabel(f"{name}: {val:.2f}")
-            slider = QSlider(Qt.Horizontal)
-            slider.setRange(0, 1000)
-            norm = (val - meta["min"]) / (meta["max"] - meta["min"])
-            slider.setValue(int(norm * 1000))
-
-            def on_slide(v):
-                f = meta["min"] + (v / 1000.0) * (meta["max"] - meta["min"])
-                self.controller.set_parameter(self.nid, name, f)
-                lbl.setText(f"{name}: {f:.2f}")
-
-            slider.valueChanged.connect(on_slide)
-            l.addWidget(lbl)
-            self.layout.addWidget(c)
-            self.layout.addWidget(slider)
-            control_ref["widget"] = slider
-            control_ref["label"] = lbl
-
-        elif ptype == "bool":
-            chk = QCheckBox(name)
-            chk.setChecked(val)
-            chk.toggled.connect(lambda v: self.controller.set_parameter(self.nid, name, v))
-            self.layout.addWidget(chk)
-            control_ref["widget"] = chk
-
-        elif ptype == "menu":
-            lbl = QLabel(name)
-            combo = QComboBox()
-            combo.addItems(meta.get("items", []))
-            combo.setCurrentIndex(int(val))
-            combo.currentIndexChanged.connect(lambda idx: self.controller.set_parameter(self.nid, name, idx))
-            self.layout.addWidget(lbl)
-            self.layout.addWidget(combo)
-            control_ref["widget"] = combo
-
-        elif ptype == "string":
-            lbl = QLabel(name)
-            le = QLineEdit(str(val))
-            le.returnPressed.connect(lambda: self.controller.set_parameter(self.nid, name, le.text()))
-            self.layout.addWidget(lbl)
-            self.layout.addWidget(le)
-            control_ref["widget"] = le
-
-        elif ptype == "int":
-            lbl = QLabel(name)
-            sp = QSpinBox()
-            sp.setRange(meta.get("min", 0), meta.get("max", 100))
-            sp.setValue(int(val))
-            sp.valueChanged.connect(lambda v: self.controller.set_parameter(self.nid, name, v))
-            self.layout.addWidget(lbl)
-            self.layout.addWidget(sp)
-            control_ref["widget"] = sp
-
-        elif ptype == "file":
-            # Stacked Vertical Layout: Label on top, [Input + Button] below
-            container = QWidget()
-            vbox = QVBoxLayout(container)
-            vbox.setContentsMargins(0, 0, 0, 0)
-            vbox.setSpacing(2)
-
-            lbl = QLabel(name)
-            lbl.setStyleSheet("color: #ccc; font-size: 10px;")
-            vbox.addWidget(lbl)
-
-            hbox_w = QWidget()
-            hbox = QHBoxLayout(hbox_w)
-            hbox.setContentsMargins(0, 0, 0, 0)
-            hbox.setSpacing(2)
-
-            le = QLineEdit(str(val))
-            # Critical: Ensure input is wide enough to see path, forcing node expansion
-            le.setMinimumWidth(200)
-            le.setToolTip(str(val))
-            le.editingFinished.connect(lambda: self.controller.set_parameter(self.nid, name, le.text()))
-
-            btn = QPushButton("...")
-            btn.setFixedWidth(25)
-            btn.setFixedHeight(22)
-
-            def open_dlg():
-                start = ""
-                curr = le.text()
-                if curr and os.path.exists(curr):
-                    start = curr if os.path.isdir(curr) else os.path.dirname(curr)
-
-                filt = meta.get("filter", "All Files (*.*)")
-                if meta.get("mode") == "save":
-                    path, _ = QFileDialog.getSaveFileName(None, f"Save {name}", start, filt)
-                else:
-                    path, _ = QFileDialog.getOpenFileName(None, f"Open {name}", start, filt)
-
-                if path:
-                    le.setText(path)
-                    le.setToolTip(path)
-                    # Scroll cursor to end so filename is visible
-                    le.setCursorPosition(len(path))
-                    self.controller.set_parameter(self.nid, name, path)
-
-            btn.clicked.connect(open_dlg)
-
-            hbox.addWidget(le)
-            hbox.addWidget(btn)
-            vbox.addWidget(hbox_w)
-
-            self.layout.addWidget(container)
-            control_ref["widget"] = le
-
-        self.param_controls[name] = control_ref
+        
+        def callback(new_value):
+            self.controller.set_parameter(self.nid, name, new_value)
+            
+        widget = ParamWidgetFactory.create(name, ptype, meta, val, callback)
+        self.layout.addWidget(widget)
+        self.param_controls[name] = {"widget": widget, "type": ptype}
 
     def update_from_snapshot(self, node_data):
         new_pos = QPointF(*node_data["pos"])
@@ -459,30 +691,8 @@ class NodeItem(QGraphicsObject):
                     continue
 
                 widget = control["widget"]
-                with QSignalBlocker(widget):
-                    if control["type"] == "float":
-                        meta = control["meta"]
-                        norm = (new_val - meta["min"]) / (meta["max"] - meta["min"])
-                        if not widget.isSliderDown():
-                            widget.setValue(int(norm * 1000))
-                            if "label" in control:
-                                control["label"].setText(f"{name}: {new_val:.2f}")
-                    elif control["type"] == "bool":
-                        widget.setChecked(bool(new_val))
-                    elif control["type"] == "menu":
-                        if not widget.view().isVisible():
-                            widget.setCurrentIndex(int(new_val))
-                    elif control["type"] == "string":
-                        if widget.text() != str(new_val) and not widget.hasFocus():
-                            widget.setText(str(new_val))
-                    elif control["type"] == "int":
-                        widget.setValue(int(new_val))
-                    elif control["type"] == "file":
-                        new_txt = str(new_val)
-                        if widget.text() != new_txt and not widget.hasFocus():
-                            widget.setText(new_txt)
-                            widget.setToolTip(new_txt)
-                            widget.setCursorPosition(len(new_txt))
+                if hasattr(widget, "update_from_backend"):
+                    widget.update_from_backend(new_val)
 
         # Custom Widgets
         if self.widget and hasattr(self.widget, "update_from_params"):
