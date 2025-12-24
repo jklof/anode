@@ -812,7 +812,6 @@ class NodeItem(QGraphicsObject):
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
-            self.controller.move_node(self.nid, (value.x(), value.y()))
             self.positionChanged.emit()
         return super().itemChange(change, value)
 
@@ -826,7 +825,26 @@ class NodeItem(QGraphicsObject):
                 event.accept()
                 return
 
+        # Set higher z-value to bring clicked node to front
+        self.setZValue(5)
+        
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        # Send move command only once when mouse is released
+        # Check if multiple nodes are selected - if so, move all selected nodes
+        scene = self.scene()
+        if scene and len(scene.selectedItems()) > 1:
+            # Multiple nodes selected, move all selected nodes
+            for item in scene.selectedItems():
+                if isinstance(item, NodeItem):
+                    new_pos = item.pos()
+                    item.controller.move_node(item.nid, (new_pos.x(), new_pos.y()))
+        else:
+            # Single node or this node only, move just this node
+            new_pos = self.pos()
+            self.controller.move_node(self.nid, (new_pos.x(), new_pos.y()))
+        super().mouseReleaseEvent(event)
 
 
 class GraphScene(QGraphicsScene):
@@ -1175,7 +1193,7 @@ class GraphView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key_Delete:
+        if event.key() == Qt.Key_Delete or event.key() == Qt.Key_Backspace:
             for item in self.scene().selectedItems():
                 if isinstance(item, NodeItem):
                     self.scene().controller.delete_node(item.nid)
