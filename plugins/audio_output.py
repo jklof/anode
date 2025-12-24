@@ -22,22 +22,13 @@ class RingBuffer:
         with self._lock:
             return self.write_count, self.read_count
 
-    def write(self, tensor_data):
+    def write(self, numpy_data):
         with self._lock:
             if (self.write_count - self.read_count) >= self.capacity_blocks:
                 return False
             start_idx = (self.write_count % self.capacity_blocks) * self.block_size
-        # Convert tensor to numpy
-        np_data = tensor_data.detach().cpu().numpy()
-        # Ensure we don't write beyond capacity
-        if np_data.ndim == 2:
-            # Handle stereo or multi-channel
-            np_data = np_data[: self.channels].T  # Transpose to (frames, channels)
-        else:
-            # If mono, duplicate to stereo
-            mono = np_data[0].reshape(-1, 1)
-            np_data = np.tile(mono, (1, self.channels))
-        self.storage[start_idx : start_idx + self.block_size, :] = np_data
+        # Write the pre-processed numpy data directly
+        self.storage[start_idx : start_idx + self.block_size, :] = numpy_data
         with self._lock:
             self.write_count += 1
         return True
@@ -112,10 +103,23 @@ class AudioOutput(Node, IClockProvider):
             outdata.fill(0)
 
     def process(self):
-        audio_data = self.in_audio.get_tensor()
+        # Get tensor and convert to numpy once before the loop
+        tensor_data = self.in_audio.get_tensor()
+        # Convert tensor to numpy
+        np_data = tensor_data.detach().cpu().numpy()
+
+        # Handle dimension/stereo duplication logic
+        if np_data.ndim == 2:
+            # Handle stereo or multi-channel - transpose to (frames, channels)
+            np_data = np_data[: self.ring_buffer.channels].T
+        else:
+            # If mono, duplicate to stereo
+            mono = np_data[0].reshape(-1, 1)
+            np_data = np.tile(mono, (1, self.ring_buffer.channels))
+
         start_time = time.time()
         timeout = 0.010  # 10ms timeout to prevent deadlocks
-        while not self.ring_buffer.write(audio_data) and self._active and not self.abort_flag:
+        while not self.ring_buffer.write(np_data) and self._active and not self.abort_flag:
             time.sleep(0.001)
             if time.time() - start_time > timeout:
                 break  # Prevent deadlock
