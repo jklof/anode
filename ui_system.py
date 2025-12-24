@@ -988,8 +988,13 @@ class GraphScene(QGraphicsScene):
         clipboard = QCoreApplication.instance().clipboard()
         clipboard.setText(json_data)
 
-    def paste_selection(self):
-        """Paste nodes and connections from clipboard."""
+    def paste_selection(self, target_pos=None):
+        """Paste nodes and connections from clipboard.
+        
+        Args:
+            target_pos (QPointF, optional): Target position where the center of the pasted nodes should be placed.
+                                           If None, uses a small default offset.
+        """
         clipboard = QCoreApplication.instance().clipboard()
         clipboard_text = clipboard.text()
 
@@ -1004,6 +1009,31 @@ class GraphScene(QGraphicsScene):
         if not structure.get("nodes"):
             return
 
+        # Calculate bounding box center of clipboard nodes
+        if target_pos is not None:
+            # Calculate current bounding box of clipboard nodes
+            min_x = min_y = float('inf')
+            max_x = max_y = float('-inf')
+            
+            for node in structure["nodes"]:
+                x, y = node["pos"]
+                min_x = min(min_x, x)
+                max_x = max(max_x, x)
+                min_y = min(min_y, y)
+                max_y = max(max_y, y)
+            
+            # Calculate center of clipboard nodes
+            clipboard_center_x = (min_x + max_x) / 2
+            clipboard_center_y = (min_y + max_y) / 2
+            
+            # Calculate offset to move clipboard center to target position
+            offset_x = target_pos.x() - clipboard_center_x
+            offset_y = target_pos.y() - clipboard_center_y
+        else:
+            # Use default small offset
+            offset_x = 50
+            offset_y = 50
+
         # Generate new UUIDs for pasted nodes
         id_map = {}
         for node in structure["nodes"]:
@@ -1016,8 +1046,8 @@ class GraphScene(QGraphicsScene):
         for node in structure["nodes"]:
             new_node = node.copy()
             new_node["id"] = id_map[node["id"]]
-            # Offset position to avoid overlapping
-            new_node["pos"] = (node["pos"][0] + 50, node["pos"][1] + 50)
+            # Apply calculated offset to position
+            new_node["pos"] = (node["pos"][0] + offset_x, node["pos"][1] + offset_y)
             new_nodes.append(new_node)
 
         # Create new connections with updated IDs
@@ -1203,7 +1233,10 @@ class GraphView(QGraphicsView):
         elif event.key() == Qt.Key_C and event.modifiers() & Qt.ControlModifier:
             self.scene().copy_selection()
         elif event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier:
-            self.scene().paste_selection()
+            # Calculate viewport center and map to scene coordinates
+            viewport_center = self.viewport().rect().center()
+            scene_pos = self.mapToScene(viewport_center)
+            self.scene().paste_selection(target_pos=scene_pos)
         elif event.key() == Qt.Key_A and event.modifiers() & Qt.ControlModifier:
             self.scene().selectAll()
         super().keyPressEvent(event)
