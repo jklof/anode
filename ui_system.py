@@ -35,6 +35,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtSvg import QSvgRenderer
 from ui_icons import create_colored_logo
+from theme import Theme
 
 import plugin_system
 import os
@@ -43,16 +44,7 @@ import json
 import uuid
 import base
 
-NODE_WIDTH = 160
-HEADER_HEIGHT = 30
-SOCKET_RADIUS = 6
 
-# Z-ordering constants
-Z_WIRE = -1.0
-Z_NODE_NORMAL = 0.0
-Z_NODE_SELECTED = 10.0
-Z_TEMP_WIRE = 100.0
-Z_SOCKET = 10.0
 
 
 class NodeProxy:
@@ -103,14 +95,14 @@ class SocketItem(QGraphicsItem):
         self.is_input = is_input
         self.node_id = node_id
         self.setAcceptHoverEvents(True)
-        self.setZValue(Z_SOCKET)
+        self.setZValue(Theme.Z_LAYERS['socket'])
         self.setCursor(QCursor(Qt.CrossCursor))
-        self._base_color = QColor("#ff9900") if is_input else QColor("#00ccff")
+        self._base_color = Theme.COLORS['socket_input'] if is_input else Theme.COLORS['socket_output']
         self._hovered = False
 
     def boundingRect(self):
         pad = 10
-        return QRectF(-SOCKET_RADIUS - pad, -SOCKET_RADIUS - pad, (SOCKET_RADIUS + pad) * 2, (SOCKET_RADIUS + pad) * 2)
+        return QRectF(-Theme.DIMENSIONS['socket_radius'] - pad, -Theme.DIMENSIONS['socket_radius'] - pad, (Theme.DIMENSIONS['socket_radius'] + pad) * 2, (Theme.DIMENSIONS['socket_radius'] + pad) * 2)
 
     def paint(self, painter, option, widget):
         if self._hovered:
@@ -118,13 +110,13 @@ class SocketItem(QGraphicsItem):
             painter.scale(1.3, 1.3)
             painter.setBrush(self._base_color)
             painter.setPen(Qt.NoPen)
-            painter.drawEllipse(QPointF(0, 0), SOCKET_RADIUS, SOCKET_RADIUS)
+            painter.drawEllipse(QPointF(0, 0), Theme.DIMENSIONS['socket_radius'], Theme.DIMENSIONS['socket_radius'])
             painter.restore()
         else:
             painter.setBrush(self._base_color)
             painter.setPen(Qt.NoPen)
-            painter.drawEllipse(QPointF(0, 0), SOCKET_RADIUS, SOCKET_RADIUS)
-        painter.setPen(QColor("white"))
+            painter.drawEllipse(QPointF(0, 0), Theme.DIMENSIONS['socket_radius'], Theme.DIMENSIONS['socket_radius'])
+        painter.setPen(Theme.COLORS['text_normal'])
         text_rect = QRectF(15 if self.is_input else -105, -10, 90, 20)
         align = Qt.AlignLeft if self.is_input else Qt.AlignRight
         painter.drawText(text_rect, align | Qt.AlignVCenter, self.name)
@@ -141,7 +133,7 @@ class SocketItem(QGraphicsItem):
 class ConnectionItem(QGraphicsPathItem):
     def __init__(self, start_item, end_item, logic_key=None):
         super().__init__()
-        self.setZValue(Z_WIRE)
+        self.setZValue(Theme.Z_LAYERS['wire'])
         self.setAcceptedMouseButtons(Qt.LeftButton | Qt.RightButton)
         self.setAcceptHoverEvents(True)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -211,20 +203,20 @@ class ConnectionItem(QGraphicsPathItem):
 
     def paint(self, p, o, w):
         if self.temp_mode:
-            if self.temp_color == QColor("white"):
-                pen = QPen(QColor("white"), 2, Qt.DashLine)
-            elif self.temp_color == QColor("red"):
-                pen = QPen(QColor("red"), 3)
-            elif self.temp_color == QColor("green"):
-                pen = QPen(QColor("green"), 3)
+            if self.temp_color == Theme.COLORS['wire_temp_white']:
+                pen = QPen(Theme.COLORS['wire_temp_white'], 2, Qt.DashLine)
+            elif self.temp_color == Theme.COLORS['wire_temp_red']:
+                pen = QPen(Theme.COLORS['wire_temp_red'], 3)
+            elif self.temp_color == Theme.COLORS['wire_temp_green']:
+                pen = QPen(Theme.COLORS['wire_temp_green'], 3)
             else:
-                pen = QPen(QColor("white"), 2, Qt.DashLine)
+                pen = QPen(Theme.COLORS['wire_temp_white'], 2, Qt.DashLine)
         elif self.isSelected():
-            pen = QPen(QColor("yellow"), 3)
+            pen = QPen(Theme.COLORS['wire_selected'], 3)
         elif self.hovered:
-            pen = QPen(QColor("#00ccff"), 4)
+            pen = QPen(Theme.COLORS['wire_hovered'], 4)
         else:
-            pen = QPen(QColor("white"), 2)
+            pen = QPen(Theme.COLORS['wire_normal'], 2)
         p.setPen(pen)
         p.drawPath(self.path())
 
@@ -632,19 +624,19 @@ class NodeItem(QGraphicsObject):
         # Initialize position cache
         self._last_committed_pos = self.pos()
 
-        self.width = NODE_WIDTH
+        self.width = Theme.DIMENSIONS['node_width']
         self.input_items = {}
         self.output_items = {}
 
         # 1. Create Sockets Immediately
-        y = HEADER_HEIGHT + 10
+        y = Theme.DIMENSIONS['header_height'] + 10
         for name in node_data["inputs"]:
             item = SocketItem(self, name, True, self.nid)
             item.setPos(0, y)
             self.input_items[name] = item
             y += 20
 
-        y_out = HEADER_HEIGHT + 10
+        y_out = Theme.DIMENSIONS['header_height'] + 10
         for name in node_data["outputs"]:
             item = SocketItem(self, name, False, self.nid)
             item.setPos(self.width, y_out)
@@ -675,9 +667,7 @@ class NodeItem(QGraphicsObject):
             self.layout = QVBoxLayout()
             self.widget.setLayout(self.layout)
             # NEW LINE: Target ID for transparency, use specific CSS for text color to avoid breaking complex widgets
-            self.widget.setStyleSheet(
-                "#genericNodeContainer { background-color: transparent; } QLabel, QCheckBox, QLineEdit, QSpinBox { color: #e0e0e0; }"
-            )
+            self.widget.setStyleSheet(Theme.STYLES['generic_node_container'])
             for p_name, p_data in self.params.items():
                 ptype = p_data["type"]
                 meta = p_data["meta"]
@@ -770,43 +760,44 @@ class NodeItem(QGraphicsObject):
         return QRectF(0, 0, self.width, self.height)
 
     def paint(self, painter, option, widget):
-        painter.setBrush(QColor(40, 40, 40))
-        painter.setPen(QPen(QColor(20, 20, 20), 1))
+        painter.setBrush(Theme.COLORS['node_bg'])
+        painter.setPen(QPen(Theme.COLORS['node_border'], 1))
         painter.drawRoundedRect(self.boundingRect(), 5, 5)
-        grad = QLinearGradient(0, 0, 0, HEADER_HEIGHT)
+        grad = QLinearGradient(0, 0, 0, Theme.DIMENSIONS['header_height'])
         if self.error_msg:
-            grad.setColorAt(0, QColor(100, 60, 60))
-            grad.setColorAt(1, QColor(80, 50, 50))
+            grad.setColorAt(0, Theme.COLORS['header_error_start'])
+            grad.setColorAt(1, Theme.COLORS['header_error_end'])
         else:
-            grad.setColorAt(0, QColor(60, 60, 60))
-            grad.setColorAt(1, QColor(50, 50, 50))
+            grad.setColorAt(0, Theme.COLORS['header_normal_start'])
+            grad.setColorAt(1, Theme.COLORS['header_normal_end'])
         painter.setBrush(grad)
-        painter.drawRoundedRect(0, 0, self.width, HEADER_HEIGHT, 5, 5)
+        painter.drawRoundedRect(0, 0, self.width, Theme.DIMENSIONS['header_height'], 5, 5)
 
         if self._show_load and self._processing_load > 0:
             pct = min(self._processing_load, 100.0)
             bar_width = self.width * (pct / 100.0)
-            color = QColor(0, 255, 0, 100)
-            if pct > 50:
-                color = QColor(255, 255, 0, 100)
             if pct > 85:
-                color = QColor(255, 0, 0, 120)
+                color = Theme.COLORS['load_high']
+            elif pct > 50:
+                color = Theme.COLORS['load_medium']
+            else:
+                color = Theme.COLORS['load_low']
             painter.setBrush(color)
             painter.setPen(Qt.NoPen)
-            painter.drawRect(0, 0, bar_width, HEADER_HEIGHT)
+            painter.drawRect(0, 0, bar_width, Theme.DIMENSIONS['header_height'])
 
-        painter.setPen(QColor("white"))
-        painter.drawText(QRectF(0, 0, self.width, HEADER_HEIGHT), Qt.AlignCenter, self.node_name)
+        painter.setPen(Theme.COLORS['text_normal'])
+        painter.drawText(QRectF(0, 0, self.width, Theme.DIMENSIONS['header_height']), Qt.AlignCenter, self.node_name)
 
         # --- DRAW CLOCK ICON ---
         if self.can_be_master:
-            icon_color = QColor("#00FF00") if self.is_master else QColor("#666666")
+            icon_color = Theme.COLORS['clock_master'] if self.is_master else Theme.COLORS['clock_slave']
             painter.setPen(QPen(icon_color, 1.5))
             painter.setBrush(Qt.NoBrush)
 
             # Position: Top right, padding
             cx = self.width - 15
-            cy = HEADER_HEIGHT / 2
+            cy = Theme.DIMENSIONS['header_height'] / 2
             r = 6
 
             # Clock face
@@ -816,12 +807,12 @@ class NodeItem(QGraphicsObject):
             painter.drawLine(QPointF(cx, cy), QPointF(cx + 3, cy))
 
         if self.error_msg:
-            painter.setPen(QPen(QColor(255, 0, 0), 3))
+            painter.setPen(QPen(Theme.COLORS['error_border'], 3))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(self.boundingRect(), 5, 5)
 
         if self.isSelected():
-            painter.setPen(QPen(QColor("#00ccff"), 2.0))
+            painter.setPen(QPen(Theme.COLORS['selection_outline'], 2.0))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(self.boundingRect(), 5, 5)
 
@@ -843,7 +834,7 @@ class NodeItem(QGraphicsObject):
         if change == QGraphicsItem.ItemPositionHasChanged:
             self.positionChanged.emit()
         elif change == QGraphicsItem.ItemSelectedHasChanged:
-            self.setZValue(Z_NODE_SELECTED if value else Z_NODE_NORMAL)
+            self.setZValue(Theme.Z_LAYERS['node_selected'] if value else Theme.Z_LAYERS['node_normal'])
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event):
@@ -851,11 +842,11 @@ class NodeItem(QGraphicsObject):
         if self.can_be_master:
             local_pos = event.pos()
             # Hit box: Top 30px (header), Rightmost 30px
-            if local_pos.y() <= HEADER_HEIGHT and local_pos.x() >= (self.width - 30):
+            if local_pos.y() <= Theme.DIMENSIONS['header_height'] and local_pos.x() >= (self.width - 30):
                 self.controller.set_master_clock(self.nid)
                 event.accept()
                 return
-        
+
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -1154,12 +1145,12 @@ class GraphView(QGraphicsView):
 
     def _generate_grid_texture(self):
         pixmap = QPixmap(150, 150)
-        pixmap.fill(QColor(30, 30, 30))
+        pixmap.fill(Theme.COLORS['grid_bg'])
         painter = QPainter(pixmap)
-        painter.setPen(QPen(QColor(50, 50, 50), 1.5))
+        painter.setPen(QPen(Theme.COLORS['grid_major'], 1.5))
         painter.drawLine(0, 0, 150, 0)
         painter.drawLine(0, 0, 0, 150)
-        painter.setPen(QPen(QColor(40, 40, 40), 1.0))
+        painter.setPen(QPen(Theme.COLORS['grid_minor'], 1.0))
         for i in range(15, 150, 15):
             if i != 0:
                 painter.drawLine(i, 0, i, 150)
@@ -1208,7 +1199,7 @@ class GraphView(QGraphicsView):
             self.setDragMode(QGraphicsView.NoDrag)
             self.scene().temp_wire = ConnectionItem(item, self.mapToScene(pos))
             self.scene().temp_wire.temp_mode = True
-            self.scene().temp_wire.setZValue(Z_TEMP_WIRE)
+            self.scene().temp_wire.setZValue(Theme.Z_LAYERS['temp_wire'])
             self.scene().addItem(self.scene().temp_wire)
         else:
             super().mousePressEvent(event)
@@ -1231,13 +1222,13 @@ class GraphView(QGraphicsView):
                 valid = (start.is_input != socket.is_input) and (start.node_id != socket.node_id)
                 if valid:
                     self.scene().temp_wire.end_item = socket.scenePos()
-                    self.scene().temp_wire.temp_color = QColor("green")
+                    self.scene().temp_wire.temp_color = Theme.COLORS['wire_temp_green']
                 else:
                     self.scene().temp_wire.end_item = pos
-                    self.scene().temp_wire.temp_color = QColor("red")
+                    self.scene().temp_wire.temp_color = Theme.COLORS['wire_temp_red']
             else:
                 self.scene().temp_wire.end_item = pos
-                self.scene().temp_wire.temp_color = QColor("white")
+                self.scene().temp_wire.temp_color = Theme.COLORS['wire_temp_white']
             self.scene().temp_wire.update_path()
             self.scene().temp_wire.update()
         super().mouseMoveEvent(event)
