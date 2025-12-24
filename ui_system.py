@@ -1216,11 +1216,15 @@ class GraphView(QGraphicsView):
     def mouseMoveEvent(self, event):
         if self.scene().temp_wire:
             pos = self.mapToScene(event.position().toPoint())
-            socket = self.itemAt(event.position().toPoint())
-            if socket and not isinstance(socket, SocketItem):
-                socket = socket.parentItem()
-                if socket and not isinstance(socket, SocketItem):
-                    socket = None
+            # Look through the temp_wire to find the socket underneath
+            items = self.items(event.position().toPoint())
+            socket = None
+            for item in items:
+                if item is self.scene().temp_wire:
+                    continue
+                if isinstance(item, SocketItem):
+                    socket = item
+                    break
             self.scene().drag_target = socket
             start = self.scene().drag_start
             if socket and isinstance(socket, SocketItem):
