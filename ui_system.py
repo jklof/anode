@@ -622,6 +622,9 @@ class NodeItem(QGraphicsObject):
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
         self.setCursor(QCursor(Qt.SizeAllCursor))
 
+        # Initialize position cache
+        self._last_committed_pos = self.pos()
+
         self.width = NODE_WIDTH
         self.input_items = {}
         self.output_items = {}
@@ -737,6 +740,9 @@ class NodeItem(QGraphicsObject):
 
         self.update()
 
+        # Update position cache after setting position
+        self._last_committed_pos = self.pos()
+
     def set_processing_load(self, pct):
         self._processing_load = pct
         self.update()
@@ -838,18 +844,15 @@ class NodeItem(QGraphicsObject):
 
     def mouseReleaseEvent(self, event):
         # Send move command only once when mouse is released
-        # Check if multiple nodes are selected - if so, move all selected nodes
+        # Always iterate through selected items to handle single nodes, groups, and prevent redundant commands
         scene = self.scene()
-        if scene and len(scene.selectedItems()) > 1:
-            # Multiple nodes selected, move all selected nodes
+        if scene:
             for item in scene.selectedItems():
                 if isinstance(item, NodeItem):
-                    new_pos = item.pos()
-                    item.controller.move_node(item.nid, (new_pos.x(), new_pos.y()))
-        else:
-            # Single node or this node only, move just this node
-            new_pos = self.pos()
-            self.controller.move_node(self.nid, (new_pos.x(), new_pos.y()))
+                    # Only send move command if position has actually changed
+                    if item.pos() != item._last_committed_pos:
+                        item.controller.move_node(item.nid, (item.pos().x(), item.pos().y()))
+                        item._last_committed_pos = item.pos()
         super().mouseReleaseEvent(event)
 
 
