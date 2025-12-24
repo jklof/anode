@@ -47,6 +47,13 @@ NODE_WIDTH = 160
 HEADER_HEIGHT = 30
 SOCKET_RADIUS = 6
 
+# Z-ordering constants
+Z_WIRE = -1.0
+Z_NODE_NORMAL = 0.0
+Z_NODE_SELECTED = 10.0
+Z_TEMP_WIRE = 100.0
+Z_SOCKET = 10.0
+
 
 class NodeProxy:
     """
@@ -96,7 +103,7 @@ class SocketItem(QGraphicsItem):
         self.is_input = is_input
         self.node_id = node_id
         self.setAcceptHoverEvents(True)
-        self.setZValue(10)
+        self.setZValue(Z_SOCKET)
         self.setCursor(QCursor(Qt.CrossCursor))
         self._base_color = QColor("#ff9900") if is_input else QColor("#00ccff")
         self._hovered = False
@@ -134,7 +141,7 @@ class SocketItem(QGraphicsItem):
 class ConnectionItem(QGraphicsPathItem):
     def __init__(self, start_item, end_item, logic_key=None):
         super().__init__()
-        self.setZValue(-1)
+        self.setZValue(Z_WIRE)
         self.setAcceptedMouseButtons(Qt.LeftButton | Qt.RightButton)
         self.setAcceptHoverEvents(True)
         self.setFlag(QGraphicsItem.ItemIsSelectable)
@@ -813,6 +820,8 @@ class NodeItem(QGraphicsObject):
     def itemChange(self, change, value):
         if change == QGraphicsItem.ItemPositionHasChanged:
             self.positionChanged.emit()
+        elif change == QGraphicsItem.ItemSelectedHasChanged:
+            self.setZValue(Z_NODE_SELECTED if value else Z_NODE_NORMAL)
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event):
@@ -824,9 +833,6 @@ class NodeItem(QGraphicsObject):
                 self.controller.set_master_clock(self.nid)
                 event.accept()
                 return
-
-        # Set higher z-value to bring clicked node to front
-        self.setZValue(5)
         
         super().mousePressEvent(event)
 
@@ -1174,6 +1180,7 @@ class GraphView(QGraphicsView):
             self.setDragMode(QGraphicsView.NoDrag)
             self.scene().temp_wire = ConnectionItem(item, self.mapToScene(pos))
             self.scene().temp_wire.temp_mode = True
+            self.scene().temp_wire.setZValue(Z_TEMP_WIRE)
             self.scene().addItem(self.scene().temp_wire)
         else:
             super().mousePressEvent(event)
