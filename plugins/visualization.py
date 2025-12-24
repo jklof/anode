@@ -61,6 +61,10 @@ try:
             self.timer.timeout.connect(self.poll)
             self.timer.start()
 
+            # Caching variables for optimization
+            self._cached_x = None
+            self._last_width = 0
+
         def poll(self):
             # Drain queue to get the LATEST frame, discarding older ones if any
             try:
@@ -99,6 +103,11 @@ try:
             painter.setPen(QPen(self.grid_color, 1, Qt.DashLine))
             painter.drawLine(0, int(center_y), w, int(center_y))
 
+            # OPTIMIZATION: Cache x_coords calculation to avoid redundant memory allocation
+            if w != self._last_width or self._cached_x is None or len(self._cached_x) != num_samples:
+                self._cached_x = np.linspace(0, w, num=num_samples)
+                self._last_width = w
+
             for ch in range(min(num_channels, 2)):  # Limit to 2 channels for viz
                 pen_color = self.channel_colors[ch % 2]
                 painter.setPen(QPen(pen_color, 1.5))
@@ -106,9 +115,8 @@ try:
                 # Get channel data view
                 chan_data = self.data[ch]
 
-                # OPTIMIZATION: Fast Point Mapping
-                # Data is already downsampled to visual resolution, map directly to widget width
-                x_coords = np.linspace(0, w, num=num_samples)
+                # Use cached x_coords
+                x_coords = self._cached_x
 
                 # Create Y coordinates (inverted and scaled)
                 y_coords = center_y - (chan_data * scale_y)
