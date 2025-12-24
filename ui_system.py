@@ -244,9 +244,16 @@ class ConnectionItem(QGraphicsPathItem):
     def contextMenuEvent(self, event):
         menu = QMenu()
         action_del = menu.addAction("Delete Connection")
+
+        def delete_action():
+            if self.isSelected():
+                self.scene().delete_selection()
+            elif self.logic_key:
+                sid, sp, did, dp = self.logic_key
+                self.scene().controller.disconnect_nodes(sid, sp, did, dp)
+
         if self.logic_key:
-            sid, sp, did, dp = self.logic_key
-            action_del.triggered.connect(lambda: self.scene().controller.disconnect_nodes(sid, sp, did, dp))
+            action_del.triggered.connect(delete_action)
         menu.exec(event.screenPos())
         event.accept()
 
@@ -822,7 +829,14 @@ class NodeItem(QGraphicsObject):
         menu = QMenu()
         if self.can_be_master:
             menu.addAction("Set Master Clock", lambda: self.controller.set_master_clock(self.nid))
-        menu.addAction("Delete", lambda: self.controller.delete_node(self.nid))
+
+        def delete_action():
+            if self.isSelected():
+                self.scene().delete_selection()
+            else:
+                self.controller.delete_node(self.nid)
+
+        menu.addAction("Delete", delete_action)
         menu.exec(event.screenPos())
 
     def itemChange(self, change, value):
@@ -871,6 +885,15 @@ class GraphScene(QGraphicsScene):
         self._show_load = False
         self.controller.graphUpdated.connect(self.reconcile)
         self.controller.telemetryUpdated.connect(self.on_telemetry_updated)
+
+    def delete_selection(self):
+        # Iterate over a copy of selectedItems() to avoid issues while removing
+        for item in self.selectedItems():
+            if isinstance(item, NodeItem):
+                self.controller.delete_node(item.nid)
+            elif isinstance(item, ConnectionItem) and item.logic_key:
+                sid, sp, did, dp = item.logic_key
+                self.controller.disconnect_nodes(sid, sp, did, dp)
 
     def reconcile(self, snapshot: dict):
         reload_version = snapshot.get("reload_version", 0)
@@ -1236,12 +1259,7 @@ class GraphView(QGraphicsView):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Delete or event.key() == Qt.Key_Backspace:
-            for item in self.scene().selectedItems():
-                if isinstance(item, NodeItem):
-                    self.scene().controller.delete_node(item.nid)
-                elif isinstance(item, ConnectionItem) and item.logic_key:
-                    sid, sp, did, dp = item.logic_key
-                    self.scene().controller.disconnect_nodes(sid, sp, did, dp)
+            self.scene().delete_selection()
         elif event.key() == Qt.Key_C and event.modifiers() & Qt.ControlModifier:
             self.scene().copy_selection()
         elif event.key() == Qt.Key_V and event.modifiers() & Qt.ControlModifier:
