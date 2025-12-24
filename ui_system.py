@@ -717,23 +717,25 @@ class NodeItem(QGraphicsObject):
             if hasattr(self, "proxy_obj") and self.proxy_obj:
                 self.proxy_obj.update_queue(new_queue)
 
-        # Cache the latest params data for thread-safe access by clipboard operations
-        self.params = node_data["params"]
-
         new_params = node_data["params"]
 
-        # Update Smart Widgets
+        # Update Smart Widgets - only call widget.update_from_backend if value actually changed
         for name, control in self.param_controls.items():
             if name in new_params:
                 new_val = new_params[name]["value"]
-                widget = control["widget"]
-                if hasattr(widget, "update_from_backend"):
-                    widget.update_from_backend(new_val)
+                # Compare with current value before calling widget update
+                if name in self.params and self.params[name]["value"] != new_val:
+                    widget = control["widget"]
+                    if hasattr(widget, "update_from_backend"):
+                        widget.update_from_backend(new_val)
 
         # Custom Widgets
         if self.widget and hasattr(self.widget, "update_from_params"):
             simple_params = {k: v["value"] for k, v in new_params.items()}
             self.widget.update_from_params(simple_params)
+
+        # Cache the latest params data for thread-safe access by clipboard operations
+        self.params = new_params
 
         self.error_msg = node_data.get("error")
         self.setToolTip(self.error_msg if self.error_msg else self.node_name)
