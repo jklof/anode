@@ -193,12 +193,17 @@ class ConnectionItem(QGraphicsPathItem):
         else:
             return
 
+        # Store positions for gradient in paint method
+        self.p1 = p1
+        self.p2 = p2
+
         path = QPainterPath()
         path.moveTo(p1)
-        dist = max(abs(p1.x() - p2.x()) * 0.5, abs(p1.y() - p2.y()) * 0.5, 50.0)
-        cp1 = -dist if start_is_input else dist
-        cp2 = -dist if end_is_input else dist
-        path.cubicTo(QPointF(p1.x() + cp1, p1.y()), QPointF(p2.x() + cp2, p2.y()), p2)
+        # Implement Tangent approach with dynamic curvature
+        curvature = abs(p2.x() - p1.x()) * 0.3
+        cp1 = QPointF(p1.x() + curvature, p1.y())
+        cp2 = QPointF(p2.x() - curvature, p2.y())
+        path.cubicTo(cp1, cp2, p2)
         self.setPath(path)
 
     def paint(self, p, o, w):
@@ -216,7 +221,13 @@ class ConnectionItem(QGraphicsPathItem):
         elif self.hovered:
             pen = QPen(Theme.COLORS['wire_hovered'], 4)
         else:
-            pen = QPen(Theme.COLORS['wire_normal'], 2)
+            # Use gradient for normal wires to visualize signal flow
+            gradient = QLinearGradient(self.p1, self.p2)
+            gradient.setColorAt(0, Theme.COLORS['socket_output'])  # Output color at start
+            gradient.setColorAt(1, Theme.COLORS['socket_input'])   # Input color at end
+            pen = QPen()
+            pen.setBrush(gradient)
+            pen.setWidth(2)
         p.setPen(pen)
         p.drawPath(self.path())
 
