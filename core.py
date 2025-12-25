@@ -179,6 +179,8 @@ class Engine:
             self.command_queue.put(cmd)
         else:
             self._apply_command(cmd)
+            # Always emit snapshot when engine is stopped to ensure UI updates
+            # This is especially important for parameter changes when audio is off
             self._emit_snapshot()
 
     def _emit_snapshot(self):
@@ -257,6 +259,9 @@ class Engine:
                 if node and p in node.params:
                     node.params[p].set(val)
                     node.on_ui_param_change(p)
+                    # Push side-channel parameter update message
+                    msg = {"type": "param_update", "node_id": nid, "param": p, "value": val}
+                    self.output_queue.put(msg)
             elif op == "clock":
                 _, nid = cmd
                 node = self.graph.node_map.get(nid)

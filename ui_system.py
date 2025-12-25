@@ -876,6 +876,30 @@ class NodeItem(QGraphicsObject):
                         item._last_committed_pos = item.pos()
         super().mouseReleaseEvent(event)
 
+    def update_single_param(self, param_name, value):
+        """
+        Update a single parameter efficiently without redrawing the whole graph.
+
+        Args:
+            param_name: Name of the parameter to update
+            value: New value for the parameter
+        """
+        # First, update the internal data cache
+        if param_name in self.params:
+            self.params[param_name]["value"] = value
+
+        # Check if param_name exists in param_controls (generic widgets)
+        if param_name in self.param_controls:
+            control = self.param_controls[param_name]["widget"]
+            if hasattr(control, "update_from_backend"):
+                control.update_from_backend(value)
+
+        # Check if self.widget exists (custom UI)
+        if self.widget and hasattr(self.widget, "update_from_params"):
+            # Create a small dict with just the updated parameter
+            update_dict = {param_name: value}
+            self.widget.update_from_params(update_dict)
+
 
 class GraphScene(QGraphicsScene):
     def __init__(self, controller):
@@ -890,6 +914,7 @@ class GraphScene(QGraphicsScene):
         self._show_load = False
         self.controller.graphUpdated.connect(self.reconcile)
         self.controller.telemetryUpdated.connect(self.on_telemetry_updated)
+        self.controller.parameterUpdated.connect(self.on_parameter_update)
 
     def delete_selection(self):
         # Iterate over a copy of selectedItems() to avoid issues while removing
@@ -963,6 +988,23 @@ class GraphScene(QGraphicsScene):
             if nid in self.node_items:
                 node_item = self.node_items[nid]
                 node_item.propagate_telemetry(telemetry)
+
+    def on_parameter_update(self, data):
+        """
+        Handle granular parameter updates from the engine.
+
+        Args:
+            data: Dictionary containing node_id, param, and value
+        """
+        node_id = data.get("node_id")
+        param = data.get("param")
+        value = data.get("value")
+
+        # Check if node_id exists in node_items
+        if node_id in self.node_items:
+            node_item = self.node_items[node_id]
+            # Call update_single_param to handle the efficient update
+            node_item.update_single_param(param, value)
 
     def toggle_load_view(self, show):
         self._show_load = show
