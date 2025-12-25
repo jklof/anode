@@ -204,13 +204,13 @@ class Engine:
                 # Support atomic node creation with initial parameters
                 # cmd format: ("add", type_name, nid, pos, initial_params) where initial_params can be None
                 _, type_name, nid, pos, initial_params = cmd
-                
+
                 cls = plugin_system.NODE_REGISTRY.get(type_name)
                 if cls:
                     node = cls()
                     node.id = nid
                     node.pos = pos
-                    
+
                     # Apply initial parameters BEFORE starting the node (atomic creation)
                     if initial_params:
                         for param_name, param_data in initial_params.items():
@@ -221,8 +221,10 @@ class Engine:
                                     node.on_ui_param_change(param_name)
                                 else:
                                     # This should not happen with proper formatting, but handle gracefully
-                                    raise ValueError(f"Invalid parameter format for {param_name}: expected dict with 'value' key")
-                    
+                                    raise ValueError(
+                                        f"Invalid parameter format for {param_name}: expected dict with 'value' key"
+                                    )
+
                     self.graph.add_node(node)
                     if self.running:
                         try:

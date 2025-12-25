@@ -43,7 +43,7 @@ class AppController(QObject):
         """
         Add a node with a specific ID and initial parameters.
         This is used for clipboard paste functionality.
-        
+
         Parameters must be in dictionary format: {"param_name": {"value": actual_value, "type": ..., "meta": ...}}
         """
         self.engine.push_command(("add", node_type_name, node_id, pos, params))
