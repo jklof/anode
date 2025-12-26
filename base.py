@@ -102,6 +102,11 @@ class InputSlot:
             # Then add the remaining connected outputs
             for out in self.connected_outputs[1:]:
                 target.add_(out.buffer[:max_channels])
+
+            # FIX: Zero out unused channels to prevent ghosting
+            if max_channels < CHANNELS:
+                self._scratch[max_channels:].zero_()
+
             return target
 
         if self.param_name and self.param_name in self.parent.params:
