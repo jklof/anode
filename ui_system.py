@@ -305,6 +305,7 @@ class FloatParamWidget(QWidget):
         f = self.metadata["min"] + (value / 1000.0) * (self.metadata["max"] - self.metadata["min"])
         self.callback(f)
         self.label.setText(f"{self.param_name}: {f:.2f}")
+        self.current_value = f
 
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
@@ -687,8 +688,8 @@ class NodeItem(QGraphicsObject):
                 meta = p_data["meta"]
                 val = p_data["value"]
 
-                def callback(new_value):
-                    self.controller.set_parameter(self.nid, p_name, new_value)
+                def callback(new_value, name=p_name):
+                    self.controller.set_parameter(self.nid, name, new_value)
 
                 widget = ParamWidgetFactory.create(p_name, ptype, meta, val, callback)
                 self.layout.addWidget(widget)
@@ -872,7 +873,9 @@ class NodeItem(QGraphicsObject):
                 if isinstance(item, NodeItem):
                     # Only send move command if position has actually changed
                     if item.pos() != item._last_committed_pos:
-                        item.controller.move_node(item.nid, (item.pos().x(), item.pos().y()))
+                        new_pos = (item.pos().x(), item.pos().y())
+                        old_pos = (item._last_committed_pos.x(), item._last_committed_pos.y())
+                        item.controller.move_node(item.nid, new_pos, old_pos)
                         item._last_committed_pos = item.pos()
         super().mouseReleaseEvent(event)
 
@@ -917,13 +920,31 @@ class GraphScene(QGraphicsScene):
         self.controller.parameterUpdated.connect(self.on_parameter_update)
 
     def delete_selection(self):
-        # Iterate over a copy of selectedItems() to avoid issues while removing
+        """
+        Delete selected items. The DeleteNodeCommand handles saving state automatically.
+        """
+        # Collect selected node IDs
+        nodes_to_delete = []
         for item in self.selectedItems():
             if isinstance(item, NodeItem):
-                self.controller.delete_node(item.nid)
-            elif isinstance(item, ConnectionItem) and item.logic_key:
+                nodes_to_delete.append(item.nid)
+
+        # Collect selected connections not attached to selected nodes
+        connections_to_delete = []
+        for item in self.selectedItems():
+            if isinstance(item, ConnectionItem) and item.logic_key:
                 sid, sp, did, dp = item.logic_key
-                self.controller.disconnect_nodes(sid, sp, did, dp)
+                # Only delete if not already handled by node deletion
+                if sid not in nodes_to_delete and did not in nodes_to_delete:
+                    connections_to_delete.append((sid, sp, did, dp))
+
+        # Delete connections first
+        for sid, sp, did, dp in connections_to_delete:
+            self.controller.disconnect_nodes(sid, sp, did, dp)
+
+        # Delete nodes (memento is captured inside DeleteNodeCommand)
+        for node_id in nodes_to_delete:
+            self.controller.delete_node(node_id)
 
     def reconcile(self, snapshot: dict):
         reload_version = snapshot.get("reload_version", 0)
@@ -1091,7 +1112,7 @@ class GraphScene(QGraphicsScene):
             return
 
         # Calculate bounding box center of clipboard nodes
-        if target_pos is not None:
+        if target_pos is not None and hasattr(target_pos, "x") and hasattr(target_pos, "y"):
             # Calculate current bounding box of clipboard nodes
             min_x = min_y = float("inf")
             max_x = max_y = float("-inf")
@@ -1147,7 +1168,7 @@ class GraphScene(QGraphicsScene):
         # Add nodes to the graph
         for node in new_nodes:
             # Create the node with specific ID and parameters
-            self.controller.add_node_with_id(node["type"], node["pos"], node["id"], node["params"])
+            self.controller.add_node(node["type"], node["pos"], node_id=node["id"], params=node["params"])
 
         # Add connections
         for conn in new_connections:

@@ -109,6 +109,16 @@ class MainWindow(QMainWindow):
         self.act_select_all.setShortcut(QKeySequence.SelectAll)
         self.act_select_all.triggered.connect(self.view.scene().selectAll)
 
+        self.act_undo = QAction("&Undo", self)
+        self.act_undo.setShortcut(QKeySequence.Undo)
+        self.act_undo.triggered.connect(self.controller.undo)
+        self.act_undo.setIcon(create_icon("undo"))
+
+        self.act_redo = QAction("&Redo", self)
+        self.act_redo.setShortcut(QKeySequence.Redo)
+        self.act_redo.triggered.connect(self.controller.redo)
+        self.act_redo.setIcon(create_icon("redo"))
+
     def _create_menus(self):
         menubar = self.menuBar()
         file = menubar.addMenu("&File")
@@ -117,6 +127,14 @@ class MainWindow(QMainWindow):
         file.addAction(self.act_save)
         file.addSeparator()
         file.addAction(self.act_exit)
+
+        edit = menubar.addMenu("&Edit")
+        edit.addAction(self.act_undo)
+        edit.addAction(self.act_redo)
+        edit.addSeparator()
+        edit.addAction(self.act_copy)
+        edit.addAction(self.act_paste)
+        edit.addAction(self.act_select_all)
 
         process = menubar.addMenu("&Process")
         process.addAction(self.act_start)

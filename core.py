@@ -5,7 +5,6 @@ import queue
 import json
 import logging
 from typing import Dict, List, Optional, Tuple
-import logging
 import plugin_system
 from base import BLOCK_SIZE, SAMPLE_RATE, IClockProvider, Node
 
@@ -217,15 +216,14 @@ class Engine:
                     if initial_params:
                         for param_name, param_data in initial_params.items():
                             if param_name in node.params:
-                                # Always expect dictionary format: {"value": actual_value, "type": ..., "meta": ...}
+                                # Support both dictionary format: {"value": actual_value} and raw values
                                 if isinstance(param_data, dict) and "value" in param_data:
-                                    node.params[param_name].set(param_data["value"])
-                                    node.on_ui_param_change(param_name)
+                                    val = param_data["value"]
                                 else:
-                                    # This should not happen with proper formatting, but handle gracefully
-                                    raise ValueError(
-                                        f"Invalid parameter format for {param_name}: expected dict with 'value' key"
-                                    )
+                                    # Handle raw values (e.g., from Node.to_dict() for Undo functionality)
+                                    val = param_data
+                                node.params[param_name].set(val)
+                                node.on_ui_param_change(param_name)
 
                     self.graph.add_node(node)
                     if self.running:

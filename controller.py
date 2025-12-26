@@ -1,7 +1,48 @@
 from PySide6.QtCore import QObject, Signal, QTimer
-import uuid
 import logging
 from core import Engine
+from commands import (
+    AddNodeCommand,
+    DeleteNodeCommand,
+    MoveNodeCommand,
+    ConnectCommand,
+    DisconnectCommand,
+)
+
+
+class CommandHistory:
+    """Handles undo/redo functionality using the Command Pattern."""
+
+    def __init__(self, max_length=50):
+        self.undo_stack = []
+        self.redo_stack = []
+        self.max_length = max_length
+
+    def push(self, cmd):
+        """Add a command to the undo stack and clear redo stack."""
+        self.redo_stack.clear()
+        self.undo_stack.append(cmd)
+
+        if len(self.undo_stack) > self.max_length:
+            self.undo_stack.pop(0)
+
+    def undo(self):
+        """Undo the last command."""
+        if not self.undo_stack:
+            return
+
+        cmd = self.undo_stack.pop()
+        cmd.undo()
+        self.redo_stack.append(cmd)
+
+    def redo(self):
+        """Redo the last undone command."""
+        if not self.redo_stack:
+            return
+
+        cmd = self.redo_stack.pop()
+        cmd.execute()
+        self.undo_stack.append(cmd)
 
 
 class AppController(QObject):
@@ -12,6 +53,7 @@ class AppController(QObject):
     def __init__(self):
         super().__init__()
         self.engine = Engine()
+        self.history = CommandHistory()
 
         self.poll_timer = QTimer()
         self.poll_timer.interval = 30
@@ -37,45 +79,103 @@ class AppController(QObject):
     def stop_audio(self):
         self.engine.stop()
 
-    def add_node(self, node_type_name, pos=(0, 0)):
-        new_id = str(uuid.uuid4())
-        self.engine.push_command(("add", node_type_name, new_id, pos, None))
-        return new_id
-
-    def add_node_with_id(self, node_type_name, pos, node_id, params=None):
+    def create_node_memento(self, node_id):
         """
-        Add a node with a specific ID and initial parameters.
-        This is used for clipboard paste functionality.
-
-        Parameters must be in dictionary format: {"param_name": {"value": actual_value, "type": ..., "meta": ...}}
+        Create a memento for a node before deletion.
+        Captures the node's full state and all its connections.
         """
-        self.engine.push_command(("add", node_type_name, node_id, pos, params))
-        return node_id
+        node = self.engine.graph.node_map.get(node_id)
+        if node is None:
+            return None
+
+        # Find all connections involving this node
+        connections = []
+        for other_node in self.engine.graph.nodes:
+            # Check if other_node has inputs connected to our node
+            for port_name, inp_slot in other_node.inputs.items():
+                for out_slot in inp_slot.connected_outputs:
+                    if out_slot.parent.id == node_id:
+                        connections.append(
+                            {
+                                "src_id": node_id,
+                                "src_port": out_slot.name,
+                                "dst_id": other_node.id,
+                                "dst_port": port_name,
+                            }
+                        )
+            # Check if our node has inputs connected from other nodes
+            if other_node.id == node_id:
+                for port_name, inp_slot in other_node.inputs.items():
+                    for out_slot in inp_slot.connected_outputs:
+                        connections.append(
+                            {
+                                "src_id": out_slot.parent.id,
+                                "src_port": out_slot.name,
+                                "dst_id": node_id,
+                                "dst_port": port_name,
+                            }
+                        )
+
+        return {
+            "node_data": node.to_dict(),
+            "connections": connections,
+        }
+
+    # -------------------------------------------------------------------------
+    # Topology Methods (Undoable)
+    # -------------------------------------------------------------------------
+
+    def add_node(self, node_type, pos, node_id=None, params=None):
+        """Add a node to the graph."""
+        cmd = AddNodeCommand(self, node_type, pos, node_id=node_id, params=params)
+        cmd.execute()
+        self.history.push(cmd)
+        return cmd.node_id
 
     def delete_node(self, node_id):
-        self.engine.push_command(("del", node_id))
+        """Delete a node from the graph."""
+        cmd = DeleteNodeCommand(self, node_id)
+        cmd.execute()
+        self.history.push(cmd)
+
+    def move_node(self, node_id, new_pos, old_pos):
+        """Move a node to a new position."""
+        cmd = MoveNodeCommand(self, node_id, new_pos, old_pos)
+        cmd.execute()
+        self.history.push(cmd)
 
     def connect_nodes(self, src_id, src_port, dst_id, dst_port):
-        self.engine.push_command(("conn", src_id, src_port, dst_id, dst_port))
+        """Connect two nodes."""
+        cmd = ConnectCommand(self, src_id, src_port, dst_id, dst_port)
+        cmd.execute()
+        self.history.push(cmd)
 
     def disconnect_nodes(self, src_id, src_port, dst_id, dst_port):
-        self.engine.push_command(("disconn", src_id, src_port, dst_id, dst_port))
+        """Disconnect two nodes."""
+        cmd = DisconnectCommand(self, src_id, src_port, dst_id, dst_port)
+        cmd.execute()
+        self.history.push(cmd)
+
+    # -------------------------------------------------------------------------
+    # Non-Undoable Methods
+    # -------------------------------------------------------------------------
 
     def set_master_clock(self, node_id):
+        """Set the master clock node (not undoable)."""
         self.engine.push_command(("clock", node_id))
 
     def set_parameter(self, node_id, param_name, value):
+        """Set a parameter value (not undoable)."""
         self.engine.push_command(("param", node_id, param_name, value))
 
-    def move_node(self, node_id, pos):
-        self.engine.push_command(("move", node_id, pos[0], pos[1]))
-
     def save(self, filename):
+        """Save the graph to a file."""
         if not filename:
             return
         self.engine.push_command(("save", filename))
 
     def load(self, filename):
+        """Load a graph from a file."""
         if not filename:
             return
         try:
@@ -86,7 +186,21 @@ class AppController(QObject):
             print(f"Controller Load Error: {e}")
 
     def clear(self):
+        """Clear the graph."""
         self.engine.push_command(("clear",))
 
     def reload_plugins(self):
+        """Reload all plugins."""
         self.engine.push_command(("reload",))
+
+    # -------------------------------------------------------------------------
+    # Undo/Redo
+    # -------------------------------------------------------------------------
+
+    def undo(self):
+        """Undo the last command."""
+        self.history.undo()
+
+    def redo(self):
+        """Redo the last undone command."""
+        self.history.redo()
