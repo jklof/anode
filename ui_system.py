@@ -866,18 +866,37 @@ class NodeItem(QGraphicsObject):
 
     def mouseReleaseEvent(self, event):
         # Send move command only once when mouse is released
-        # Always iterate through selected items to handle single nodes, groups, and prevent redundant commands
+        # We calculate the delta based on THIS node's movement, then apply
+        # that delta to find the previous position of all selected nodes.
+
+        super().mouseReleaseEvent(event)
+
+        # 1. Check if we actually moved
+        if self.pos() == self._last_committed_pos:
+            return
+
+        # 2. Gather moves for all selected nodes
+        moves = {}
         scene = self.scene()
         if scene:
             for item in scene.selectedItems():
                 if isinstance(item, NodeItem):
-                    # Only send move command if position has actually changed
-                    if item.pos() != item._last_committed_pos:
-                        new_pos = (item.pos().x(), item.pos().y())
-                        old_pos = (item._last_committed_pos.x(), item._last_committed_pos.y())
-                        item.controller.move_node(item.nid, new_pos, old_pos)
+                    # Current position (already updated by QGraphicsItem internals)
+                    new_pos = (item.pos().x(), item.pos().y())
+
+                    # Previous position
+                    # We assume item._last_committed_pos holds the state before the drag started
+                    prev_pos = (item._last_committed_pos.x(), item._last_committed_pos.y())
+
+                    # Only record if it actually changed
+                    if new_pos != prev_pos:
+                        moves[item.nid] = (new_pos, prev_pos)
+                        # Update the commit point so next drag starts fresh
                         item._last_committed_pos = item.pos()
-        super().mouseReleaseEvent(event)
+
+        # 3. Send single batch command
+        if moves:
+            self.controller.move_nodes(moves)
 
     def update_single_param(self, param_name, value):
         """
@@ -921,30 +940,25 @@ class GraphScene(QGraphicsScene):
 
     def delete_selection(self):
         """
-        Delete selected items. The DeleteNodeCommand handles saving state automatically.
+        Delete selected items using the batch controller method.
         """
-        # Collect selected node IDs
         nodes_to_delete = []
+        # Gather Nodes
         for item in self.selectedItems():
             if isinstance(item, NodeItem):
                 nodes_to_delete.append(item.nid)
 
-        # Collect selected connections not attached to selected nodes
+        # Gather Connections that are explicitly selected
         connections_to_delete = []
         for item in self.selectedItems():
             if isinstance(item, ConnectionItem) and item.logic_key:
                 sid, sp, did, dp = item.logic_key
-                # Only delete if not already handled by node deletion
-                if sid not in nodes_to_delete and did not in nodes_to_delete:
-                    connections_to_delete.append((sid, sp, did, dp))
+                connections_to_delete.append((sid, sp, did, dp))
 
-        # Delete connections first
-        for sid, sp, did, dp in connections_to_delete:
-            self.controller.disconnect_nodes(sid, sp, did, dp)
+        if not nodes_to_delete and not connections_to_delete:
+            return
 
-        # Delete nodes (memento is captured inside DeleteNodeCommand)
-        for node_id in nodes_to_delete:
-            self.controller.delete_node(node_id)
+        self.controller.delete_selection(nodes_to_delete, connections_to_delete)
 
     def reconcile(self, snapshot: dict):
         reload_version = snapshot.get("reload_version", 0)
@@ -1091,12 +1105,7 @@ class GraphScene(QGraphicsScene):
         clipboard.setText(json_data)
 
     def paste_selection(self, target_pos=None):
-        """Paste nodes and connections from clipboard.
-
-        Args:
-            target_pos (QPointF, optional): Target position where the center of the pasted nodes should be placed.
-                                           If None, uses a small default offset.
-        """
+        """Paste nodes and connections from clipboard using batch command."""
         clipboard = QCoreApplication.instance().clipboard()
         clipboard_text = clipboard.text()
 
@@ -1111,9 +1120,8 @@ class GraphScene(QGraphicsScene):
         if not structure.get("nodes"):
             return
 
-        # Calculate bounding box center of clipboard nodes
+        # Calculate offset
         if target_pos is not None and hasattr(target_pos, "x") and hasattr(target_pos, "y"):
-            # Calculate current bounding box of clipboard nodes
             min_x = min_y = float("inf")
             max_x = max_y = float("-inf")
 
@@ -1124,55 +1132,40 @@ class GraphScene(QGraphicsScene):
                 min_y = min(min_y, y)
                 max_y = max(max_y, y)
 
-            # Calculate center of clipboard nodes
             clipboard_center_x = (min_x + max_x) / 2
             clipboard_center_y = (min_y + max_y) / 2
 
-            # Calculate offset to move clipboard center to target position
             offset_x = target_pos.x() - clipboard_center_x
             offset_y = target_pos.y() - clipboard_center_y
         else:
-            # Use default small offset
             offset_x = 50
             offset_y = 50
 
         # Generate new UUIDs for pasted nodes
         id_map = {}
         for node in structure["nodes"]:
-            old_id = node["id"]
-            new_id = str(uuid.uuid4())
-            id_map[old_id] = new_id
+            id_map[node["id"]] = str(uuid.uuid4())
 
-        # Create new node data with updated IDs and positions
-        new_nodes = []
+        # Prepare Batch Data
+        new_nodes_data = []
         for node in structure["nodes"]:
             new_node = node.copy()
             new_node["id"] = id_map[node["id"]]
-            # Apply calculated offset to position
             new_node["pos"] = (node["pos"][0] + offset_x, node["pos"][1] + offset_y)
-            new_nodes.append(new_node)
+            new_nodes_data.append(new_node)
 
-        # Create new connections with updated IDs
-        new_connections = []
+        new_conns_data = []
         for conn in structure["connections"]:
             if conn["src_id"] in id_map and conn["dst_id"] in id_map:
-                new_connections.append(
-                    {
-                        "src_id": id_map[conn["src_id"]],
-                        "src_port": conn["src_port"],
-                        "dst_id": id_map[conn["dst_id"]],
-                        "dst_port": conn["dst_port"],
-                    }
-                )
+                new_conns_data.append({
+                    "src_id": id_map[conn["src_id"]],
+                    "src_port": conn["src_port"],
+                    "dst_id": id_map[conn["dst_id"]],
+                    "dst_port": conn["dst_port"],
+                })
 
-        # Add nodes to the graph
-        for node in new_nodes:
-            # Create the node with specific ID and parameters
-            self.controller.add_node(node["type"], node["pos"], node_id=node["id"], params=node["params"])
-
-        # Add connections
-        for conn in new_connections:
-            self.controller.connect_nodes(conn["src_id"], conn["src_port"], conn["dst_id"], conn["dst_port"])
+        # Send Single Batch Command via Controller
+        self.controller.paste_structure(new_nodes_data, new_conns_data)
 
     def selectAll(self):
         """Select all nodes in the scene."""

@@ -4,9 +4,10 @@ from core import Engine
 from commands import (
     AddNodeCommand,
     DeleteNodeCommand,
-    MoveNodeCommand,
+    MultiMoveNodeCommand,
     ConnectCommand,
     DisconnectCommand,
+    CompoundCommand
 )
 
 
@@ -138,11 +139,58 @@ class AppController(QObject):
         cmd.execute()
         self.history.push(cmd)
 
-    def move_node(self, node_id, new_pos, old_pos):
-        """Move a node to a new position."""
-        cmd = MoveNodeCommand(self, node_id, new_pos, old_pos)
+    def move_nodes(self, moves_dict):
+        """
+        Move multiple nodes in one undo step.
+        moves_dict: { node_id: (new_pos, old_pos) }
+        """
+        if not moves_dict:
+            return
+        cmd = MultiMoveNodeCommand(self, moves_dict)
         cmd.execute()
         self.history.push(cmd)
+
+    def delete_selection(self, node_ids, connection_tuples):
+        """
+        Deletes a list of nodes and specific connections atomically.
+        connection_tuples: list of (sid, sp, did, dp)
+        """
+        macro = CompoundCommand("Delete Selection")
+
+        # 1. Explicitly disconnect selected wires first
+        for c_data in connection_tuples:
+            macro.add(DisconnectCommand(self, *c_data))
+
+        # 2. Delete nodes (Engine handles implicit disconnection,
+        # but DeleteNodeCommand memento handles restoration)
+        for nid in node_ids:
+            macro.add(DeleteNodeCommand(self, nid))
+
+        if macro.commands:
+            macro.execute()
+            self.history.push(macro)
+
+    def paste_structure(self, nodes_data, connections_data):
+        """
+        Pastes a set of nodes and connections atomically.
+        """
+        macro = CompoundCommand("Paste")
+
+        # 1. Add Nodes
+        for n in nodes_data:
+            macro.add(
+                AddNodeCommand(self, n["type"], n["pos"], node_id=n["id"], params=n["params"])
+            )
+
+        # 2. Add Connections
+        for c in connections_data:
+            macro.add(
+                ConnectCommand(self, c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])
+            )
+
+        if macro.commands:
+            macro.execute()
+            self.history.push(macro)
 
     def connect_nodes(self, src_id, src_port, dst_id, dst_port):
         """Connect two nodes."""
@@ -182,12 +230,14 @@ class AppController(QObject):
             with open(filename, "r") as f:
                 json_str = f.read()
                 self.engine.push_command(("load", json_str))
+                self.history = CommandHistory()
         except Exception as e:
             print(f"Controller Load Error: {e}")
 
     def clear(self):
         """Clear the graph."""
         self.engine.push_command(("clear",))
+        self.history = CommandHistory()
 
     def reload_plugins(self):
         """Reload all plugins."""

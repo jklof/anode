@@ -1,7 +1,6 @@
 """
 Command Pattern implementation for topology changes (undo/redo support).
-Only topology changes are undoable: adding, deleting, moving, and connecting nodes.
-Parameter changes are NOT undoable.
+Updated to support Compound Commands (Macros) and Batch operations.
 """
 
 from abc import ABC, abstractmethod
@@ -20,6 +19,26 @@ class ICommand(ABC):
     def undo(self):
         """Undo the command."""
         pass
+
+
+class CompoundCommand(ICommand):
+    """Executes a list of commands as a single atomic unit (Macro)."""
+
+    def __init__(self, name="Macro"):
+        self.name = name
+        self.commands = []
+
+    def add(self, command):
+        self.commands.append(command)
+
+    def execute(self):
+        for cmd in self.commands:
+            cmd.execute()
+
+    def undo(self):
+        # Undo in reverse order
+        for cmd in reversed(self.commands):
+            cmd.undo()
 
 
 class AddNodeCommand(ICommand):
@@ -71,20 +90,23 @@ class DeleteNodeCommand(ICommand):
             )
 
 
-class MoveNodeCommand(ICommand):
-    """Command to move a node to a new position."""
+class MultiMoveNodeCommand(ICommand):
+    """
+    Command to move multiple nodes at once.
+    moves_dict: { node_id: (new_pos, old_pos) }
+    """
 
-    def __init__(self, controller, node_id, new_pos, old_pos):
+    def __init__(self, controller, moves_dict):
         self.controller = controller
-        self.node_id = node_id
-        self.new_pos = new_pos
-        self.old_pos = old_pos
+        self.moves_dict = moves_dict
 
     def execute(self):
-        self.controller.engine.push_command(("move", self.node_id, self.new_pos[0], self.new_pos[1]))
+        for node_id, (new_pos, _) in self.moves_dict.items():
+            self.controller.engine.push_command(("move", node_id, new_pos[0], new_pos[1]))
 
     def undo(self):
-        self.controller.engine.push_command(("move", self.node_id, self.old_pos[0], self.old_pos[1]))
+        for node_id, (_, old_pos) in self.moves_dict.items():
+            self.controller.engine.push_command(("move", node_id, old_pos[0], old_pos[1]))
 
 
 class ConnectCommand(ICommand):
