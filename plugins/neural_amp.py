@@ -1,18 +1,13 @@
 import ctypes
 import logging
 import os
-import queue
 import torch
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
     QLabel,
-    QFileDialog,
-    QSlider,
 )
-from PySide6.QtCore import Qt, QTimer, QSignalBlocker
+from PySide6.QtCore import Qt
 
 from ffi_base import FFINode
 from base import SAMPLE_RATE, BLOCK_SIZE
@@ -33,24 +28,12 @@ class NamWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
 
-        # --- Section 1: File Info ---
-        self.lbl_file = QLabel("No Model Loaded")
-        self.lbl_file.setStyleSheet("color: #aaa; font-size: 10px; margin-bottom: 2px;")
-        self.lbl_file.setWordWrap(True)
-        layout.addWidget(self.lbl_file)
+        # --- Section 1: File Parameter ---
+        # Unified File Parameter Widget
+        self.file_widget = self.proxy.create_param_widget("model_path")
+        layout.addWidget(self.file_widget)
 
-        # --- Section 2: Load Button ---
-        btn_load = QPushButton("Load NAM Model")
-        btn_load.clicked.connect(self.browse)
-        layout.addWidget(btn_load)
-
-        # --- Section 3: Status ---
-        self.lbl_status = QLabel("Idle")
-        self.lbl_status.setAlignment(Qt.AlignCenter)
-        self.lbl_status.setStyleSheet("color: #666; margin-bottom: 5px;")
-        layout.addWidget(self.lbl_status)
-
-        # --- Section 4: Gain Controls ---
+        # --- Section 2: Gain Controls ---
         # NAM models often need +/- gain adjustment
         self.drive_widget = self.proxy.create_param_widget("drive")
         self.level_widget = self.proxy.create_param_widget("level")
@@ -58,13 +41,16 @@ class NamWidget(QWidget):
         layout.addWidget(self.drive_widget)
         layout.addWidget(self.level_widget)
 
-    def browse(self):
-        # Use None parent to prevent embedding crashes
-        f, _ = QFileDialog.getOpenFileName(None, "Open NAM Model", "", "NAM Models (*.nam);;All Files (*.*)")
-        if f:
-            self.lbl_status.setText("Loading...")
-            self.lbl_status.setStyleSheet("color: #FFaa00")
-            self.proxy.set_parameter("model_path", f)
+        # --- Section 3: Status ---
+        self.lbl_status = QLabel("Idle")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setStyleSheet("color: #666; margin-top: 5px;")
+        layout.addWidget(self.lbl_status)
+
+        self.lbl_file = QLabel("No Model Loaded")
+        self.lbl_file.setStyleSheet("color: #aaa; font-size: 10px;")
+        self.lbl_file.setWordWrap(True)
+        layout.addWidget(self.lbl_file)
 
     def on_telemetry(self, data: dict):
         if "status" in data:
@@ -80,10 +66,8 @@ class NamWidget(QWidget):
             self.drive_widget.update_from_backend(params["drive"])
         if "level" in params:
             self.level_widget.update_from_backend(params["level"])
-
-        # Update Filename Label if path is present
-        if "model_path" in params and params["model_path"]:
-            self.lbl_file.setText(os.path.basename(params["model_path"]))
+        if "model_path" in params:
+            self.file_widget.update_from_backend(params["model_path"])
 
 
 class NamNode(FFINode):
@@ -97,7 +81,8 @@ class NamNode(FFINode):
         self.add_output("out")
 
         # Internal params
-        self.add_string_param("model_path", "")
+        # CHANGED: Use add_file_param to enable generic UI widget
+        self.add_file_param("model_path", "", filter="NAM Models (*.nam);;All Files (*.*)")
         self.add_float_param("drive", 1.0, 0.0, 4.0)
         self.add_float_param("level", 1.0, 0.0, 4.0)
 

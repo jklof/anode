@@ -14,13 +14,11 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QLineEdit,
     QPushButton,
     QLabel,
     QSlider,
-    QFileDialog,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 
 # --- Media Dependencies ---
 try:
@@ -213,39 +211,24 @@ class MediaPlayerWidget(QWidget):
             layout.addWidget(QLabel("Missing deps: av, yt-dlp"))
             return
 
-        # Row 1: File
-        r1 = QHBoxLayout()
-        self.path_input = QLineEdit()
-        self.path_input.setPlaceholderText("File path or URL...")
-        self.path_input.returnPressed.connect(self.do_load)
+        # Row 1: Unified File Parameter
+        self.file_widget = self.proxy.create_param_widget("file_path")
+        layout.addWidget(self.file_widget)
 
-        btn_browse = QPushButton("...")
-        btn_browse.setFixedWidth(30)
-        btn_browse.clicked.connect(self.browse)
-
-        r1.addWidget(self.path_input)
-        r1.addWidget(btn_browse)
-        layout.addLayout(r1)
-
-        # Row 2: Load
-        self.btn_load = QPushButton("Load Source")
-        self.btn_load.clicked.connect(self.do_load)
-        layout.addWidget(self.btn_load)
-
-        # Row 3: Metadata
+        # Row 2: Metadata
         self.lbl_title = QLabel(self.stored_title)
         self.lbl_title.setStyleSheet("color: #ccc; font-weight: bold; font-size: 11pt;")
         self.lbl_title.setWordWrap(True)
         layout.addWidget(self.lbl_title)
 
-        # Row 4: Slider
+        # Row 3: Slider
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, 1000)
         self.slider.setEnabled(False)
         self.slider.sliderReleased.connect(self.on_slider_release)
         layout.addWidget(self.slider)
 
-        # Row 5: Controls & Status
+        # Row 4: Controls & Status
         r5 = QHBoxLayout()
         self.btn_play = QPushButton("Play")
         self.btn_play.setCheckable(True)
@@ -264,27 +247,6 @@ class MediaPlayerWidget(QWidget):
         r5.addStretch()
         r5.addWidget(self.lbl_time)
         layout.addLayout(r5)
-
-    def browse(self):
-        f, _ = QFileDialog.getOpenFileName(None, "Open Audio File", "", "Audio (*.mp3 *.wav *.flac *.m4a);;All (*.*)")
-        if f:
-            self.path_input.setText(f)
-            self.do_load()
-
-    def do_load(self):
-        raw = self.path_input.text().strip()
-        if raw.startswith('"') and raw.endswith('"'):
-            raw = raw[1:-1]
-
-        if raw:
-            self.stored_title = "Loading..."
-            self.lbl_title.setText(self.stored_title)
-            self.lbl_status.setText("Initializing...")
-            self.proxy.set_parameter("file_path", raw)
-            # Auto-play on load
-            self.btn_play.setChecked(True)
-            self.btn_play.setText("Pause")
-            self.proxy.set_parameter("playing", True)
 
     def toggle_play(self):
         playing = self.btn_play.isChecked()
@@ -315,7 +277,7 @@ class MediaPlayerWidget(QWidget):
 
     def update_from_params(self, params):
         if "file_path" in params:
-            self.path_input.setText(params["file_path"])
+            self.file_widget.update_from_backend(params["file_path"])
         if "playing" in params:
             p = bool(params["playing"])
             self.btn_play.setChecked(p)
@@ -333,7 +295,8 @@ class MediaPlayerNode(Node):
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_string_param("file_path", "")
+        # CHANGED: Use add_file_param for generic UI support
+        self.add_file_param("file_path", "", filter="Audio Files (*.mp3 *.wav *.flac *.m4a);;All (*.*)")
         self.add_bool_param("playing", False)
         self.add_float_param("seek_ratio", -1.0)
         self.add_output("out")

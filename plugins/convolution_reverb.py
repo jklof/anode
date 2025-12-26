@@ -10,13 +10,9 @@ import logging
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
     QLabel,
-    QFileDialog,
-    QSlider,
 )
-from PySide6.QtCore import Qt, QTimer, QSignalBlocker
+from PySide6.QtCore import Qt
 
 from base import Node, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE
 
@@ -117,30 +113,25 @@ class ReverbWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
 
-        # --- Section 1: File Loader ---
-        self.lbl_file = QLabel("No IR Loaded")
-        self.lbl_file.setStyleSheet("color: #aaa; font-size: 10px; margin-bottom: 2px;")
-        self.lbl_file.setWordWrap(True)
-        layout.addWidget(self.lbl_file)
+        # --- Section 1: Parameters (File & Mix) ---
+        # Unified File Parameter Widget
+        self.file_widget = self.proxy.create_param_widget("ir_path")
+        layout.addWidget(self.file_widget)
 
-        btn_load = QPushButton("Load IR File")
-        btn_load.clicked.connect(self.browse)
-        layout.addWidget(btn_load)
-
-        self.lbl_status = QLabel("Idle")
-        self.lbl_status.setAlignment(Qt.AlignCenter)
-        self.lbl_status.setStyleSheet("color: #666; margin-bottom: 5px;")
-        layout.addWidget(self.lbl_status)
-
-        # --- Section 2: Parameters ---
         self.mix_widget = self.proxy.create_param_widget("mix")
         layout.addWidget(self.mix_widget)
 
-    def browse(self):
-        f, _ = QFileDialog.getOpenFileName(None, "Open Impulse Response", "", "Audio Files (*.wav *.flac *.mp3)")
-        if f:
-            self.lbl_status.setText("Requesting...")
-            self.proxy.set_parameter("ir_path", f)
+        # --- Section 2: Status ---
+        # We keep status labels to show async loader state (Success/Error)
+        self.lbl_status = QLabel("Idle")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setStyleSheet("color: #666; margin-top: 5px;")
+        layout.addWidget(self.lbl_status)
+
+        self.lbl_file = QLabel("No IR Loaded")
+        self.lbl_file.setStyleSheet("color: #aaa; font-size: 10px;")
+        self.lbl_file.setWordWrap(True)
+        layout.addWidget(self.lbl_file)
 
     def on_telemetry(self, data: dict):
         if "status" in data:
@@ -154,6 +145,8 @@ class ReverbWidget(QWidget):
         # Update smart widgets
         if "mix" in params:
             self.mix_widget.update_from_backend(params["mix"])
+        if "ir_path" in params:
+            self.file_widget.update_from_backend(params["ir_path"])
 
 
 class ConvolutionReverb(Node):
@@ -166,7 +159,8 @@ class ConvolutionReverb(Node):
         self.add_output("out")
 
         self.add_float_param("mix", 0.5, 0.0, 1.0)
-        self.add_string_param("ir_path", "")
+        # CHANGED: Use add_file_param to enable generic UI widget
+        self.add_file_param("ir_path", "", filter="Audio Files (*.wav *.flac *.mp3)")
 
         self.loader_queue = queue.Queue()
         self.loading = False
