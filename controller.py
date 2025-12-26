@@ -7,7 +7,7 @@ from commands import (
     MultiMoveNodeCommand,
     ConnectCommand,
     DisconnectCommand,
-    CompoundCommand
+    CompoundCommand,
 )
 
 
@@ -178,15 +178,11 @@ class AppController(QObject):
 
         # 1. Add Nodes
         for n in nodes_data:
-            macro.add(
-                AddNodeCommand(self, n["type"], n["pos"], node_id=n["id"], params=n["params"])
-            )
+            macro.add(AddNodeCommand(self, n["type"], n["pos"], node_id=n["id"], params=n["params"]))
 
         # 2. Add Connections
         for c in connections_data:
-            macro.add(
-                ConnectCommand(self, c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])
-            )
+            macro.add(ConnectCommand(self, c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]))
 
         if macro.commands:
             macro.execute()

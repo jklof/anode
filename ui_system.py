@@ -1157,12 +1157,14 @@ class GraphScene(QGraphicsScene):
         new_conns_data = []
         for conn in structure["connections"]:
             if conn["src_id"] in id_map and conn["dst_id"] in id_map:
-                new_conns_data.append({
-                    "src_id": id_map[conn["src_id"]],
-                    "src_port": conn["src_port"],
-                    "dst_id": id_map[conn["dst_id"]],
-                    "dst_port": conn["dst_port"],
-                })
+                new_conns_data.append(
+                    {
+                        "src_id": id_map[conn["src_id"]],
+                        "src_port": conn["src_port"],
+                        "dst_id": id_map[conn["dst_id"]],
+                        "dst_port": conn["dst_port"],
+                    }
+                )
 
         # Send Single Batch Command via Controller
         self.controller.paste_structure(new_nodes_data, new_conns_data)

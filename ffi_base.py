@@ -126,7 +126,7 @@ class FFINode(Node):
 
         # 3. Ensure Contiguity & Safety (Critical for C pointers)
         # Verify device is CPU
-        if processed_tensor.device.type != 'cpu':
+        if processed_tensor.device.type != "cpu":
             processed_tensor = processed_tensor.cpu()
 
         # Use zero-allocation strategy: pre-allocated scratch buffer for copying non-contiguous tensors

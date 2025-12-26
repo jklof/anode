@@ -71,24 +71,14 @@ class InputSlot:
     def get_tensor(self) -> torch.Tensor:
         """
         Retrieves the input audio buffer.
-
-        CRITICAL WARNING: READ-ONLY REFERENCE
-        To optimize performance, this method often returns a direct reference to an
-        upstream node's output buffer.
-
-        You must NOT modify the returned tensor in-place (e.g., do NOT use +=, *=, .add_, .mul_).
-        Doing so will corrupt the signal for other nodes connected to the same source.
-
-        If you need to mutate the input data (e.g. apply gain), you must either:
-        1. Use out-of-place operations (e.g. `out = inp * 0.5`)
-        2. Clone the tensor first (e.g. `work_buffer = inp.clone()`)
         """
         if self.connected_outputs:
-            # Zero-Copy Optimization: If only one output connected, return it directly (Read-Only)
-            if len(self.connected_outputs) == 1:
-                return self.connected_outputs[0].buffer  # Read-Only! Do not modify.
+            # SAFETY CHANGE: Removed Zero-Copy Optimization.
+            # We always copy to self._scratch to ensure downstream nodes cannot
+            # corrupt the upstream buffer via in-place operations.
+            # Since self._scratch is pre-allocated, this avoids GC overhead.
 
-            # Determine if we need Stereo or Mono output
+            # Determine max channels
             max_channels = 1
             for out in self.connected_outputs:
                 if out.buffer.shape[0] > max_channels:
@@ -99,11 +89,12 @@ class InputSlot:
 
             # Directly copy the buffer from the first connected output into target
             target.copy_(self.connected_outputs[0].buffer[:max_channels])
+
             # Then add the remaining connected outputs
             for out in self.connected_outputs[1:]:
                 target.add_(out.buffer[:max_channels])
 
-            # FIX: Zero out unused channels to prevent ghosting
+            # Ghosting Fix: Zero out unused channels in scratch buffer
             if max_channels < CHANNELS:
                 self._scratch[max_channels:].zero_()
 
