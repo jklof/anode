@@ -159,7 +159,6 @@ class ConvolutionReverb(Node):
         self.add_output("out")
 
         self.add_float_param("mix", 0.5, 0.0, 1.0)
-        # CHANGED: Use add_file_param to enable generic UI widget
         self.add_file_param("ir_path", "", filter="Audio Files (*.wav *.flac *.mp3)")
 
         self.loader_queue = queue.Queue()

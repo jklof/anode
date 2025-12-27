@@ -295,7 +295,6 @@ class MediaPlayerNode(Node):
 
     def __init__(self, name=""):
         super().__init__(name)
-        # CHANGED: Use add_file_param for generic UI support
         self.add_file_param("file_path", "", filter="Audio Files (*.mp3 *.wav *.flac *.m4a);;All (*.*)")
         self.add_bool_param("playing", False)
         self.add_float_param("seek_ratio", -1.0)

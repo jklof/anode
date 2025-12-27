@@ -31,6 +31,10 @@ endfunction()
 add_library(gain SHARED gain.cpp)
 copy_target_to_directory(gain "${PROJECT_SOURCE_DIR}/../plugins")
 
+# --- Target: Compressor ---
+add_library(compressor SHARED compressor.cpp)
+copy_target_to_directory(compressor "${PROJECT_SOURCE_DIR}/../plugins")
+
 
 # --- Target: NAM Processor ---
 FetchContent_Populate(NAM_CORE)
