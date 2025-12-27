@@ -1,5 +1,6 @@
 import numpy as np
 import queue
+import torch
 from base import Node
 
 
@@ -17,6 +18,9 @@ class WaveformDisplay(Node):
 
     def process(self):
         sig = self.inp.get_tensor()
+        # Sanitize signal to prevent UI freezing
+        sig = torch.clamp(sig, -1.0, 1.0)
+        sig = torch.nan_to_num(sig, nan=0.0, posinf=1.0, neginf=-1.0)
         # Pass-through audio efficiently
         self.out.buffer.copy_(sig)
 
@@ -72,7 +76,8 @@ try:
                 while not self.node.monitor_queue.empty():
                     latest = self.node.monitor_queue.get_nowait()
 
-                if latest is not None:
+                # Only update if data has changed to prevent unnecessary repaints
+                if latest is not None and (self.data is None or not np.array_equal(self.data, latest)):
                     self.data = latest
                     self.update()  # Schedule repaint
             except queue.Empty:
@@ -121,8 +126,11 @@ try:
                 # Create Y coordinates (inverted and scaled)
                 y_coords = center_y - (chan_data * scale_y)
 
-                # Combine into QPointF objects
-                points = [QPointF(x, y) for x, y in zip(x_coords, y_coords)]
+                # Verify y_coords are within reasonable range and clamp
+                y_coords = np.clip(y_coords, 0, h)
+
+                # Combine into QPointF objects, skipping non-finite values
+                points = [QPointF(x, y) for x, y in zip(x_coords, y_coords) if np.isfinite(y)]
 
                 # Draw the whole line at once
                 painter.drawPolyline(points)

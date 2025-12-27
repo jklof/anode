@@ -99,18 +99,21 @@ class BaseAudioDeviceNode(Node):
         self._status_msg = "Inactive"
         self._active = False
 
-    def _start_stream(self, StreamClass, callback):
+    def _start_stream(self, StreamClass, callback, channels=None, samplerate=None):
         self._stop_stream()
         dev_id = self.params["device_index"].value
         if dev_id == -1:
             dev_id = None  # sounddevice default
 
+        channels = channels or CHANNELS
+        samplerate = samplerate or SAMPLE_RATE
+
         try:
             self.stream = StreamClass(
                 device=dev_id,
-                samplerate=SAMPLE_RATE,
+                samplerate=samplerate,
                 blocksize=BLOCK_SIZE,
-                channels=CHANNELS,
+                channels=channels,
                 dtype="float32",
                 callback=callback,
             )
@@ -118,8 +121,15 @@ class BaseAudioDeviceNode(Node):
             self._active = True
             info = sd.query_devices(dev_id) if dev_id is not None else sd.query_devices(sd.default.device[1])
             self._status_msg = f"Active: {info['name']}"
+        except sd.PortAudioError as e:
+            logger.error(f"PortAudioError opening stream: {e}")
+            if len(e.args) > 1:
+                logger.error(f"Host error details: {e.args[1]}")
+            self._status_msg = f"Error: {str(e)[:50]}"
+            self._active = False
         except Exception as e:
-            self._status_msg = f"Error: {str(e)[:20]}"
+            logger.error(f"Unexpected error opening stream: {e}")
+            self._status_msg = f"Error: {str(e)[:50]}"
             self._active = False
 
     def _stop_stream(self):
@@ -151,9 +161,42 @@ class AudioDeviceInput(BaseAudioDeviceNode):
     def __init__(self, name=""):
         super().__init__(name)
         self.out = self.add_output("out")
+        self._actual_channels = CHANNELS  # Track actual channels used
 
     def start(self):
-        self._start_stream(sd.InputStream, self._callback)
+        dev_id = self.params["device_index"].value
+        if dev_id == -1:
+            dev_id = None
+
+        # Smart settings fallback
+        channels = CHANNELS
+        samplerate = SAMPLE_RATE
+
+        try:
+            if dev_id is not None:
+                info = sd.query_devices(dev_id)
+            else:
+                info = sd.query_devices(sd.default.device[0])
+
+            # Check input channels
+            max_input_ch = info.get("max_input_channels", CHANNELS)
+            if max_input_ch < channels:
+                logger.warning(f"Device supports only {max_input_ch} input channels, falling back from {channels}")
+                channels = max_input_ch
+
+            # Check sample rate support
+            supported_rates = info.get("supported_samplerates", [])
+            if supported_rates and SAMPLE_RATE not in supported_rates:
+                logger.warning(
+                    f"Sample rate {SAMPLE_RATE} not supported, using default {info.get('default_samplerate', SAMPLE_RATE)}"
+                )
+                samplerate = info.get("default_samplerate", SAMPLE_RATE)
+
+        except Exception as e:
+            logger.warning(f"Could not query device capabilities: {e}, using defaults")
+
+        self._actual_channels = channels
+        self._start_stream(sd.InputStream, self._callback, channels=channels, samplerate=samplerate)
 
     def _callback(self, indata, frames, time, status):
         self.ring_buffer.write(indata)
@@ -162,6 +205,9 @@ class AudioDeviceInput(BaseAudioDeviceNode):
         # Read from ring buffer into Torch output
         temp = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
         if self.ring_buffer.read(temp):
+            # Handle mono to stereo duplication if device is mono
+            if self._actual_channels == 1:
+                temp[:, 1] = temp[:, 0]  # Duplicate mono channel to right channel
             # Transpose [Frames, Ch] to [Ch, Frames] for ANode
             self.out.buffer.copy_(torch.from_numpy(temp.T))
         else:
