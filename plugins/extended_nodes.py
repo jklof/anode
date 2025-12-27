@@ -54,13 +54,12 @@ class Selector(Node):
             self.out.buffer.copy_(self.in_b.get_tensor())
 
 
-class FileRecorder(Node, IClockProvider):
+class FileRecorder(Node):
     category = "I/O"
     label = "File Recorder"
 
     def __init__(self, name=""):
-        Node.__init__(self, name)
-        IClockProvider.__init__(self)
+        super().__init__(name)
         self.add_file_param("filename", "output.wav", filter="WAV Files (*.wav)", mode="save")
         self.add_bool_param("record", False)
         self.inp = self.add_input("in")
@@ -68,16 +67,6 @@ class FileRecorder(Node, IClockProvider):
         self._file = None
         self._recording = False
         self._frames_written = 0
-
-    def start_clock(self):
-        pass
-
-    def stop_clock(self):
-        pass
-
-    def wait_for_sync(self):
-        # Offline/Fast mode: return immediately
-        pass
 
     def _open_file(self, filename):
         self._close_file()

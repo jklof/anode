@@ -172,6 +172,11 @@ class Engine:
         self.command_queue = queue.Queue()
         self.output_queue = queue.Queue(maxsize=5)
         self.thread = None
+        self._tick_semaphore = None
+        self.max_buffered_frames = 4
+
+    def tick(self):
+        self._tick_semaphore.release()
 
     def push_command(self, cmd: Tuple):
         if self.running:
@@ -369,7 +374,10 @@ class Engine:
             # 2. Start nodes safely
             for node in self.graph.nodes:
                 try:
-                    node.start()
+                    if node == self.graph.clock_source:
+                        node.start_clock(self.tick)
+                    else:
+                        node.start()
                 except Exception as e:
                     logging.exception(f"Error starting node {node.name}")
                     node.error_msg = f"Start Error: {e}"
@@ -391,9 +399,11 @@ class Engine:
                     self._emit_snapshot()
 
                 if self.graph.clock_source:
-                    self.graph.clock_source.wait_for_sync()
+                    # Wait for the audio thread to signal us
+                    self._tick_semaphore.acquire()
                 else:
-                    time.sleep(0.001)
+                    # Fallback sleep if no clock source is defined to prevent 100% CPU usage
+                    time.sleep(BLOCK_SIZE / SAMPLE_RATE)
 
                 for node in self.graph.nodes:
                     node.sync()
@@ -427,6 +437,8 @@ class Engine:
 
         for n in self.graph.nodes:
             n.stop()
+        if self.graph.clock_source:
+            self.graph.clock_source.stop_clock()
         self._emit_snapshot()
         print("Engine: Stopped")
 
@@ -438,14 +450,21 @@ class Engine:
         if self.graph.clock_source:
             self.graph.clock_source.abort_flag = False
         self._emit_snapshot()
+        self._tick_semaphore = threading.Semaphore(self.max_buffered_frames)
         self.thread = threading.Thread(target=self._worker)
         self.thread.start()
 
     def stop(self):
+        if not self.running:
+            return
         self.running = False
         self.abort_flag = True
         if self.graph.clock_source:
             self.graph.clock_source.abort_flag = True
+        if self._tick_semaphore:
+            self._tick_semaphore.release()
         if self.thread:
             self.thread.join()
+            self.thread = None
+            self._tick_semaphore = None
         self._emit_snapshot()

@@ -26,15 +26,11 @@ class IClockProvider(abc.ABC):
         return self._is_master_clock
 
     @abc.abstractmethod
-    def start_clock(self):
+    def start_clock(self, tick_callback):
         pass
 
     @abc.abstractmethod
     def stop_clock(self):
-        pass
-
-    @abc.abstractmethod
-    def wait_for_sync(self):
         pass
 
 

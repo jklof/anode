@@ -39,7 +39,7 @@ class MainWindow(QMainWindow):
     def create_default_patch(self):
         id_osc = self.controller.add_node("SineOscillator", (-275, 0))
         id_conv = self.controller.add_node("MonoToStereo", (-75, 0))
-        id_out = self.controller.add_node("AudioOutput", (125, 0))
+        id_out = self.controller.add_node("AudioDeviceOutput", (125, 0))
         if id_osc and id_conv and id_out:
             self.controller.connect_nodes(id_osc, "signal", id_conv, "in")
             self.controller.connect_nodes(id_conv, "out", id_out, "audio_in")
