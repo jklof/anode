@@ -28,8 +28,8 @@ function(copy_target_to_directory target_name destination_dir)
 endfunction()
 
 # --- Target: Delay Processor ---
-add_library(gain SHARED gain.cpp)
-copy_target_to_directory(gain "${PROJECT_SOURCE_DIR}/../plugins")
+add_library(delay SHARED delay.cpp)
+copy_target_to_directory(delay "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: Compressor ---
 add_library(compressor SHARED compressor.cpp)
