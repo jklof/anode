@@ -2,7 +2,6 @@ import torch
 import numpy as np
 import sounddevice as sd
 import logging
-import threading
 import time
 from typing import Optional, Dict, List, Any, Callable
 
@@ -28,31 +27,29 @@ class AudioRingBuffer:
         self.storage = np.zeros((self.total_frames, channels), dtype=np.float32)
         self.write_count = 0
         self.read_count = 0
-        self._lock = threading.Lock()
 
     def write(self, data: np.ndarray) -> bool:
-        with self._lock:
-            if (self.write_count - self.read_count) >= self.capacity_blocks:
-                return False
-            start_idx = (self.write_count % self.capacity_blocks) * self.block_size
-            self.storage[start_idx : start_idx + self.block_size, :] = data
-            self.write_count += 1
-            return True
+        available_space = self.capacity_blocks - (self.write_count - self.read_count)
+        if available_space < 1:
+            return False
+        start_idx = (self.write_count % self.capacity_blocks) * self.block_size
+        self.storage[start_idx : start_idx + self.block_size, :] = data
+        self.write_count += 1
+        return True
 
     def read(self, outdata: np.ndarray) -> bool:
-        with self._lock:
-            if (self.write_count - self.read_count) == 0:
-                return False
-            start_idx = (self.read_count % self.capacity_blocks) * self.block_size
-            outdata[:] = self.storage[start_idx : start_idx + self.block_size, :]
-            self.read_count += 1
-            return True
+        available_data = self.write_count - self.read_count
+        if available_data < 1:
+            return False
+        start_idx = (self.read_count % self.capacity_blocks) * self.block_size
+        outdata[:] = self.storage[start_idx : start_idx + self.block_size, :]
+        self.read_count += 1
+        return True
 
     def clear(self):
-        with self._lock:
-            self.write_count = 0
-            self.read_count = 0
-            self.storage.fill(0)
+        self.write_count = 0
+        self.read_count = 0
+        self.storage.fill(0)
 
 
 # ==============================================================================
@@ -253,12 +250,8 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
             # Transpose to [Frames, Ch]
             np_data = np_data[:CHANNELS, :].T
 
-        # Write to buffer with a small retry/timeout to prevent engine hang
-        start = time.perf_counter()
-        while not self.ring_buffer.write(np_data) and self._active:
-            if time.perf_counter() - start > 0.01:
-                break  # 10ms timeout
-            time.sleep(0.001)
+        # Try to write to the ring buffer once
+        self.ring_buffer.write(np_data)
 
 
 # ==============================================================================
