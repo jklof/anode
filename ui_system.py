@@ -961,6 +961,7 @@ class GraphScene(QGraphicsScene):
         self.controller.delete_selection(nodes_to_delete, connections_to_delete)
 
     def reconcile(self, snapshot: dict):
+        # 1. Preserve Full Reload Logic
         reload_version = snapshot.get("reload_version", 0)
         if reload_version != self._last_reload_version:
             self._last_reload_version = reload_version
@@ -972,40 +973,38 @@ class GraphScene(QGraphicsScene):
                 self.removeItem(item)
             self.node_items.clear()
 
-        snap_nodes = snapshot["nodes"]
-        snap_ids = {n["id"] for n in snap_nodes}
-        snap_conns = set()
-        for c in snapshot["connections"]:
-            snap_conns.add((c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]))
+        # 2. Node Reconciliation
+        # Identify Removed Nodes
+        snap_ids = {n["id"] for n in snapshot["nodes"]}
+        ui_ids = set(self.node_items.keys())
+        for nid in ui_ids - snap_ids:
+            self.removeItem(self.node_items.pop(nid))
 
+        # Identify New/Updated Nodes
+        for n_data in snapshot["nodes"]:
+            nid = n_data["id"]
+            if nid not in self.node_items:
+                # New node
+                item = NodeItem(n_data, self.controller)
+                item.setPos(*n_data["pos"])
+                item.set_show_load(self._show_load)
+                self.addItem(item)
+                item.build_ui()
+                self.node_items[nid] = item
+            else:
+                # Existing node
+                self.node_items[nid].update_from_snapshot(n_data)
+
+        # 3. Connection Reconciliation
+        # Identify Removed Connections
+        snap_conns = {(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]) for c in snapshot["connections"]}
         ui_keys = set(self.wire_items.keys())
         for k in ui_keys - snap_conns:
             wire = self.wire_items.pop(k)
             wire.detach()
             self.removeItem(wire)
 
-        ui_ids = set(self.node_items.keys())
-        for nid in ui_ids - snap_ids:
-            self.removeItem(self.node_items.pop(nid))
-
-        for n_data in snap_nodes:
-            nid = n_data["id"]
-            if nid not in self.node_items:
-                item = NodeItem(n_data, self.controller)
-                item.setPos(*n_data["pos"])
-                item.set_show_load(self._show_load)
-
-                # 1. Add item to scene (essential before building UI)
-                self.addItem(item)
-
-                # 2. Build UI now that scene is valid
-                item.build_ui()
-
-                self.node_items[nid] = item
-            else:
-                self.node_items[nid].update_from_snapshot(n_data)
-
-        ui_keys = set(self.wire_items.keys())
+        # Identify New Connections
         for k in snap_conns - ui_keys:
             sid, sp, did, dp = k
             if sid in self.node_items and did in self.node_items:
@@ -1015,6 +1014,8 @@ class GraphScene(QGraphicsScene):
                     wire = ConnectionItem(s_item.output_items[sp], d_item.input_items[dp], k)
                     self.addItem(wire)
                     self.wire_items[k] = wire
+
+        # 4. Final Update
         self.update()
 
     def on_telemetry_updated(self, data):
