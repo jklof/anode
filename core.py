@@ -1,3 +1,4 @@
+import gc
 import torch
 import threading
 import time
@@ -250,6 +251,7 @@ class Engine:
                     n.remove()
 
                 self.graph.remove_node(nid)
+                gc.collect()
             elif op == "conn":
                 _, sid, sp, did, dp = cmd
                 self.graph.connect(sid, sp, did, dp)
@@ -280,6 +282,7 @@ class Engine:
                     n.stop()
                     n.remove()
                 self.graph = Graph()
+                gc.collect()
 
             elif op == "save":
                 _, filename = cmd
@@ -316,6 +319,7 @@ class Engine:
                         for n in self.graph.nodes:
                             n.start()
                     self._emit_snapshot()
+                    gc.collect()
                 except Exception as e:
                     print(f"Load Failed: {e}")
 
@@ -353,6 +357,7 @@ class Engine:
                             n.start()
                     self._emit_snapshot()
                     print("Engine: Hot reload complete.")
+                    gc.collect()
                 except Exception as e:
                     print(f"Engine: Restore failed after reload: {e}")
 
@@ -361,6 +366,7 @@ class Engine:
 
     def _worker(self):
         print("Engine: Started")
+        gc.disable()
         with torch.no_grad():
 
             # --- STARTUP CLEANUP ---
@@ -386,6 +392,8 @@ class Engine:
             telemetry_interval = 0.1
             next_telemetry_time = time.perf_counter() + telemetry_interval
             stats_buffer = {}
+            last_gc_time = time.time()
+            GC_INTERVAL = 5.0
 
             while self.running:
                 dirty = False
@@ -399,8 +407,17 @@ class Engine:
                     self._emit_snapshot()
 
                 if self.graph.clock_source:
-                    # Wait for the audio thread to signal us
-                    self._tick_semaphore.acquire()
+                    # Step A (Non-blocking check)
+                    acquired = self._tick_semaphore.acquire(blocking=False)
+                    # Step B (If NOT acquired)
+                    if not acquired:
+                        # This means the semaphore count is 0. The engine has filled all buffers and is waiting on hardware. This is our "Safety Window".
+                        if time.time() - last_gc_time > GC_INTERVAL:
+                            gc.collect(0)  # Only generation 0
+                            last_gc_time = time.time()
+                        # Now call self._tick_semaphore.acquire(blocking=True) to wait for the actual hardware tick.
+                        self._tick_semaphore.acquire(blocking=True)
+                    # If acquired, we proceed directly (already decremented)
                 else:
                     # Fallback sleep if no clock source is defined to prevent 100% CPU usage
                     time.sleep(BLOCK_SIZE / SAMPLE_RATE)
@@ -435,6 +452,7 @@ class Engine:
                     self._emit_telemetry(global_cpu, node_data)
                     next_telemetry_time = now + telemetry_interval
 
+        gc.enable()
         for n in self.graph.nodes:
             n.stop()
         if self.graph.clock_source:
