@@ -90,7 +90,7 @@ class FFINode(Node):
         """Automatically pushes UI changes to C++."""
         super().on_ui_param_change(param_name)
         if self.dsp_handle and param_name in self.PARAM_MAP:
-            self.params[param_name].sync()
+            # Don't call sync() here - let audio thread handle it
             param_id = self.PARAM_MAP[param_name]
             val = self.params[param_name].value
             # Convert bool/int to float for simplicity

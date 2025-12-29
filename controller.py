@@ -55,6 +55,7 @@ class AppController(QObject):
         super().__init__()
         self.engine = Engine()
         self.history = CommandHistory()
+        self._latest_snapshot = {}
 
         self.poll_timer = QTimer()
         self.poll_timer.interval = 30
@@ -70,6 +71,7 @@ class AppController(QObject):
                 elif msg.get("type") == "param_update":
                     self.parameterUpdated.emit(msg)
                 else:
+                    self._latest_snapshot = msg  # cache latest snapshot
                     self.graphUpdated.emit(msg)
             except Exception:
                 logging.exception("Error processing engine message")
@@ -82,44 +84,29 @@ class AppController(QObject):
 
     def create_node_memento(self, node_id):
         """
-        Create a memento for a node before deletion.
-        Captures the node's full state and all its connections.
+        Create a memento from the cached UI snapshot.
+        SAFE: No audio thread access, no blocking.
         """
-        node = self.engine.graph.node_map.get(node_id)
-        if node is None:
+        snapshot = self._latest_snapshot
+
+        # Find node in cached snapshot
+        node_data = None
+        for n in snapshot.get("nodes", []):
+            if n["id"] == node_id:
+                node_data = n.copy()
+                break
+
+        if not node_data:
             return None
 
         # Find all connections involving this node
         connections = []
-        #DANGER: we should NOT be accessing engine.graph.nodes directly like this
-        for other_node in self.engine.graph.nodes:
-            # Check if other_node has inputs connected to our node
-            for port_name, inp_slot in other_node.inputs.items():
-                for out_slot in inp_slot.connected_outputs:
-                    if out_slot.parent.id == node_id:
-                        connections.append(
-                            {
-                                "src_id": node_id,
-                                "src_port": out_slot.name,
-                                "dst_id": other_node.id,
-                                "dst_port": port_name,
-                            }
-                        )
-            # Check if our node has inputs connected from other nodes
-            if other_node.id == node_id:
-                for port_name, inp_slot in other_node.inputs.items():
-                    for out_slot in inp_slot.connected_outputs:
-                        connections.append(
-                            {
-                                "src_id": out_slot.parent.id,
-                                "src_port": out_slot.name,
-                                "dst_id": node_id,
-                                "dst_port": port_name,
-                            }
-                        )
+        for conn in snapshot.get("connections", []):
+            if conn["src_id"] == node_id or conn["dst_id"] == node_id:
+                connections.append(conn.copy())
 
         return {
-            "node_data": node.to_dict(),
+            "node_data": node_data,
             "connections": connections,
         }
 

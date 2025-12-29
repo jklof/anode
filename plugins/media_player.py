@@ -371,8 +371,8 @@ class MediaPlayerNode(Node):
                 pass  # Avoid deadlock if self-called (shouldn't happen here)
             self.worker = None
 
-        with self.queue.mutex:
-            self.queue.queue.clear()
+        # Create NEW queue object instead of clearing
+        self.queue = queue.Queue(maxsize=500)  # ✅ Thread-safe
 
         self.playback_frames = int(start_time * SAMPLE_RATE)
         self.total_duration = 0.0
