@@ -100,7 +100,8 @@ class NamNode(FFINode):
                     self.lib.reset.restype = None
                     self.lib.reset.argtypes = [ctypes.c_void_p]
             except AttributeError as e:
-                print(f"Error: 'load_nam_model' not found in DLL: {e}")
+                logger.error(f"'load_nam_model' not found in DLL: {e}")
+                self._status = "Init failed"
 
     def on_ui_param_change(self, param_name: str):
         super().on_ui_param_change(param_name)
@@ -150,4 +151,4 @@ class NamNode(FFINode):
             try:
                 self.lib.reset(self.dsp_handle)
             except Exception as e:
-                logging.error(f"NAM Reset failed: {e}")
+                logger.error(f"NAM Reset failed: {e}")
