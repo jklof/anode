@@ -91,6 +91,7 @@ class AppController(QObject):
 
         # Find all connections involving this node
         connections = []
+        #DANGER: we should NOT be accessing engine.graph.nodes directly like this
         for other_node in self.engine.graph.nodes:
             # Check if other_node has inputs connected to our node
             for port_name, inp_slot in other_node.inputs.items():

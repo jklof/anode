@@ -2,8 +2,8 @@ import torch
 import numpy as np
 import sounddevice as sd
 import logging
-import time
-from typing import Optional, Dict, List, Any, Callable
+import threading
+from typing import Optional, Dict, List
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QSizePolicy
 from PySide6.QtCore import Qt, QTimer
@@ -27,29 +27,33 @@ class AudioRingBuffer:
         self.storage = np.zeros((self.total_frames, channels), dtype=np.float32)
         self.write_count = 0
         self.read_count = 0
+        self.lock = threading.Lock()
 
     def write(self, data: np.ndarray) -> bool:
-        available_space = self.capacity_blocks - (self.write_count - self.read_count)
-        if available_space < 1:
-            return False
-        start_idx = (self.write_count % self.capacity_blocks) * self.block_size
-        self.storage[start_idx : start_idx + self.block_size, :] = data
-        self.write_count += 1
-        return True
+        with self.lock:
+            available_space = self.capacity_blocks - (self.write_count - self.read_count)
+            if available_space < 1:
+                return False
+            start_idx = (self.write_count % self.capacity_blocks) * self.block_size
+            self.storage[start_idx : start_idx + self.block_size, :] = data
+            self.write_count += 1
+            return True
 
     def read(self, outdata: np.ndarray) -> bool:
-        available_data = self.write_count - self.read_count
-        if available_data < 1:
-            return False
-        start_idx = (self.read_count % self.capacity_blocks) * self.block_size
-        outdata[:] = self.storage[start_idx : start_idx + self.block_size, :]
-        self.read_count += 1
-        return True
+        with self.lock:
+            available_data = self.write_count - self.read_count
+            if available_data < 1:
+                return False
+            start_idx = (self.read_count % self.capacity_blocks) * self.block_size
+            outdata[:] = self.storage[start_idx : start_idx + self.block_size, :]
+            self.read_count += 1
+            return True
 
     def clear(self):
-        self.write_count = 0
-        self.read_count = 0
-        self.storage.fill(0)
+        with self.lock:
+            self.write_count = 0
+            self.read_count = 0
+            self.storage.fill(0)
 
 
 # ==============================================================================
