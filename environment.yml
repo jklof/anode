@@ -1,35 +1,40 @@
 name: anode-dev
 
 channels:
+  - pytorch
+  - nvidia
   - conda-forge
-  - https://repo.anaconda.com/pkgs/main
-  - https://repo.anaconda.com/pkgs/r
 
 dependencies:
-  - cmake
-  - cxx-compiler
   - python=3.11
   - pip
-  - pyside6
+
+  # ---- PyTorch stack (must come from pytorch channel) ----
   - pytorch
   - torchaudio
+  - pytorch-cuda=12.1
+
+  # ---- Everything else ----
+  - cmake
+  - cxx-compiler
   - numpy
-  - pysoundfile
-  - mido
   - scipy
   - librosa
-  - onnxruntime
   - resampy
-  - portaudio
+  - onnxruntime
   - av
+  - mido
+  - pysoundfile
+  - portaudio
   - yt-dlp
+  - pyside6
 
   - pip:
-    - sounddevice
-    - pydub
-    - pytubefix
-    - pylibrb
-    - kokoro-onnx
-    - misaki[en]
-    - openai-whisper
-    - webrtcvad-wheels
+      - sounddevice
+      - pydub
+      - pytubefix
+      - pylibrb
+      - kokoro-onnx
+      - misaki[en]
+      - openai-whisper
+      - webrtcvad-wheels
