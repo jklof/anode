@@ -16,6 +16,9 @@ import plugin_system
 
 from ui_icons import create_icon
 
+import torch
+torch.set_float32_matmul_precision("high")
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
