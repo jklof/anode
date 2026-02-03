@@ -62,6 +62,16 @@ class AppController(QObject):
         self.poll_timer.timeout.connect(self.check_engine_messages)
         self.poll_timer.start()
 
+    # Helper to get safe access to snapshot data
+    def get_node_data(self, node_id):
+        for n in self._latest_snapshot.get("nodes", []):
+            if n["id"] == node_id:
+                return n.copy()
+        return None
+
+    def get_connections_from_snapshot(self):
+        return self._latest_snapshot.get("connections", [])
+
     def check_engine_messages(self):
         while not self.engine.output_queue.empty():
             try:
@@ -115,21 +125,33 @@ class AppController(QObject):
     # -------------------------------------------------------------------------
 
     def add_node(self, node_type, pos, node_id=None, params=None):
-        """Add a node to the graph."""
         cmd = AddNodeCommand(self, node_type, pos, node_id=node_id, params=params)
         cmd.execute()
         self.history.push(cmd)
+        
+        # Optimistic Update: Add to local snapshot so immediate subsequent actions see it
+        # (Simplified: we wait for engine update for 'add', but 'move'/'del' need patching)
         return cmd.node_id
 
     def delete_node(self, node_id):
-        """Delete a node from the graph."""
-        cmd = DeleteNodeCommand(self, node_id)
+        # 1. Capture state NOW from our local cache
+        node_data = self.get_node_data(node_id)
+        if not node_data:
+            print(f"Warning: Attempted to delete unknown node {node_id}")
+            return
+
+        cmd = DeleteNodeCommand(self, node_id, node_data)
         cmd.execute()
         self.history.push(cmd)
 
+        # Optimistic Update: Remove from local snapshot
+        if "nodes" in self._latest_snapshot:
+            self._latest_snapshot["nodes"] = [
+                n for n in self._latest_snapshot["nodes"] if n["id"] != node_id
+            ]
+
     def move_nodes(self, moves_dict):
         """
-        Move multiple nodes in one undo step.
         moves_dict: { node_id: (new_pos, old_pos) }
         """
         if not moves_dict:
@@ -138,21 +160,47 @@ class AppController(QObject):
         cmd.execute()
         self.history.push(cmd)
 
+        # CRITICAL FIX: Optimistic Update
+        # Update local snapshot immediately so if we delete right after moving,
+        # the DeleteCommand captures the NEW position, not the old one.
+        if "nodes" in self._latest_snapshot:
+            for n in self._latest_snapshot["nodes"]:
+                if n["id"] in moves_dict:
+                    n["pos"] = moves_dict[n["id"]][0]
+
     def delete_selection(self, node_ids, connection_tuples):
         """
         Deletes a list of nodes and specific connections atomically.
-        connection_tuples: list of (sid, sp, did, dp)
         """
         macro = CompoundCommand("Delete Selection")
 
-        # 1. Explicitly disconnect selected wires first
+        # 1. Delete Explicitly Selected Wires
+        # (Only those NOT connected to nodes we are about to delete, 
+        # to avoid double-restoration logic, or rely on set logic in graph)
+        # However, for simplicity: deleting a node implicitly deletes wires.
+        # We only strictly need explicit Disconnect commands for wires where
+        # NEITHER end is being deleted (i.e., user selected just a wire).
+        
+        nodes_set = set(node_ids)
+        
         for c_data in connection_tuples:
-            macro.add(DisconnectCommand(self, *c_data))
+            sid, sp, did, dp = c_data
+            # Only add explicit disconnect if we AREN'T deleting the attached nodes
+            # (The Engine cleans up wires attached to deleted nodes automatically)
+            if sid not in nodes_set and did not in nodes_set:
+                macro.add(DisconnectCommand(self, *c_data))
 
-        # 2. Delete nodes (Engine handles implicit disconnection,
-        # but DeleteNodeCommand memento handles restoration)
+        # 2. Delete Nodes
+        # (The DeleteNodeCommand now captures connections internally via snapshot)
         for nid in node_ids:
-            macro.add(DeleteNodeCommand(self, nid))
+            node_data = self.get_node_data(nid)
+            if node_data:
+                macro.add(DeleteNodeCommand(self, nid, node_data))
+                # Optimistic Update to prevent subsequent loop iterations from seeing it
+                if "nodes" in self._latest_snapshot:
+                    self._latest_snapshot["nodes"] = [
+                        n for n in self._latest_snapshot["nodes"] if n["id"] != nid
+                    ]
 
         if macro.commands:
             macro.execute()

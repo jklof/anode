@@ -59,34 +59,41 @@ class AddNodeCommand(ICommand):
 
 
 class DeleteNodeCommand(ICommand):
-    """Command to delete a node from the graph. Implements Memento Pattern for restoration."""
+    """
+    Command to delete a node. 
+    Captures full state immediately upon creation to prevent race conditions.
+    """
 
-    def __init__(self, controller, node_id):
+    def __init__(self, controller, node_id, snapshot_data):
         self.controller = controller
         self.node_id = node_id
-        self.memento = None
+        # We pass the data in via constructor so it is captured 
+        # AT THE MOMENT of user action, not 30ms later in execute()
+        self.node_data = snapshot_data
+        self.connections = []
+
+        # Find connections associated with this node in the snapshot
+        # This handles the "Implicit Disconnect" restoration
+        if self.node_data:
+            snapshot_conns = self.controller.get_connections_from_snapshot()
+            for c in snapshot_conns:
+                if c["src_id"] == node_id or c["dst_id"] == node_id:
+                    self.connections.append(c)
 
     def execute(self):
-        # Capture state before deletion
-        self.memento = self.controller.create_node_memento(self.node_id)
         self.controller.engine.push_command(("del", self.node_id))
 
     def undo(self):
-        if self.memento is None:
+        if not self.node_data:
             return
 
-        node_data = self.memento["node_data"]
-        connections = self.memento["connections"]
+        # 1. Restore the Node using the robust 'restore' opcode
+        self.controller.engine.push_command(("restore", self.node_data))
 
-        # Restore the node
-        self.controller.engine.push_command(
-            ("add", node_data["type"], node_data["id"], node_data["pos"], node_data.get("params"))
-        )
-
-        # Restore connections
-        for conn in connections:
+        # 2. Restore the connections that were implicitly removed
+        for c in self.connections:
             self.controller.engine.push_command(
-                ("conn", conn["src_id"], conn["src_port"], conn["dst_id"], conn["dst_port"])
+                ("conn", c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])
             )
 
 

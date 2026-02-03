@@ -223,5 +223,12 @@ class Node:
         if "params" in data:
             for k, v in data["params"].items():
                 if k in self.params:
-                    self.params[k].set(v)
+                    # FIX: Handle full snapshot dicts (from Undo/Restore) vs simple values (from Load/Save)
+                    # Snapshot format: {"value": 0.5, "type": "float", ...}
+                    # Simple format: 0.5
+                    val = v
+                    if isinstance(v, dict) and "value" in v:
+                        val = v["value"]
+                    
+                    self.params[k].set(val)
                     self.params[k].sync()

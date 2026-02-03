@@ -277,6 +277,24 @@ class Engine:
                 node = self.graph.node_map.get(nid)
                 if node:
                     node.pos = (x, y)
+
+            # --- NEW: Restore Command for robust Undo ---
+            elif op == "restore":
+                _, node_data = cmd
+                cls = plugin_system.NODE_REGISTRY.get(node_data["type"])
+                if cls:
+                    node = cls(node_data["name"])
+                    node.id = node_data["id"]
+                    # This restores everything: pos, params, internal meta
+                    node.load_state(node_data)
+                    self.graph.add_node(node)
+                    if self.running:
+                        try:
+                            node.start()
+                        except:
+                            pass
+            # --------------------------------------------
+
             elif op == "clear":
                 for n in self.graph.nodes:
                     n.stop()
