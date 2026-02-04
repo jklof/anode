@@ -229,6 +229,6 @@ class Node:
                     val = v
                     if isinstance(v, dict) and "value" in v:
                         val = v["value"]
-                    
+
                     self.params[k].set(val)
                     self.params[k].sync()

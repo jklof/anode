@@ -5,8 +5,8 @@ import logging
 import threading
 from typing import Optional, Dict, List
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel, QSizePolicy
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel
+from PySide6.QtCore import Qt, QTimer, QSignalBlocker
 
 # ANode Imports
 from base import Node, IClockProvider, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE
@@ -14,12 +14,12 @@ from base import Node, IClockProvider, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
-# High-Performance Ring Buffer (Merged from audio_output.py)
+# High-Performance Ring Buffer
 # ==============================================================================
 
 
 class AudioRingBuffer:
-    def __init__(self, capacity_blocks=16, block_size=BLOCK_SIZE, channels=CHANNELS):
+    def __init__(self, capacity_blocks=32, block_size=BLOCK_SIZE, channels=CHANNELS):
         self.capacity_blocks = capacity_blocks
         self.block_size = block_size
         self.channels = channels
@@ -33,9 +33,11 @@ class AudioRingBuffer:
         with self.lock:
             available_space = self.capacity_blocks - (self.write_count - self.read_count)
             if available_space < 1:
-                return False
+                return False  # Overrun
+
             start_idx = (self.write_count % self.capacity_blocks) * self.block_size
-            self.storage[start_idx : start_idx + self.block_size, :] = data
+            frames_to_write = min(self.block_size, data.shape[0])
+            self.storage[start_idx : start_idx + frames_to_write, :] = data[:frames_to_write]
             self.write_count += 1
             return True
 
@@ -43,7 +45,8 @@ class AudioRingBuffer:
         with self.lock:
             available_data = self.write_count - self.read_count
             if available_data < 1:
-                return False
+                return False  # Underrun
+
             start_idx = (self.read_count % self.capacity_blocks) * self.block_size
             outdata[:] = self.storage[start_idx : start_idx + self.block_size, :]
             self.read_count += 1
@@ -57,25 +60,51 @@ class AudioRingBuffer:
 
 
 # ==============================================================================
-# Audio Device Management (From audio_devices.py)
+# Audio Device Management
 # ==============================================================================
 
 
 class AudioDeviceManager:
     @staticmethod
-    def get_compatible_devices(is_input: bool) -> List[Dict]:
+    def get_compatible_devices(is_input: bool, target_rate: int = SAMPLE_RATE) -> List[Dict]:
         devices = []
         try:
-            sd._terminate()
-            sd._initialize()  # Force rescan
-            for idx, dev in enumerate(sd.query_devices()):
+            # NOTE: Removed sd._terminate() / sd._initialize() here.
+            # Doing a full reset while other streams might be running (e.g. Input running, Output refreshing)
+            # causes instability and crashes. standard query_devices is usually sufficient.
+
+            host_apis = sd.query_hostapis()
+            all_devices = sd.query_devices()
+
+            for idx, dev in enumerate(all_devices):
                 max_ch = dev.get("max_input_channels" if is_input else "max_output_channels", 0)
-                if max_ch > 0:
-                    dev_info = dict(dev)
-                    dev_info["id"] = idx
-                    devices.append(dev_info)
+                if max_ch <= 0:
+                    continue
+
+                # Strict Sample Rate Check
+                try:
+                    if is_input:
+                        sd.check_input_settings(
+                            device=idx, channels=min(2, max_ch), samplerate=target_rate, dtype="float32"
+                        )
+                    else:
+                        sd.check_output_settings(
+                            device=idx, channels=min(2, max_ch), samplerate=target_rate, dtype="float32"
+                        )
+                except Exception:
+                    continue
+
+                api_index = dev["hostapi"]
+                api_name = host_apis[api_index]["name"] if api_index < len(host_apis) else "Unknown"
+
+                dev_info = dict(dev)
+                dev_info["id"] = idx
+                dev_info["display_name"] = f"{dev['name']} [{api_name}]"
+                devices.append(dev_info)
+
         except Exception as e:
             logger.error(f"Device Query Error: {e}")
+
         return devices
 
     @staticmethod
@@ -95,49 +124,81 @@ class BaseAudioDeviceNode(Node):
     def __init__(self, name=""):
         super().__init__(name)
         self.add_int_param("device_index", -1, min_v=-1, max_v=999)
-        self.ring_buffer = AudioRingBuffer(capacity_blocks=16)
+        self.ring_buffer = AudioRingBuffer(capacity_blocks=32)
         self.stream: Optional[sd.Stream] = None
         self._status_msg = "Inactive"
         self._active = False
+        self._latency_ms = 0.0
+        self._actual_device_idx = -1
 
-    def _start_stream(self, StreamClass, callback, channels=None, samplerate=None):
+    def _start_stream(self, StreamClass, callback, channels=None):
         self._stop_stream()
-        dev_id = self.params["device_index"].value
-        if dev_id == -1:
-            dev_id = None  # sounddevice default
 
-        channels = channels or CHANNELS
-        samplerate = samplerate or SAMPLE_RATE
+        # KEY CHANGE: Ensure we are reading the synced value
+        requested_idx = self.params["device_index"].value
+        target_idx = requested_idx
 
+        # 1. Resolve Default
+        if target_idx == -1:
+            try:
+                target_idx = sd.default.device[0 if StreamClass == sd.InputStream else 1]
+            except Exception:
+                self._status_msg = "No Default Device"
+                self._actual_device_idx = -2
+                return
+
+        # 2. Query Capabilities
         try:
+            info = sd.query_devices(target_idx)
+        except Exception as e:
+            self._status_msg = "Device Not Found"
+            self._actual_device_idx = -2
+            return
+
+        # 3. Channel Logic (Clamp to Hardware Max)
+        desired_channels = channels or CHANNELS
+        hw_max = info.get("max_input_channels" if StreamClass == sd.InputStream else "max_output_channels", 0)
+        actual_channels = min(desired_channels, hw_max)
+
+        if actual_channels < 1:
+            self._status_msg = "Device has 0 channels"
+            self._actual_device_idx = -2
+            return
+
+        # 4. Attempt Stream Open
+        try:
+            # print(f"DEBUG: Opening Device ID {target_idx} ({info['name']}) Ch: {actual_channels}")
             self.stream = StreamClass(
-                device=dev_id,
-                samplerate=samplerate,
+                device=target_idx,
+                samplerate=SAMPLE_RATE,
                 blocksize=BLOCK_SIZE,
-                channels=channels,
+                channels=actual_channels,
                 dtype="float32",
                 callback=callback,
             )
             self.stream.start()
             self._active = True
-            info = sd.query_devices(dev_id) if dev_id is not None else sd.query_devices(sd.default.device[1])
-            self._status_msg = f"Active: {info['name']}"
-        except sd.PortAudioError as e:
-            logger.error(f"PortAudioError opening stream: {e}")
-            if len(e.args) > 1:
-                logger.error(f"Host error details: {e.args[1]}")
-            self._status_msg = f"Error: {str(e)[:50]}"
-            self._active = False
+            self._actual_device_idx = target_idx
+            self._latency_ms = self.stream.latency * 1000.0
+
+            ch_str = "Mono" if actual_channels == 1 else f"{actual_channels}ch"
+            self._status_msg = f"{info['name']} ({ch_str})"
+
         except Exception as e:
-            logger.error(f"Unexpected error opening stream: {e}")
-            self._status_msg = f"Error: {str(e)[:50]}"
+            logger.error(f"Stream Open Failed: {e}")
+            self._status_msg = f"Error: {str(e)[:20]}..."
             self._active = False
+            self._actual_device_idx = -2
 
     def _stop_stream(self):
         self._active = False
+        self._actual_device_idx = -1
         if self.stream:
-            self.stream.stop()
-            self.stream.close()
+            try:
+                self.stream.stop()
+                self.stream.close()
+            except Exception:
+                pass
             self.stream = None
         self.ring_buffer.clear()
         self._status_msg = "Inactive"
@@ -149,11 +210,21 @@ class BaseAudioDeviceNode(Node):
         self._stop_stream()
 
     def get_telemetry(self) -> dict:
-        return {"status": self._status_msg}
+        msg = self._status_msg
+        if self._active:
+            msg += f" [{self._latency_ms:.0f}ms]"
+
+        return {"status": msg, "actual_device_idx": self._actual_device_idx}
 
     def on_ui_param_change(self, param_name):
-        if param_name == "device_index" and self._active:
-            self.start()  # Restart stream with new device
+        if param_name == "device_index":
+            # CRITICAL FIX: The Engine 'param' command sets _staging,
+            # but hasn't called sync() yet. We MUST sync manually
+            # so that _start_stream() sees the NEW selection, not the old one.
+            self.params["device_index"].sync()
+
+            # Restart immediately (safe even if engine is running)
+            self.start()
 
 
 class AudioDeviceInput(BaseAudioDeviceNode):
@@ -162,54 +233,26 @@ class AudioDeviceInput(BaseAudioDeviceNode):
     def __init__(self, name=""):
         super().__init__(name)
         self.out = self.add_output("out")
-        self._actual_channels = CHANNELS  # Track actual channels used
 
     def start(self):
-        dev_id = self.params["device_index"].value
-        if dev_id == -1:
-            dev_id = None
-
-        # Smart settings fallback
-        channels = CHANNELS
-        samplerate = SAMPLE_RATE
-
-        try:
-            if dev_id is not None:
-                info = sd.query_devices(dev_id)
-            else:
-                info = sd.query_devices(sd.default.device[0])
-
-            # Check input channels
-            max_input_ch = info.get("max_input_channels", CHANNELS)
-            if max_input_ch < channels:
-                logger.warning(f"Device supports only {max_input_ch} input channels, falling back from {channels}")
-                channels = max_input_ch
-
-            # Check sample rate support
-            supported_rates = info.get("supported_samplerates", [])
-            if supported_rates and SAMPLE_RATE not in supported_rates:
-                logger.warning(
-                    f"Sample rate {SAMPLE_RATE} not supported, using default {info.get('default_samplerate', SAMPLE_RATE)}"
-                )
-                samplerate = info.get("default_samplerate", SAMPLE_RATE)
-
-        except Exception as e:
-            logger.warning(f"Could not query device capabilities: {e}, using defaults")
-
-        self._actual_channels = channels
-        self._start_stream(sd.InputStream, self._callback, channels=channels, samplerate=samplerate)
+        self._start_stream(sd.InputStream, self._callback)
 
     def _callback(self, indata, frames, time, status):
-        self.ring_buffer.write(indata)
+        # Handle Mono -> Stereo upmix if necessary
+        if indata.shape[1] == self.ring_buffer.channels:
+            self.ring_buffer.write(indata)
+        elif indata.shape[1] == 1 and self.ring_buffer.channels == 2:
+            expanded = np.hstack([indata, indata])
+            self.ring_buffer.write(expanded)
+        else:
+            min_ch = min(indata.shape[1], self.ring_buffer.channels)
+            temp = np.zeros((frames, self.ring_buffer.channels), dtype=np.float32)
+            temp[:, :min_ch] = indata[:, :min_ch]
+            self.ring_buffer.write(temp)
 
     def process(self):
-        # Read from ring buffer into Torch output
         temp = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
         if self.ring_buffer.read(temp):
-            # Handle mono to stereo duplication if device is mono
-            if self._actual_channels == 1:
-                temp[:, 1] = temp[:, 0]  # Duplicate mono channel to right channel
-            # Transpose [Frames, Ch] to [Ch, Frames] for ANode
             self.out.buffer.copy_(torch.from_numpy(temp.T))
         else:
             self.out.buffer.zero_()
@@ -238,28 +281,40 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
     def _callback(self, outdata, frames, time, status):
         if self._tick_callback:
             self._tick_callback()
-        if not self.ring_buffer.read(outdata):
+
+        temp = np.zeros((frames, CHANNELS), dtype=np.float32)
+        success = self.ring_buffer.read(temp)
+
+        if not success:
             outdata.fill(0)
+            return
+
+        hw_channels = outdata.shape[1]
+
+        if hw_channels == CHANNELS:
+            outdata[:] = temp
+        elif hw_channels == 1:
+            outdata[:, 0] = (temp[:, 0] + temp[:, 1]) * 0.5
+        else:
+            k = min(hw_channels, CHANNELS)
+            outdata[:, :k] = temp[:, :k]
 
     def process(self):
-        # ANode uses [Ch, Frames]. sounddevice uses [Frames, Ch].
         tensor_data = self.inp.get_tensor()
-        np_data = tensor_data.detach().cpu().numpy()
+        if tensor_data.device.type != "cpu":
+            tensor_data = tensor_data.cpu()
+        np_data = tensor_data.detach().numpy()
 
-        # Handle mono-to-stereo or multi-channel alignment
         if np_data.shape[0] == 1:
-            # Mono to Stereo duplication
             np_data = np.tile(np_data.T, (1, CHANNELS))
         else:
-            # Transpose to [Frames, Ch]
             np_data = np_data[:CHANNELS, :].T
 
-        # Try to write to the ring buffer once
         self.ring_buffer.write(np_data)
 
 
 # ==============================================================================
-# UI Widgets (Identical to audio_devices.py but updated class names)
+# UI Widgets
 # ==============================================================================
 
 
@@ -267,48 +322,66 @@ class AudioDeviceWidget(QWidget):
     def __init__(self, proxy, is_input):
         super().__init__()
         self.proxy, self.is_input = proxy, is_input
-        self.device_map = {}
+
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         row = QHBoxLayout()
         self.combo = QComboBox()
-        self.combo.activated.connect(self._on_combo)
+        self.combo.activated.connect(self._on_combo_user_action)
+
         btn = QPushButton("⟳")
-        btn.setFixedWidth(30)
+        btn.setFixedWidth(25)
+        btn.setToolTip("Refresh List")
         btn.clicked.connect(self._refresh)
+
         row.addWidget(self.combo)
         row.addWidget(btn)
         layout.addLayout(row)
 
         self.lbl_status = QLabel("Inactive")
         self.lbl_status.setAlignment(Qt.AlignCenter)
+        self.lbl_status.setStyleSheet("color: #666; font-size: 10px;")
         layout.addWidget(self.lbl_status)
-        self.setMinimumWidth(300)
-        QTimer.singleShot(0, self._refresh)
+
+        self.setMinimumWidth(250)
+        QTimer.singleShot(100, self._refresh)
 
     def _refresh(self):
+        self.combo.blockSignals(True)
         self.combo.clear()
+
+        # Don't destroy active streams during refresh
         devices = AudioDeviceManager.get_compatible_devices(self.is_input)
-        default_id = AudioDeviceManager.get_default_id(self.is_input)
 
-        self.combo.addItem(f"Default ({default_id})", -1)
+        self.combo.addItem(f"System Default", -1)
+
         for d in devices:
-            self.combo.addItem(f"{d['name']} [{d['id']}]", d["id"])
+            name = d["display_name"]
+            self.combo.addItem(name, d["id"])
 
-        # Sync combo to current param
-        current = self.proxy.node_item.params["device_index"]["value"]
-        idx = self.combo.findData(current)
+        current_val = self.proxy.node_item.params["device_index"]["value"]
+        idx = self.combo.findData(current_val)
         if idx != -1:
             self.combo.setCurrentIndex(idx)
+        else:
+            self.combo.setCurrentIndex(0)
 
-    def _on_combo(self, index):
-        self.proxy.set_parameter("device_index", self.combo.currentData())
+        self.combo.blockSignals(False)
+
+    def _on_combo_user_action(self, index):
+        val = self.combo.currentData()
+        self.proxy.set_parameter("device_index", val)
 
     def on_telemetry(self, data):
         if "status" in data:
             self.lbl_status.setText(data["status"])
-            color = "#55ff55" if "Active" in data["status"] else "#ff5555" if "Error" in data["status"] else "#888"
-            self.lbl_status.setStyleSheet(f"color: {color}; font-size: 10px;")
+            if "On" in data["status"]:
+                self.lbl_status.setStyleSheet("color: #55ff55; font-size: 10px; font-weight: bold;")
+            elif "Error" in data["status"]:
+                self.lbl_status.setStyleSheet("color: #ff5555; font-size: 10px;")
+            else:
+                self.lbl_status.setStyleSheet("color: #888; font-size: 10px;")
 
 
 class AudioInputWidget(AudioDeviceWidget):

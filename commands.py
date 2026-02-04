@@ -60,14 +60,14 @@ class AddNodeCommand(ICommand):
 
 class DeleteNodeCommand(ICommand):
     """
-    Command to delete a node. 
+    Command to delete a node.
     Captures full state immediately upon creation to prevent race conditions.
     """
 
     def __init__(self, controller, node_id, snapshot_data):
         self.controller = controller
         self.node_id = node_id
-        # We pass the data in via constructor so it is captured 
+        # We pass the data in via constructor so it is captured
         # AT THE MOMENT of user action, not 30ms later in execute()
         self.node_data = snapshot_data
         self.connections = []
@@ -92,9 +92,7 @@ class DeleteNodeCommand(ICommand):
 
         # 2. Restore the connections that were implicitly removed
         for c in self.connections:
-            self.controller.engine.push_command(
-                ("conn", c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])
-            )
+            self.controller.engine.push_command(("conn", c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]))
 
 
 class MultiMoveNodeCommand(ICommand):

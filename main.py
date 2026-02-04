@@ -17,6 +17,7 @@ import plugin_system
 from ui_icons import create_icon
 
 import torch
+
 torch.set_float32_matmul_precision("high")
 
 
@@ -247,16 +248,14 @@ def set_dark_theme(app):
     palette.setColor(QPalette.Disabled, QPalette.Highlight, QColor(80, 80, 80))
     palette.setColor(QPalette.Disabled, QPalette.HighlightedText, gray)
 
-    app.setStyleSheet(
-        """
+    app.setStyleSheet("""
         QToolTip {
             color: #ffffff;
             background-color: #2b2b2b;
             border: 1px solid #767676;
             padding: 2px;
         }
-    """
-    )
+    """)
 
     app.setPalette(palette)
 

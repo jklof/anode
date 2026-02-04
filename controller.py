@@ -128,7 +128,7 @@ class AppController(QObject):
         cmd = AddNodeCommand(self, node_type, pos, node_id=node_id, params=params)
         cmd.execute()
         self.history.push(cmd)
-        
+
         # Optimistic Update: Add to local snapshot so immediate subsequent actions see it
         # (Simplified: we wait for engine update for 'add', but 'move'/'del' need patching)
         return cmd.node_id
@@ -146,9 +146,7 @@ class AppController(QObject):
 
         # Optimistic Update: Remove from local snapshot
         if "nodes" in self._latest_snapshot:
-            self._latest_snapshot["nodes"] = [
-                n for n in self._latest_snapshot["nodes"] if n["id"] != node_id
-            ]
+            self._latest_snapshot["nodes"] = [n for n in self._latest_snapshot["nodes"] if n["id"] != node_id]
 
     def move_nodes(self, moves_dict):
         """
@@ -175,14 +173,14 @@ class AppController(QObject):
         macro = CompoundCommand("Delete Selection")
 
         # 1. Delete Explicitly Selected Wires
-        # (Only those NOT connected to nodes we are about to delete, 
+        # (Only those NOT connected to nodes we are about to delete,
         # to avoid double-restoration logic, or rely on set logic in graph)
         # However, for simplicity: deleting a node implicitly deletes wires.
         # We only strictly need explicit Disconnect commands for wires where
         # NEITHER end is being deleted (i.e., user selected just a wire).
-        
+
         nodes_set = set(node_ids)
-        
+
         for c_data in connection_tuples:
             sid, sp, did, dp = c_data
             # Only add explicit disconnect if we AREN'T deleting the attached nodes
@@ -198,9 +196,7 @@ class AppController(QObject):
                 macro.add(DeleteNodeCommand(self, nid, node_data))
                 # Optimistic Update to prevent subsequent loop iterations from seeing it
                 if "nodes" in self._latest_snapshot:
-                    self._latest_snapshot["nodes"] = [
-                        n for n in self._latest_snapshot["nodes"] if n["id"] != nid
-                    ]
+                    self._latest_snapshot["nodes"] = [n for n in self._latest_snapshot["nodes"] if n["id"] != nid]
 
         if macro.commands:
             macro.execute()

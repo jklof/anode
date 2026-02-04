@@ -176,22 +176,25 @@ def test_clock_switching():
 # --- Undo/Redo Tests for Engine Restore Command ---
 from unittest.mock import patch
 
+
 class MockEngine:
     """Mock engine for testing restore command without audio dependencies"""
+
     def __init__(self):
         self.graph = Graph()
         self.running = False
         self._apply_command_called = False
         self._last_command = None
-    
+
     def push_command(self, cmd):
         self._apply_command(cmd)
-    
+
     def _apply_command(self, cmd):
         self._apply_command_called = True
         self._last_command = cmd
         # Import here to avoid circular imports in test
         from core import Engine
+
         # Call the actual _apply_command method
         Engine._apply_command(self, cmd)
 
@@ -199,48 +202,45 @@ class MockEngine:
 def test_restore_command_valid_node():
     """Test restore command with valid node data"""
     engine = MockEngine()
-    
+
     # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
-    
+
     class TestNode(Node):
         def __init__(self, name=""):
             super().__init__(name)
             self.add_float_param("test_param", 1.0, 0.0, 10.0)
             self.add_int_param("int_param", 5, 0, 100)
-        
+
         def process(self):
             pass
-    
-    with patch('plugin_system.NODE_REGISTRY', {'TestNode': TestNode}):
+
+    with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
         # Test node data
         node_data = {
             "id": "test-node-123",
             "name": "Test Node",
             "type": "TestNode",
             "pos": (100, 200),
-            "params": {
-                "test_param": 7.5,
-                "int_param": 42
-            }
+            "params": {"test_param": 7.5, "int_param": 42},
         }
-        
+
         # Execute restore command
         restore_cmd = ("restore", node_data)
         engine.push_command(restore_cmd)
-        
+
         # Verify node was added to graph
         assert "test-node-123" in engine.graph.node_map
         node = engine.graph.node_map["test-node-123"]
-        
+
         # Verify node properties
         assert node.id == "test-node-123"
         assert node.name == "Test Node"
         assert node.__class__.__name__ == "TestNode"
         assert node.pos == (100, 200)
         assert len(node.params) == 2
-        
+
         # Verify parameters were restored
         assert "test_param" in node.params
         assert node.params["test_param"].get_staging_safe() == 7.5
@@ -251,22 +251,22 @@ def test_restore_command_valid_node():
 def test_restore_command_invalid_node_type():
     """Test restore command with invalid node type"""
     engine = MockEngine()
-    
+
     # Mock plugin system registry (empty)
-    with patch('plugin_system.NODE_REGISTRY', {}):
+    with patch("plugin_system.NODE_REGISTRY", {}):
         # Test node data with invalid type
         node_data = {
             "id": "invalid-node-456",
             "name": "Invalid Node",
             "type": "NonExistentNodeType",
             "pos": (300, 400),
-            "params": {}
+            "params": {},
         }
-        
+
         # Execute restore command
         restore_cmd = ("restore", node_data)
         engine.push_command(restore_cmd)
-        
+
         # Verify node was NOT added to graph
         assert "invalid-node-456" not in engine.graph.node_map
 
@@ -274,20 +274,20 @@ def test_restore_command_invalid_node_type():
 def test_restore_command_missing_type_field():
     """Test restore command with missing type field"""
     engine = MockEngine()
-    
+
     # Test node data missing type field
     node_data = {
         "id": "incomplete-node-789",
         "name": "Incomplete Node",
         # Missing "type" field
         "pos": (500, 600),
-        "params": {}
+        "params": {},
     }
-    
+
     # Execute restore command
     restore_cmd = ("restore", node_data)
     engine.push_command(restore_cmd)
-    
+
     # Verify node was NOT added to graph
     assert "incomplete-node-789" not in engine.graph.node_map
 
@@ -295,31 +295,26 @@ def test_restore_command_missing_type_field():
 def test_restore_command_missing_id_field():
     """Test restore command with missing id field"""
     engine = MockEngine()
-    
+
     # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
-    
+
     class TestNode(Node):
         def __init__(self, name=""):
             super().__init__(name)
-        
+
         def process(self):
             pass
-    
-    with patch('plugin_system.NODE_REGISTRY', {'TestNode': TestNode}):
+
+    with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
         # Test node data missing id field
-        node_data = {
-            "name": "Test Node",
-            "type": "TestNode",
-            "pos": (100, 200),
-            "params": {}
-        }
-        
+        node_data = {"name": "Test Node", "type": "TestNode", "pos": (100, 200), "params": {}}
+
         # Execute restore command
         restore_cmd = ("restore", node_data)
         engine.push_command(restore_cmd)
-        
+
         # Verify no nodes were added to graph (should fail gracefully)
         assert len(engine.graph.node_map) == 0
 
@@ -327,37 +322,37 @@ def test_restore_command_missing_id_field():
 def test_restore_command_empty_params():
     """Test restore command with empty parameters"""
     engine = MockEngine()
-    
+
     # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
-    
+
     class TestNode(Node):
         def __init__(self, name=""):
             super().__init__(name)
             self.add_float_param("default_param", 1.0, 0.0, 10.0)
-        
+
         def process(self):
             pass
-    
-    with patch('plugin_system.NODE_REGISTRY', {'TestNode': TestNode}):
+
+    with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
         # Test node data with empty params
         node_data = {
             "id": "empty-params-node",
             "name": "Empty Params Node",
             "type": "TestNode",
             "pos": (150, 250),
-            "params": {}
+            "params": {},
         }
-        
+
         # Execute restore command
         restore_cmd = ("restore", node_data)
         engine.push_command(restore_cmd)
-        
+
         # Verify node was added
         assert "empty-params-node" in engine.graph.node_map
         node = engine.graph.node_map["empty-params-node"]
-        
+
         # Verify default parameters are still present
         assert "default_param" in node.params
         assert node.params["default_param"].get_staging_safe() == 1.0
@@ -366,22 +361,22 @@ def test_restore_command_empty_params():
 def test_restore_command_partial_params():
     """Test restore command with partial parameter restoration"""
     engine = MockEngine()
-    
+
     # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
-    
+
     class TestNode(Node):
         def __init__(self, name=""):
             super().__init__(name)
             self.add_float_param("param1", 1.0, 0.0, 10.0)
             self.add_int_param("param2", 5, 0, 100)
             self.add_bool_param("param3", True)
-        
+
         def process(self):
             pass
-    
-    with patch('plugin_system.NODE_REGISTRY', {'TestNode': TestNode}):
+
+    with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
         # Test node data with only some parameters
         node_data = {
             "id": "partial-params-node",
@@ -390,23 +385,23 @@ def test_restore_command_partial_params():
             "pos": (200, 300),
             "params": {
                 "param1": 3.14,
-                "param3": False
+                "param3": False,
                 # param2 not included
-            }
+            },
         }
-        
+
         # Execute restore command
         restore_cmd = ("restore", node_data)
         engine.push_command(restore_cmd)
-        
+
         # Verify node was added
         assert "partial-params-node" in engine.graph.node_map
         node = engine.graph.node_map["partial-params-node"]
-        
+
         # Verify restored parameters
         assert node.params["param1"].get_staging_safe() == 3.14
         assert node.params["param3"].get_staging_safe() == False
-        
+
         # Verify non-specified parameters remain at defaults
         assert node.params["param2"].get_staging_safe() == 5
 
@@ -414,32 +409,32 @@ def test_restore_command_partial_params():
 def test_restore_command_position_restoration():
     """Test that node position is correctly restored"""
     engine = MockEngine()
-    
+
     # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
-    
+
     class TestNode(Node):
         def __init__(self, name=""):
             super().__init__(name)
-        
+
         def process(self):
             pass
-    
-    with patch('plugin_system.NODE_REGISTRY', {'TestNode': TestNode}):
+
+    with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
         # Test node data with specific position
         node_data = {
             "id": "position-test-node",
             "name": "Position Test Node",
             "type": "TestNode",
             "pos": (450, 720),  # Non-default position
-            "params": {}
+            "params": {},
         }
-        
+
         # Execute restore command
         restore_cmd = ("restore", node_data)
         engine.push_command(restore_cmd)
-        
+
         # Verify node was added with correct position
         assert "position-test-node" in engine.graph.node_map
         node = engine.graph.node_map["position-test-node"]
@@ -449,45 +444,45 @@ def test_restore_command_position_restoration():
 def test_restore_command_integration_with_existing_nodes():
     """Test restore command works when graph already has nodes"""
     engine = MockEngine()
-    
+
     # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
-    
+
     class TestNode(Node):
         def __init__(self, name=""):
             super().__init__(name)
-        
+
         def process(self):
             pass
-    
-    with patch('plugin_system.NODE_REGISTRY', {'TestNode': TestNode}):
+
+    with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
         # First, add an existing node
         existing_node = TestNode("Existing Node")
         existing_node.id = "existing-node"
         engine.graph.add_node(existing_node)
-        
+
         # Verify initial state
         assert len(engine.graph.node_map) == 1
         assert "existing-node" in engine.graph.node_map
-        
+
         # Now restore another node
         node_data = {
             "id": "restored-node",
             "name": "Restored Node",
             "type": "TestNode",
             "pos": (100, 100),
-            "params": {}
+            "params": {},
         }
-        
+
         restore_cmd = ("restore", node_data)
         engine.push_command(restore_cmd)
-        
+
         # Verify both nodes exist
         assert len(engine.graph.node_map) == 2
         assert "existing-node" in engine.graph.node_map
         assert "restored-node" in engine.graph.node_map
-        
+
         # Verify the restored node has correct properties
         restored_node = engine.graph.node_map["restored-node"]
         assert restored_node.name == "Restored Node"
@@ -496,81 +491,72 @@ def test_restore_command_integration_with_existing_nodes():
 
 # --- Tests for Updated DeleteNodeCommand with Restore Opcode ---
 
+
 def test_delete_node_command_with_restore():
     """Test DeleteNodeCommand uses restore opcode for undo"""
     from commands import DeleteNodeCommand
-    
+
     # Mock controller
     class MockController:
         def __init__(self):
             self.engine = MockEngine()
             self._snapshot_connections = []
-        
+
         def get_connections_from_snapshot(self):
             return self._snapshot_connections
-    
+
     controller = MockController()
-    
+
     # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
-    
+
     class TestNode(Node):
         def __init__(self, name=""):
             super().__init__(name)
             self.add_float_param("test_param", 1.0, 0.0, 10.0)
-        
+
         def process(self):
             pass
-    
-    with patch('plugin_system.NODE_REGISTRY', {'TestNode': TestNode}):
+
+    with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
         # Create a node and add it to the engine
         node_data = {
             "id": "test-node-for-delete",
             "name": "Test Node for Delete",
             "type": "TestNode",
             "pos": (100, 200),
-            "params": {"test_param": 5.0}
+            "params": {"test_param": 5.0},
         }
-        
+
         restore_cmd = ("restore", node_data)
         controller.engine.push_command(restore_cmd)
-        
+
         # Verify node was added
         assert "test-node-for-delete" in controller.engine.graph.node_map
-        
+
         # Set up mock connections for testing
         controller._snapshot_connections = [
-            {
-                "src_id": "test-node-for-delete",
-                "src_port": "out",
-                "dst_id": "other-node",
-                "dst_port": "in"
-            },
-            {
-                "src_id": "another-node", 
-                "src_port": "out",
-                "dst_id": "test-node-for-delete",
-                "dst_port": "in"
-            }
+            {"src_id": "test-node-for-delete", "src_port": "out", "dst_id": "other-node", "dst_port": "in"},
+            {"src_id": "another-node", "src_port": "out", "dst_id": "test-node-for-delete", "dst_port": "in"},
         ]
-        
+
         # Create DeleteNodeCommand with snapshot data
         delete_cmd = DeleteNodeCommand(controller, "test-node-for-delete", node_data)
-        
+
         # Execute delete
         delete_cmd.execute()
-        
+
         # Verify node was deleted
         assert "test-node-for-delete" not in controller.engine.graph.node_map
-        
+
         # Undo delete using restore opcode
         delete_cmd.undo()
-        
+
         # Verify node was restored using restore command
         assert "test-node-for-delete" in controller.engine.graph.node_map
         restored_node = controller.engine.graph.node_map["test-node-for-delete"]
-        
+
         # Verify node properties were restored
         assert restored_node.name == "Test Node for Delete"
         assert restored_node.pos == (100, 200)
@@ -580,27 +566,27 @@ def test_delete_node_command_with_restore():
 def test_delete_node_command_with_missing_snapshot_data():
     """Test DeleteNodeCommand handles missing snapshot data gracefully"""
     from commands import DeleteNodeCommand
-    
+
     # Mock controller
     class MockController:
         def __init__(self):
             self.engine = MockEngine()
             self._snapshot_connections = []
-        
+
         def get_connections_from_snapshot(self):
             return self._snapshot_connections
-    
+
     controller = MockController()
-    
+
     # Create DeleteNodeCommand with None snapshot data
     delete_cmd = DeleteNodeCommand(controller, "nonexistent-node", None)
-    
+
     # Execute delete (should not crash)
     delete_cmd.execute()
-    
+
     # Undo delete with missing data (should not crash)
     delete_cmd.undo()
-    
+
     # Verify no nodes were added (graceful failure)
     assert len(controller.engine.graph.node_map) == 0
 
@@ -608,69 +594,53 @@ def test_delete_node_command_with_missing_snapshot_data():
 def test_delete_node_command_connection_restoration():
     """Test that DeleteNodeCommand properly restores connections"""
     from commands import DeleteNodeCommand
-    
+
     # Mock controller
     class MockController:
         def __init__(self):
             self.engine = MockEngine()
             self._snapshot_connections = []
-        
+
         def get_connections_from_snapshot(self):
             return self._snapshot_connections
-    
+
     controller = MockController()
-    
+
     # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
-    
+
     class TestNode(Node):
         def __init__(self, name=""):
             super().__init__(name)
             self.add_output("out")
             self.add_input("in")
-        
+
         def process(self):
             pass
-    
-    with patch('plugin_system.NODE_REGISTRY', {'TestNode': TestNode}):
+
+    with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
         # Create nodes
-        node_data = {
-            "id": "test-node",
-            "name": "Test Node",
-            "type": "TestNode", 
-            "pos": (100, 100),
-            "params": {}
-        }
-        
+        node_data = {"id": "test-node", "name": "Test Node", "type": "TestNode", "pos": (100, 100), "params": {}}
+
         restore_cmd = ("restore", node_data)
         controller.engine.push_command(restore_cmd)
-        
+
         # Set up mock connections
         controller._snapshot_connections = [
-            {
-                "src_id": "test-node",
-                "src_port": "out",
-                "dst_id": "output-node",
-                "dst_port": "in"
-            },
-            {
-                "src_id": "input-node",
-                "src_port": "out", 
-                "dst_id": "test-node",
-                "dst_port": "in"
-            }
+            {"src_id": "test-node", "src_port": "out", "dst_id": "output-node", "dst_port": "in"},
+            {"src_id": "input-node", "src_port": "out", "dst_id": "test-node", "dst_port": "in"},
         ]
-        
+
         # Create and execute delete command
         delete_cmd = DeleteNodeCommand(controller, "test-node", node_data)
         delete_cmd.execute()
-        
+
         # Verify node was deleted
         assert "test-node" not in controller.engine.graph.node_map
-        
+
         # Undo delete
         delete_cmd.undo()
-        
+
         # Verify node was restored
         assert "test-node" in controller.engine.graph.node_map
