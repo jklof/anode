@@ -267,6 +267,10 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         self.inp = self.add_input("audio_in")
         self._tick_callback = None
 
+        # PRE-ALLOCATION: Create a Numpy array in Interleaved format [Block, Channels]
+        # We will copy into this, avoiding new object creation every frame.
+        self._scratch_buffer = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+
     def start_clock(self, tick_callback):
         self._tick_callback = tick_callback
         self.start()
@@ -300,17 +304,23 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
             outdata[:, :k] = temp[:, :k]
 
     def process(self):
+        # 1. Get Tensor (on CPU)
         tensor_data = self.inp.get_tensor()
         if tensor_data.device.type != "cpu":
             tensor_data = tensor_data.cpu()
-        np_data = tensor_data.detach().numpy()
 
-        if np_data.shape[0] == 1:
-            np_data = np.tile(np_data.T, (1, CHANNELS))
-        else:
-            np_data = np_data[:CHANNELS, :].T
+        # 2. Copy to Numpy Scratch Buffer (Handling Layout Conversion)
+        # PyTorch [2, 512] -> Numpy [512, 2]
+        # We use 'out=' to force writing into existing memory
 
-        self.ring_buffer.write(np_data)
+        # Option A: If tensor is strictly [2, 512]
+        # torch.t() creates a transposed view, .numpy() creates a view of that.
+        # copyto is the actual data movement (interleaving).
+        np.copyto(self._scratch_buffer, tensor_data.t().numpy())
+
+        # 3. Write to Ring Buffer
+        # Now we are passing a persistent pointer, not a new object
+        self.ring_buffer.write(self._scratch_buffer)
 
 
 # ==============================================================================
