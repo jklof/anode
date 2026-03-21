@@ -92,7 +92,7 @@ class FFINode(Node):
         if self.dsp_handle and param_name in self.PARAM_MAP:
             # Don't call sync() here - let audio thread handle it
             param_id = self.PARAM_MAP[param_name]
-            val = self.params[param_name].value
+            val = self.params[param_name].get_staging_safe()
             # Convert bool/int to float for simplicity
             self.lib.set_param(self.dsp_handle, param_id, float(val))
 

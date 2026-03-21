@@ -235,8 +235,9 @@ class Engine:
                     if self.running:
                         try:
                             node.start()
-                        except:
-                            pass
+                        except Exception as e:
+                            logging.exception(f"Error starting node {node.name} on add")
+                            node.error_msg = f"Start Error: {e}"
             elif op == "del":
                 _, nid = cmd
                 if self.running:
@@ -266,7 +267,10 @@ class Engine:
                     node.on_ui_param_change(p)
                     # Push side-channel parameter update message
                     msg = {"type": "param_update", "node_id": nid, "param": p, "value": val}
-                    self.output_queue.put(msg)
+                    try:
+                        self.output_queue.put_nowait(msg)
+                    except Exception:
+                        pass  # UI queue full; drop the update, UI will sync on next snapshot
             elif op == "clock":
                 _, nid = cmd
                 node = self.graph.node_map.get(nid)
@@ -291,8 +295,9 @@ class Engine:
                     if self.running:
                         try:
                             node.start()
-                        except:
-                            pass
+                        except Exception as e:
+                            logging.exception(f"Error starting restored node {node.name}")
+                            node.error_msg = f"Start Error: {e}"
             # --------------------------------------------
 
             elif op == "clear":

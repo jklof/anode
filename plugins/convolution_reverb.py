@@ -219,6 +219,9 @@ class ConvolutionReverb(Node):
                 data = msg[1]
                 self.ir_ffts = data["ir_ffts"]
                 self.dsp_ready = False
+                self.input_history = None
+                if self.overlap_buffer is not None:
+                    self.overlap_buffer.zero_()
                 self.current_ir_path = data["path"]
                 self.loading = False
                 self._status = "Ready"

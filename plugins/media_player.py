@@ -357,7 +357,8 @@ class MediaPlayerNode(Node):
 
                 self.playback_frames = int(target_time * SAMPLE_RATE)
                 self.eof = False
-                self.params["seek_ratio"].value = -1.0
+                self.params["seek_ratio"].set(-1.0)
+                self.params["seek_ratio"].sync()
 
     def _restart_worker(self, path, start_time=0.0):
         if self.worker:
@@ -438,11 +439,9 @@ class MediaPlayerNode(Node):
         }
 
     def stop(self):
-        """Called when audio transport stops. We pause playback."""
-        # For Media Player, we don't necessarily kill the worker on transport stop,
-        # but we definitely stop the logical playback.
-        # However, to be safe and save resources:
-        pass
+        """Called when audio transport stops. Pause logical playback."""
+        self.params["playing"].set(False)
+        self.params["playing"].sync()
 
     def remove(self):
         """Called when node is deleted. Cleanup threads."""

@@ -15,7 +15,8 @@ class CommandHistory:
     """Handles undo/redo functionality using the Command Pattern."""
 
     def __init__(self, max_length=50):
-        self.undo_stack = []
+        import collections
+        self.undo_stack = collections.deque(maxlen=max_length)
         self.redo_stack = []
         self.max_length = max_length
 
@@ -23,9 +24,6 @@ class CommandHistory:
         """Add a command to the undo stack and clear redo stack."""
         self.redo_stack.clear()
         self.undo_stack.append(cmd)
-
-        if len(self.undo_stack) > self.max_length:
-            self.undo_stack.pop(0)
 
     def undo(self):
         """Undo the last command."""
@@ -58,7 +56,7 @@ class AppController(QObject):
         self._latest_snapshot = {}
 
         self.poll_timer = QTimer()
-        self.poll_timer.interval = 30
+        self.poll_timer.setInterval(30)
         self.poll_timer.timeout.connect(self.check_engine_messages)
         self.poll_timer.start()
 
