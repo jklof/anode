@@ -121,6 +121,8 @@ class AudioDeviceManager:
 
 
 class BaseAudioDeviceNode(Node):
+    category, label = "I/O", "Base Audio Device"
+
     def __init__(self, name=""):
         super().__init__(name)
         self.add_int_param("device_index", -1, min_v=-1, max_v=999)
@@ -286,8 +288,7 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         if self._tick_callback:
             self._tick_callback()
 
-        temp = np.zeros((frames, CHANNELS), dtype=np.float32)
-        success = self.ring_buffer.read(temp)
+        success = self.ring_buffer.read(self._scratch_buffer)
 
         if not success:
             outdata.fill(0)
@@ -296,12 +297,12 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         hw_channels = outdata.shape[1]
 
         if hw_channels == CHANNELS:
-            outdata[:] = temp
+            outdata[:] = self._scratch_buffer
         elif hw_channels == 1:
-            outdata[:, 0] = (temp[:, 0] + temp[:, 1]) * 0.5
+            outdata[:, 0] = (self._scratch_buffer[:, 0] + self._scratch_buffer[:, 1]) * 0.5
         else:
             k = min(hw_channels, CHANNELS)
-            outdata[:, :k] = temp[:, :k]
+            outdata[:, :k] = self._scratch_buffer[:, :k]
 
     def process(self):
         # 1. Get Tensor (on CPU)
