@@ -1,0 +1,61 @@
+# Cline Rules for anode Project
+
+## Environment Setup (READ FIRST)
+
+Before running ANY commands, read these files to understand the project environment:
+- `environment.yml` - Contains conda environment name and dependencies
+- `pyproject.toml` - Contains Python project configuration and dependencies
+- `README.md` - Contains setup instructions
+
+## Shell Detection
+
+This project runs on Windows with git bash (MINGW64) as the default shell.
+
+- Do NOT assume PowerShell syntax (no `||` or `&&` chaining)
+- Do NOT assume pure bash syntax either
+- Use simple single commands or conda run syntax
+- The terminal prompt `~/src/anode (master) $` indicates git bash
+
+## Python Environment
+
+The project uses a conda environment named `anode-dev`.
+
+- Always use: `conda run -n anode-dev <command>` for Python commands
+- Do NOT use bare `python` or `py` commands
+- Do NOT use full Windows paths with backslashes (they get stripped)
+- If pytest or other test tools are missing, install with: `conda run -n anode-dev pip install <package>`
+
+## Running Tests
+
+```bash
+conda run -n anode-dev python -m pytest tests/ -v
+```
+
+If pytest is not installed:
+```bash
+conda run -n anode-dev pip install pytest && conda run -n anode-dev python -m pytest tests/ -v
+```
+
+## Command Execution Best Practices
+
+1. Use `conda run -n anode-dev` prefix for all Python-related commands
+2. Keep commands simple - avoid complex shell chaining
+3. If a command fails with "command not found", check the environment.yml first
+4. For pip installs, use: `conda run -n anode-dev pip install <package>`
+5. For Python scripts, use: `conda run -n anode-dev python <script.py>`
+
+## File Editing
+
+- Use `replace_in_file` for targeted edits (preferred)
+- Use `write_to_file` for new files or complete rewrites
+- Always include `task_progress` parameter for tracking
+- Wait for user confirmation after each tool use before proceeding
+
+## Common Pitfalls to Avoid
+
+1. ❌ Don't use `python` directly - use `conda run -n anode-dev python`
+2. ❌ Don't use `||` or `&&` in shell commands
+3. ❌ Don't use Windows backslash paths - they get stripped
+4. ❌ Don't skip reading environment.yml before running commands
+5. ❌ Don't assume dependencies are installed - check first
+6. ❌ Don't use `py` command - it's not available
