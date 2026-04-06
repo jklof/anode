@@ -88,9 +88,9 @@ class FileRecorder(Node):
 
     def on_ui_param_change(self, param_name):
         if param_name == "record":
-            should_record = self.params["record"].value
+            should_record = self.params["record"].get_staging_safe()
             if should_record and not self._recording:
-                fn = self.params["filename"].value
+                fn = self.params["filename"].get_staging_safe()
                 self._open_file(fn)
                 self._recording = True
                 self._frames_written = 0
@@ -117,7 +117,7 @@ class FileRecorder(Node):
             except Exception as e:
                 print(f"Write Error: {e}")
                 self._recording = False
-                self.params["record"].value = False
+                self.params["record"].set(False)
                 self._close_file()
 
     def stop(self):

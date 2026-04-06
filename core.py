@@ -1,3 +1,4 @@
+import collections
 import gc
 import torch
 import threading
@@ -84,7 +85,7 @@ class Graph:
             if state[root_node.id] != 0:
                 continue
 
-            stack = [(root_node, self._get_upstream_nodes(root_node))]
+            stack = [(root_node, collections.deque(self._get_upstream_nodes(root_node)))]
 
             while stack:
                 parent, children = stack[-1]
@@ -94,12 +95,12 @@ class Graph:
 
                 found_unvisited_child = False
                 while children:
-                    child = children.pop(0)
+                    child = children.popleft()
                     if state[child.id] == 1:
                         logging.warning(f"Cycle detected involving node {child.name}")
                         continue
                     if state[child.id] == 0:
-                        stack.append((child, self._get_upstream_nodes(child)))
+                        stack.append((child, collections.deque(self._get_upstream_nodes(child))))
                         found_unvisited_child = True
                         break
 
@@ -322,6 +323,7 @@ class Engine:
                 for n in self.graph.nodes:
                     n.stop()
                     n.remove()
+                self.graph = Graph()
                 try:
                     data = json.loads(json_str)
                     new_graph = Graph()
@@ -340,7 +342,10 @@ class Engine:
                     self.graph = new_graph
                     if self.running:
                         for n in self.graph.nodes:
-                            n.start()
+                            if n == self.graph.clock_source:
+                                n.start_clock(self.tick)
+                            else:
+                                n.start()
                     self._emit_snapshot()
                     gc.collect()
                 except Exception as e:
@@ -377,7 +382,10 @@ class Engine:
                     self.graph = new_graph
                     if self.running:
                         for n in self.graph.nodes:
-                            n.start()
+                            if n == self.graph.clock_source:
+                                n.start_clock(self.tick)
+                            else:
+                                n.start()
                     self._emit_snapshot()
                     print("Engine: Hot reload complete.")
                     gc.collect()

@@ -177,9 +177,8 @@ class ConvolutionReverb(Node):
         self.dsp_ready = False
 
     def on_ui_param_change(self, param_name):
-        self.params[param_name].sync()
         if param_name == "ir_path":
-            path = self.params["ir_path"].value
+            path = self.params["ir_path"].get_staging_safe()
             if path and path != self.current_ir_path:
                 self._start_loading(path)
 

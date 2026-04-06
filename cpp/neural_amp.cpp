@@ -100,12 +100,14 @@ public:
             return;
         }
 
-        NAM_SAMPLE* mono_in = (NAM_SAMPLE*)inputs; 
-        NAM_SAMPLE* mono_out = (NAM_SAMPLE*)outputs;
+        NAM_SAMPLE* mono_in_ptr = (NAM_SAMPLE*)inputs; 
+        NAM_SAMPLE* mono_out_ptr = (NAM_SAMPLE*)outputs;
+        NAM_SAMPLE* in_channels[1]  = { mono_in_ptr };
+        NAM_SAMPLE* out_channels[1] = { mono_out_ptr };
 
         try {
             // Process Channel 0 (Mono)
-            _dsp->process(mono_in, mono_out, frames);
+            _dsp->process(in_channels, out_channels, frames);
         } catch (...) {
             // If the DSP crashes, reset it and pass through
             _dsp.reset();
@@ -117,7 +119,7 @@ public:
         // (NAM is mono; we duplicate the result to other channels)
         for (int c = 1; c < channels; ++c) {
             float* dest_ptr = outputs + (c * frames);
-            std::memcpy(dest_ptr, mono_out, frames * sizeof(float));
+            std::memcpy(dest_ptr, mono_out_ptr, frames * sizeof(float));
         }
     }
 
