@@ -205,6 +205,7 @@ class ConvolutionReverb(Node):
         proc_channels = max(ir_channels, audio_channels)
         self.input_history = torch.zeros((num_partitions, proc_channels, num_bins), dtype=torch.complex64)
         self.overlap_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
+        self.padding_buffer = torch.zeros((proc_channels, FFT_SIZE), dtype=DTYPE)
         self.history_ptr = 0
         self.dsp_ready = True
 
@@ -256,11 +257,12 @@ class ConvolutionReverb(Node):
             self._init_buffers(self.ir_ffts.shape[0], ir_channels, in_channels)
 
         # 5. DSP (Convolution)
-        padded_input = torch.nn.functional.pad(input_tensor, (0, PARTITION_SIZE))
+        self.padding_buffer.zero_()
+        self.padding_buffer[:in_channels, :PARTITION_SIZE].copy_(input_tensor)
         if in_channels == 1 and out_channels == 2:
-            padded_input = padded_input.expand(2, -1)
+            self.padding_buffer[1, :PARTITION_SIZE].copy_(input_tensor[0])
 
-        current_fft = torch.fft.rfft(padded_input, n=FFT_SIZE, dim=1)
+        current_fft = torch.fft.rfft(self.padding_buffer[:out_channels], n=FFT_SIZE, dim=1)
 
         self.history_ptr = (self.history_ptr - 1) % self.input_history.shape[0]
         self.input_history[self.history_ptr] = current_fft

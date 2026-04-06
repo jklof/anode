@@ -363,13 +363,6 @@ class MediaPlayerNode(Node):
     def _restart_worker(self, path, start_time=0.0):
         if self.worker:
             self.worker.stop()
-            # Wait for the old thread to actually die before clearing queue
-            # This prevents race conditions where the old thread pushes to
-            # the cleared queue intended for the new thread.
-            try:
-                self.worker.join(timeout=2.0)
-            except RuntimeError:
-                pass  # Avoid deadlock if self-called (shouldn't happen here)
             self.worker = None
 
         # Create NEW queue object instead of clearing

@@ -94,11 +94,21 @@ class Graph:
                     state[parent.id] = 1
 
                 found_unvisited_child = False
+                cycle_detected = False
+                
+                # Check for cycle among all remaining children before recursing
+                for child in children:
+                    if state[child.id] == 1 or state[child.id] == 3:
+                        cycle_detected = True
+                        state[parent.id] = 3
+                        logging.warning(f"Cycle detected involving node {child.name}")
+                        
+                if cycle_detected:
+                    stack.pop()
+                    continue
+
                 while children:
                     child = children.popleft()
-                    if state[child.id] == 1:
-                        logging.warning(f"Cycle detected involving node {child.name}")
-                        continue
                     if state[child.id] == 0:
                         stack.append((child, collections.deque(self._get_upstream_nodes(child))))
                         found_unvisited_child = True
@@ -106,8 +116,12 @@ class Graph:
 
                 if not found_unvisited_child:
                     stack.pop()
-                    state[parent.id] = 2
-                    order.append(parent)
+                    is_invalid = any(state[c.id] == 3 for c in self._get_upstream_nodes(parent))
+                    if is_invalid:
+                        state[parent.id] = 3
+                    elif state[parent.id] != 3:
+                        state[parent.id] = 2
+                        order.append(parent)
 
         self.execution_order = order
 
