@@ -20,10 +20,19 @@ This project runs on Windows with git bash (MINGW64) as the default shell.
 
 The project uses a conda environment named `anode-dev`.
 
-- Always use: `conda run -n anode-dev <command>` for Python commands
+- For typical Python commands, use: `conda run -n anode-dev <command>`
 - Do NOT use bare `python` or `py` commands
 - Do NOT use full Windows paths with backslashes (they get stripped)
 - If pytest or other test tools are missing, install with: `conda run -n anode-dev pip install <package>`
+
+## Building the Project (CRITICAL)
+
+When compiling the project's C++ extensions, **do NOT use `conda run`**. `conda run` fails to properly inject the MinGW compiler toolchain variables into the environment on Windows, resulting in fallback to MSVC and build failures.
+
+Always fully activate the Conda environment before building:
+1. Initialize powershell for conda: `Invoke-Expression (&conda "shell.powershell" "hook" | Out-String)`
+2. Activate the environment: `conda activate anode-dev`
+3. Execute the build command: `pip install -e . -v`
 
 ## Running Tests
 
@@ -41,7 +50,7 @@ conda run -n anode-dev pip install pytest && conda run -n anode-dev python -m py
 1. Use `conda run -n anode-dev` prefix for all Python-related commands
 2. Keep commands simple - avoid complex shell chaining
 3. If a command fails with "command not found", check the environment.yml first
-4. For pip installs, use: `conda run -n anode-dev pip install <package>`
+4. For installing standard packages, use: `conda run -n anode-dev pip install <package>`. **Exception**: never use `conda run` for the initial `pip install -e .` workspace build.
 5. For Python scripts, use: `conda run -n anode-dev python <script.py>`
 
 ## File Editing
@@ -59,3 +68,4 @@ conda run -n anode-dev pip install pytest && conda run -n anode-dev python -m py
 4. ❌ Don't skip reading environment.yml before running commands
 5. ❌ Don't assume dependencies are installed - check first
 6. ❌ Don't use `py` command - it's not available
+7. ❌ Don't use `conda run` to build the workspace (`pip install -e .`). Use `conda activate` first.

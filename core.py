@@ -111,6 +111,29 @@ class Graph:
 
         self.execution_order = order
 
+    def _get_node_data(self, n: Node) -> dict:
+        p_data = {}
+        for k, p in n.params.items():
+            p_data[k] = {"value": p.get_staging_safe(), "type": p.type, "meta": p.meta}
+        mon_q = getattr(n, "monitor_queue", None)
+
+        is_clock_provider = isinstance(n, IClockProvider)
+        is_current_master = n == self.clock_source
+
+        return {
+            "id": n.id,
+            "name": n.name,
+            "type": n.__class__.__name__,
+            "pos": n.pos,
+            "error": n.error_msg,
+            "inputs": list(n.inputs.keys()),
+            "outputs": list(n.outputs.keys()),
+            "params": p_data,
+            "monitor_queue": mon_q,
+            "can_be_master": is_clock_provider,
+            "is_master": is_current_master,
+        }
+
     def get_snapshot(self) -> dict:
         data = {
             "type": "graph_update",
@@ -119,29 +142,7 @@ class Graph:
             "connections": [],
         }
         for n in self.nodes:
-            p_data = {}
-            for k, p in n.params.items():
-                p_data[k] = {"value": p.get_staging_safe(), "type": p.type, "meta": p.meta}
-            mon_q = getattr(n, "monitor_queue", None)
-
-            is_clock_provider = isinstance(n, IClockProvider)
-            is_current_master = n == self.clock_source
-
-            data["nodes"].append(
-                {
-                    "id": n.id,
-                    "name": n.name,
-                    "type": n.__class__.__name__,
-                    "pos": n.pos,
-                    "error": n.error_msg,
-                    "inputs": list(n.inputs.keys()),
-                    "outputs": list(n.outputs.keys()),
-                    "params": p_data,
-                    "monitor_queue": mon_q,
-                    "can_be_master": is_clock_provider,
-                    "is_master": is_current_master,
-                }
-            )
+            data["nodes"].append(self._get_node_data(n))
         for dst in self.nodes:
             for d_port, inp in dst.inputs.items():
                 for out in inp.connected_outputs:
@@ -172,7 +173,7 @@ class Engine:
         self.running = False
         self.abort_flag = False
         self.command_queue = queue.Queue()
-        self.output_queue = queue.Queue(maxsize=5)
+        self.output_queue = queue.Queue(maxsize=100)
         self.thread = None
         self._tick_semaphore = None
         self.max_buffered_frames = 4
@@ -239,6 +240,9 @@ class Engine:
                         except Exception as e:
                             logging.exception(f"Error starting node {node.name} on add")
                             node.error_msg = f"Start Error: {e}"
+                    try:
+                        self.output_queue.put_nowait({"type": "node_added", "node": self.graph._get_node_data(node)})
+                    except Exception: pass
             elif op == "del":
                 _, nid = cmd
                 if self.running:
@@ -254,12 +258,21 @@ class Engine:
 
                 self.graph.remove_node(nid)
                 gc.collect()
+                try:
+                    self.output_queue.put_nowait({"type": "node_removed", "node_id": nid})
+                except Exception: pass
             elif op == "conn":
                 _, sid, sp, did, dp = cmd
                 self.graph.connect(sid, sp, did, dp)
+                try:
+                    self.output_queue.put_nowait({"type": "connected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp})
+                except Exception: pass
             elif op == "disconn":
                 _, sid, sp, did, dp = cmd
                 self.graph.disconnect(sid, sp, did, dp)
+                try:
+                    self.output_queue.put_nowait({"type": "disconnected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp})
+                except Exception: pass
             elif op == "param":
                 _, nid, p, val = cmd
                 node = self.graph.node_map.get(nid)
@@ -277,11 +290,17 @@ class Engine:
                 node = self.graph.node_map.get(nid)
                 if node:
                     self.graph.set_master_clock(node)
+                    try:
+                        self.output_queue.put_nowait({"type": "clock_changed", "node_id": nid})
+                    except Exception: pass
             elif op == "move":
                 _, nid, x, y = cmd
                 node = self.graph.node_map.get(nid)
                 if node:
                     node.pos = (x, y)
+                    try:
+                        self.output_queue.put_nowait({"type": "node_moved", "node_id": nid, "pos": (x, y)})
+                    except Exception: pass
 
             # --- NEW: Restore Command for robust Undo ---
             elif op == "restore":
@@ -299,6 +318,9 @@ class Engine:
                         except Exception as e:
                             logging.exception(f"Error starting restored node {node.name}")
                             node.error_msg = f"Start Error: {e}"
+                    try:
+                        self.output_queue.put_nowait({"type": "node_added", "node": self.graph._get_node_data(node)})
+                    except Exception: pass
             # --------------------------------------------
 
             elif op == "clear":
@@ -307,6 +329,7 @@ class Engine:
                     n.remove()
                 self.graph = Graph()
                 gc.collect()
+                self._emit_snapshot()
 
             elif op == "save":
                 _, filename = cmd
@@ -392,6 +415,9 @@ class Engine:
                 except Exception as e:
                     print(f"Engine: Restore failed after reload: {e}")
 
+            elif op == "snapshot":
+                self._emit_snapshot()
+
         except Exception as e:
             print(f"Cmd Error: {e}")
 
@@ -427,15 +453,9 @@ class Engine:
             GC_INTERVAL = 5.0
 
             while self.running:
-                dirty = False
                 while not self.command_queue.empty():
                     cmd = self.command_queue.get_nowait()
                     self._apply_command(cmd)
-                    if cmd[0] in ["add", "del", "conn", "disconn", "clear", "load", "reload", "clock"]:
-                        dirty = True
-
-                if dirty:
-                    self._emit_snapshot()
 
                 if self.graph.clock_source:
                     # Step A (Non-blocking check)
@@ -470,16 +490,14 @@ class Engine:
                 now = time.perf_counter()
                 if now >= next_telemetry_time:
                     global_cpu = sum(stats_buffer.values()) / len(stats_buffer) if stats_buffer else 0.0
-                    node_data = {}
+                    node_data = {"__cpu__": stats_buffer.copy()}
                     for node in self.graph.nodes:
                         try:
                             telemetry = node.get_telemetry()
-                            if node.id in stats_buffer:
-                                telemetry["cpu_load"] = stats_buffer[node.id]
-                            node_data[node.id] = telemetry
+                            if telemetry:
+                                node_data[node.id] = telemetry
                         except Exception as e:
                             logging.exception(f"Telemetry fetch failed for node {node.name} ({node.id}): {e}")
-                            node_data[node.id] = {}
                     self._emit_telemetry(global_cpu, node_data)
                     next_telemetry_time = now + telemetry_interval
 

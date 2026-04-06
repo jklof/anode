@@ -54,6 +54,7 @@ class AppController(QObject):
         self.engine = Engine()
         self.history = CommandHistory()
         self._latest_snapshot = {}
+        self._pending_params = {}
 
         self.poll_timer = QTimer()
         self.poll_timer.setInterval(30)
@@ -71,18 +72,70 @@ class AppController(QObject):
         return self._latest_snapshot.get("connections", [])
 
     def check_engine_messages(self):
+        # Flush debounced parameters
+        for (nid, pname), val in self._pending_params.items():
+            self.engine.push_command(("param", nid, pname, val))
+        self._pending_params.clear()
+
+        graph_changed = False
         while not self.engine.output_queue.empty():
             try:
                 msg = self.engine.output_queue.get_nowait()
-                if msg.get("type") == "telemetry":
+                m_type = msg.get("type")
+                if m_type == "telemetry":
                     self.telemetryUpdated.emit(msg)
-                elif msg.get("type") == "param_update":
+                elif m_type == "param_update":
                     self.parameterUpdated.emit(msg)
-                else:
-                    self._latest_snapshot = msg  # cache latest snapshot
-                    self.graphUpdated.emit(msg)
+                elif m_type == "graph_update":
+                    self._latest_snapshot = msg
+                    graph_changed = True
+                elif m_type == "node_added":
+                    if "nodes" not in self._latest_snapshot:
+                        self._latest_snapshot["nodes"] = []
+                    self._latest_snapshot["nodes"].append(msg["node"])
+                    graph_changed = True
+                elif m_type == "node_removed":
+                    nid = msg["node_id"]
+                    if "nodes" in self._latest_snapshot:
+                        self._latest_snapshot["nodes"] = [n for n in self._latest_snapshot["nodes"] if n["id"] != nid]
+                    if "connections" in self._latest_snapshot:
+                        self._latest_snapshot["connections"] = [
+                            c for c in self._latest_snapshot["connections"]
+                            if c["src_id"] != nid and c["dst_id"] != nid
+                        ]
+                    graph_changed = True
+                elif m_type == "connected":
+                    if "connections" not in self._latest_snapshot:
+                        self._latest_snapshot["connections"] = []
+                    self._latest_snapshot["connections"].append({
+                        "src_id": msg["src_id"], "src_port": msg["src_port"],
+                        "dst_id": msg["dst_id"], "dst_port": msg["dst_port"]
+                    })
+                    graph_changed = True
+                elif m_type == "disconnected":
+                    if "connections" in self._latest_snapshot:
+                        c_list = self._latest_snapshot["connections"]
+                        self._latest_snapshot["connections"] = [c for c in c_list if not (
+                            c["src_id"] == msg["src_id"] and c["src_port"] == msg["src_port"] and
+                            c["dst_id"] == msg["dst_id"] and c["dst_port"] == msg["dst_port"]
+                        )]
+                    graph_changed = True
+                elif m_type == "node_moved":
+                    if "nodes" in self._latest_snapshot:
+                        for n in self._latest_snapshot["nodes"]:
+                            if n["id"] == msg["node_id"]:
+                                n["pos"] = msg["pos"]
+                    graph_changed = True
+                elif m_type == "clock_changed":
+                    self._latest_snapshot["clock_id"] = msg["node_id"]
+                    for n in self._latest_snapshot.get("nodes", []):
+                        n["is_master"] = (n["id"] == msg["node_id"])
+                    graph_changed = True
             except Exception:
                 logging.exception("Error processing engine message")
+
+        if graph_changed:
+            self.graphUpdated.emit(self._latest_snapshot)
 
     def start_audio(self):
         self.engine.start()
@@ -239,8 +292,8 @@ class AppController(QObject):
         self.engine.push_command(("clock", node_id))
 
     def set_parameter(self, node_id, param_name, value):
-        """Set a parameter value (not undoable)."""
-        self.engine.push_command(("param", node_id, param_name, value))
+        """Set a parameter value (not undoable). Values are debounced/batched."""
+        self._pending_params[(node_id, param_name)] = value
 
     def save(self, filename):
         """Save the graph to a file."""
