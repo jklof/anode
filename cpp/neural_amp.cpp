@@ -144,7 +144,7 @@ private:
     std::thread _loader_thread;
     std::mutex _mutex;
     std::condition_variable _cv;
-    bool _running{false};
+    bool _running{true};
     bool _has_pending{false};
     std::string _pending_path;
     double _sample_rate;

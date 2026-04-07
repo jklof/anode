@@ -8,6 +8,7 @@ channels:
 dependencies:
   - python=3.11
   - pip
+  - pytest
 
   # ---- PyTorch stack (must come from pytorch channel) ----
   - pytorch

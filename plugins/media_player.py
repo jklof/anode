@@ -43,7 +43,7 @@ class MediaStreamWorker(threading.Thread):
         self.output_queue = output_queue
         self.event_callback = event_callback
         self.stop_event = threading.Event()
-        self.seek_request = -1.0
+        self.seek_queue = queue.Queue()
         self.start_offset = start_time
 
     def run(self):
@@ -108,10 +108,11 @@ class MediaStreamWorker(threading.Thread):
                     break
 
                 # Handle Seek Request
-                if self.seek_request >= 0:
+                if not self.seek_queue.empty():
                     self.event_callback("status", "Seeking...")
                     try:
-                        timestamp = int(self.seek_request / stream.time_base)
+                        target_ts = self.seek_queue.get_nowait()
+                        timestamp = int(target_ts / stream.time_base)
                         container.seek(timestamp, stream=stream)
                         # Clear accumulator and queue
                         buffer_accum = np.zeros((2, 0), dtype=np.float32)
@@ -121,7 +122,6 @@ class MediaStreamWorker(threading.Thread):
                     except Exception as e:
                         logger.error(f"Seek Error: {e}")
 
-                    self.seek_request = -1.0
                     self.event_callback("status", "Buffering...")
                     continue
 
@@ -157,7 +157,7 @@ class MediaStreamWorker(threading.Thread):
 
                     # Blocking Put with timeout to allow checking stop_event
                     inserted = False
-                    while not inserted and not self.stop_event.is_set() and self.seek_request < 0:
+                    while not inserted and not self.stop_event.is_set() and self.seek_queue.empty():
                         try:
                             self.output_queue.put(tensor_block, timeout=0.1)
                             inserted = True
@@ -181,7 +181,9 @@ class MediaStreamWorker(threading.Thread):
                     pass
 
     def seek(self, time_sec):
-        self.seek_request = time_sec
+        with self.seek_queue.mutex:
+            self.seek_queue.queue.clear()
+        self.seek_queue.put(time_sec)
 
     def stop(self):
         self.stop_event.set()

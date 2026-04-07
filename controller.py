@@ -17,7 +17,7 @@ class CommandHistory:
     def __init__(self, max_length=50):
         import collections
         self.undo_stack = collections.deque(maxlen=max_length)
-        self.redo_stack = []
+        self.redo_stack = collections.deque(maxlen=max_length)
         self.max_length = max_length
 
     def push(self, cmd):

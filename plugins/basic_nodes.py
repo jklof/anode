@@ -25,6 +25,7 @@ class SineOscillator(Node):
         torch.mul(freq_sig, self.two_pi * self.sr_recip, out=self._phase_buffer)
         self._phase_buffer.cumsum_(dim=0)
         self._phase_buffer.add_(self.phase)
+        self._phase_buffer.remainder_(self.two_pi)
         torch.sin(self._phase_buffer, out=self.out_sig.buffer[0])
         self.out_sig.buffer[0].mul_(amp_sig)
         self.phase = self._phase_buffer[-1].item() % self.two_pi

@@ -52,7 +52,11 @@ class AddNodeCommand(ICommand):
         self.params = params
 
     def execute(self):
-        self.controller.engine.push_command(("add", self.node_type, self.node_id, self.pos, self.params))
+        import plugin_system
+        cls = plugin_system.NODE_REGISTRY.get(self.node_type)
+        if cls:
+            node = cls()
+            self.controller.engine.push_command(("add", node, self.node_id, self.pos, self.params))
 
     def undo(self):
         self.controller.engine.push_command(("del", self.node_id))
@@ -88,7 +92,13 @@ class DeleteNodeCommand(ICommand):
             return
 
         # 1. Restore the Node using the robust 'restore' opcode
-        self.controller.engine.push_command(("restore", self.node_data))
+        import plugin_system
+        cls = plugin_system.NODE_REGISTRY.get(self.node_data["type"])
+        if cls:
+            node = cls(self.node_data["name"])
+            node.id = self.node_data.get("id", str(uuid.uuid4()))
+            node.load_state(self.node_data)
+            self.controller.engine.push_command(("restore", (self.node_data, node)))
 
         # 2. Restore the connections that were implicitly removed
         for c in self.connections:

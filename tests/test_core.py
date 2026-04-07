@@ -127,9 +127,8 @@ def test_cycle_detection():
     graph.connect("B", "out", "A", "in")
 
     # Should have logged warning but not crash
-    # For the test, just ensure it doesn't crash and graph is still operational
     assert len(graph.nodes) == 2
-    assert len(graph.execution_order) == 2  # Even in cycle, order should be calculated
+    assert len(graph.execution_order) == 0  # Cyclic nodes are omitted from valid execution order
 
 
 def test_clock_switching():

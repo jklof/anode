@@ -54,6 +54,10 @@ class AudioRingBuffer:
             return True
 
     def clear(self):
+        """
+        Clears the buffer. Note: Calling this while the audio thread is actively
+        streaming will cause an intentional underrun and an audio click.
+        """
         with self.lock:
             self.write_count = 0
             self.read_count = 0
@@ -197,7 +201,14 @@ class BaseAudioDeviceNode(Node):
                 dtype="float32",
                 callback=callback,
             )
-            self.stream.start()
+            try:
+                self.stream.start()
+            except Exception as e:
+                if self.stream:
+                    self.stream.close()
+                    self.stream = None
+                raise e
+            
             self._active = True
             self._actual_device_idx = target_idx
             self._latency_ms = self.stream.latency * 1000.0

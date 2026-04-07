@@ -133,7 +133,7 @@ class Parameter:
             try:
                 v = float(self.value)
                 self._tensor_cache.fill_(v)
-            except:
+            except (ValueError, TypeError):
                 pass
 
     def get_tensor_cache(self):

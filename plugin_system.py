@@ -25,46 +25,57 @@ def load_plugins(folder="plugins"):
     if not os.path.exists(folder):
         os.makedirs(folder)
 
-    # Ensure folder is in path for imports
-    if folder not in sys.path:
-        sys.path.append(folder)
+    abs_folder = os.path.abspath(folder)
+    added_to_path = False
+    if abs_folder not in sys.path:
+        sys.path.insert(0, abs_folder)
+        added_to_path = True
 
-    print(f"--- Loading Plugins from '{folder}' ---")
+    try:
+        print(f"--- Loading Plugins from '{folder}' ---")
 
-    for f in os.listdir(folder):
-        if f.endswith(".py"):
-            name = f[:-3]
+        for f in os.listdir(folder):
+            if f.endswith(".py"):
+                name = f[:-3]
 
+                try:
+                    # Hot Reload Logic
+                    if name in _loaded_modules:
+                        # If previously loaded, force a reload of the module object
+                        mod = importlib.reload(_loaded_modules[name])
+                        print(f"Reloaded: {name}")
+                    else:
+                        # First time load
+                        mod = importlib.import_module(name)
+                        _loaded_modules[name] = mod
+                        print(f"Loaded: {name}")
+
+                    # Inspect the module for Nodes and UIs
+                    for mem_name, obj in inspect.getmembers(mod, inspect.isclass):
+                        if obj.__module__ != name:
+                            continue
+                        # Register Logic Class
+                        if issubclass(obj, Node) and obj is not Node:
+                            NODE_REGISTRY[obj.__name__] = obj
+                            # print(f"  -> Node: {obj.__name__}")
+
+                        # Register UI Class
+                        if hasattr(obj, "IS_NODE_UI") and obj.IS_NODE_UI:
+                            target = getattr(obj, "NODE_CLASS_NAME", None)
+                            if target:
+                                UI_REGISTRY[target] = obj
+                                # print(f"  -> UI: {obj.__name__} for {target}")
+
+                except Exception as e:
+                    print(f"Failed to load plugin {name}: {e}")
+
+    finally:
+        if added_to_path:
             try:
-                # Hot Reload Logic
-                if name in _loaded_modules:
-                    # If previously loaded, force a reload of the module object
-                    mod = importlib.reload(_loaded_modules[name])
-                    print(f"Reloaded: {name}")
-                else:
-                    # First time load
-                    mod = importlib.import_module(name)
-                    _loaded_modules[name] = mod
-                    print(f"Loaded: {name}")
+                sys.path.remove(abs_folder)
+            except ValueError:
+                pass
 
-                # Inspect the module for Nodes and UIs
-                for mem_name, obj in inspect.getmembers(mod, inspect.isclass):
-                    if obj.__module__ != name:
-                        continue
-                    # Register Logic Class
-                    if issubclass(obj, Node) and obj is not Node:
-                        NODE_REGISTRY[obj.__name__] = obj
-                        # print(f"  -> Node: {obj.__name__}")
-
-                    # Register UI Class
-                    if hasattr(obj, "IS_NODE_UI") and obj.IS_NODE_UI:
-                        target = getattr(obj, "NODE_CLASS_NAME", None)
-                        if target:
-                            UI_REGISTRY[target] = obj
-                            # print(f"  -> UI: {obj.__name__} for {target}")
-
-            except Exception as e:
-                print(f"Failed to load plugin {name}: {e}")
 
 
 def get_node_class(name):

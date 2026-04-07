@@ -226,13 +226,19 @@ class Engine:
             if op == "add":
                 # Support atomic node creation with initial parameters
                 # cmd format: ("add", type_name, nid, pos, initial_params) where initial_params can be None
-                _, type_name, nid, pos, initial_params = cmd
+                _, type_name_or_node, nid, pos, initial_params = cmd
+                if isinstance(type_name_or_node, str):
+                    cls = plugin_system.NODE_REGISTRY.get(type_name_or_node)
+                    if cls:
+                        node = cls()
+                        node.id = nid
+                        node.pos = pos
+                    else:
+                        node = None
+                else:
+                    node = type_name_or_node
 
-                cls = plugin_system.NODE_REGISTRY.get(type_name)
-                if cls:
-                    node = cls()
-                    node.id = nid
-                    node.pos = pos
+                if node:
 
                     # Apply initial parameters BEFORE starting the node (atomic creation)
                     if initial_params:
@@ -318,13 +324,19 @@ class Engine:
 
             # --- NEW: Restore Command for robust Undo ---
             elif op == "restore":
-                _, node_data = cmd
+                _, n_data_payload = cmd
+                if isinstance(n_data_payload, tuple):
+                    node_data, node_instance = n_data_payload
+                else:
+                    node_data, node_instance = n_data_payload, None
+
                 cls = plugin_system.NODE_REGISTRY.get(node_data["type"])
                 if cls:
-                    node = cls(node_data["name"])
+                    node = node_instance if node_instance else cls(node_data["name"])
                     node.id = node_data["id"]
                     # This restores everything: pos, params, internal meta
-                    node.load_state(node_data)
+                    if not node_instance:
+                        node.load_state(node_data)
                     self.graph.add_node(node)
                     if self.running:
                         try:
@@ -363,17 +375,27 @@ class Engine:
                 self.graph = Graph()
                 try:
                     data = json.loads(json_str)
+                    if not isinstance(data, dict):
+                        raise ValueError("Loaded data is not a valid JSON object.")
+                        
                     new_graph = Graph()
-                    for n_data in data["nodes"]:
-                        cls = plugin_system.NODE_REGISTRY.get(n_data["type"])
+                    for n_data in data.get("nodes", []):
+                        if not isinstance(n_data, dict):
+                            continue
+                        cls = plugin_system.NODE_REGISTRY.get(n_data.get("type"))
                         if cls:
-                            node = cls(n_data["name"])
-                            node.id = n_data["id"]
+                            node = cls(n_data.get("name", ""))
+                            if "id" in n_data:
+                                node.id = n_data["id"]
                             node.load_state(n_data)
                             new_graph.add_node(node)
-                    for c in data["connections"]:
-                        if c["src_id"] in new_graph.node_map and c["dst_id"] in new_graph.node_map:
-                            new_graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])
+                    for c in data.get("connections", []):
+                        if not isinstance(c, dict):
+                            continue
+                        src_id = c.get("src_id")
+                        dst_id = c.get("dst_id")
+                        if src_id in new_graph.node_map and dst_id in new_graph.node_map:
+                            new_graph.connect(src_id, c.get("src_port"), dst_id, c.get("dst_port"))
                     if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
                         new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
                     self.graph = new_graph
