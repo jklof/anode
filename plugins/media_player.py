@@ -37,11 +37,12 @@ logger = logging.getLogger(__name__)
 
 
 class MediaStreamWorker(threading.Thread):
-    def __init__(self, source: str, output_queue: queue.Queue, event_callback, start_time=0.0):
+    def __init__(self, source: str, output_queue: queue.Queue, event_callback, looping_callback=None, start_time=0.0):
         super().__init__(daemon=True)
         self.source = source
         self.output_queue = output_queue
         self.event_callback = event_callback
+        self.looping_callback = looping_callback
         self.stop_event = threading.Event()
         self.seek_queue = queue.Queue()
         self.start_offset = start_time
@@ -103,72 +104,96 @@ class MediaStreamWorker(threading.Thread):
             buffer_accum = np.zeros((2, 0), dtype=np.float32)
 
             # --- 4. Decode Loop ---
-            for frame in container.decode(stream):
+            while not self.stop_event.is_set():
+                for frame in container.decode(stream):
+                    if self.stop_event.is_set():
+                        break
+
+                    # Handle Seek Request
+                    if not self.seek_queue.empty():
+                        self.event_callback("status", "Seeking...")
+                        try:
+                            target_ts = self.seek_queue.get_nowait()
+                            timestamp = int(target_ts / stream.time_base)
+                            container.seek(timestamp, stream=stream)
+                            # Clear accumulator and queue
+                            buffer_accum = np.zeros((2, 0), dtype=np.float32)
+                            with self.output_queue.mutex:
+                                self.output_queue.queue.clear()
+                            resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
+                            self.event_callback("seeked", target_ts)
+                        except Exception as e:
+                            logger.error(f"Seek Error: {e}")
+
+                        self.event_callback("status", "Buffering...")
+                        continue
+
+                    # Resample
+                    try:
+                        resampled_frames = resampler.resample(frame)
+                    except Exception:
+                        continue
+
+                    if not resampled_frames:
+                        continue
+
+                    # Convert to numpy and stack
+                    # AV returns list of frames (usually 1, but can be more)
+                    for r_frame in resampled_frames:
+                        np_frame = r_frame.to_ndarray()  # Shape (Channels, Samples)
+
+                        # Force Stereo
+                        if np_frame.shape[0] == 1:
+                            np_frame = np.vstack([np_frame, np_frame])
+                        elif np_frame.shape[0] > 2:
+                            np_frame = np_frame[:2, :]
+
+                        buffer_accum = np.hstack([buffer_accum, np_frame])
+
+                    # Push blocks to queue
+                    while buffer_accum.shape[1] >= BLOCK_SIZE:
+                        # Extract one block
+                        block = buffer_accum[:, :BLOCK_SIZE]
+                        buffer_accum = buffer_accum[:, BLOCK_SIZE:]
+
+                        tensor_block = torch.from_numpy(block.copy())
+
+                        # Blocking Put with timeout to allow checking stop_event
+                        inserted = False
+                        while not inserted and not self.stop_event.is_set() and self.seek_queue.empty():
+                            try:
+                                self.output_queue.put(tensor_block, timeout=0.1)
+                                inserted = True
+                                self.event_callback("status", "Playing")
+                            except queue.Full:
+                                # If queue is full, just wait and try again
+                                # This throttles the decoding to the playback speed
+                                continue
+
                 if self.stop_event.is_set():
                     break
-
-                # Handle Seek Request
-                if not self.seek_queue.empty():
-                    self.event_callback("status", "Seeking...")
+                    
+                # We hit EOF
+                if self.looping_callback and self.looping_callback():
+                    self.event_callback("status", "Looping...")
                     try:
-                        target_ts = self.seek_queue.get_nowait()
-                        timestamp = int(target_ts / stream.time_base)
-                        container.seek(timestamp, stream=stream)
-                        # Clear accumulator and queue
+                        container.seek(0, stream=stream)
                         buffer_accum = np.zeros((2, 0), dtype=np.float32)
                         with self.output_queue.mutex:
                             self.output_queue.queue.clear()
                         resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
+                        self.event_callback("seeked", 0.0)
+                        self.event_callback("status", "Playing")
+                        continue
                     except Exception as e:
-                        logger.error(f"Seek Error: {e}")
+                        logger.error(f"Looping Seek Error: {e}")
+                        break
+                else:
+                    break
 
-                    self.event_callback("status", "Buffering...")
-                    continue
-
-                # Resample
-                try:
-                    resampled_frames = resampler.resample(frame)
-                except Exception:
-                    continue
-
-                if not resampled_frames:
-                    continue
-
-                # Convert to numpy and stack
-                # AV returns list of frames (usually 1, but can be more)
-                for r_frame in resampled_frames:
-                    np_frame = r_frame.to_ndarray()  # Shape (Channels, Samples)
-
-                    # Force Stereo
-                    if np_frame.shape[0] == 1:
-                        np_frame = np.vstack([np_frame, np_frame])
-                    elif np_frame.shape[0] > 2:
-                        np_frame = np_frame[:2, :]
-
-                    buffer_accum = np.hstack([buffer_accum, np_frame])
-
-                # Push blocks to queue
-                while buffer_accum.shape[1] >= BLOCK_SIZE:
-                    # Extract one block
-                    block = buffer_accum[:, :BLOCK_SIZE]
-                    buffer_accum = buffer_accum[:, BLOCK_SIZE:]
-
-                    tensor_block = torch.from_numpy(block.copy())
-
-                    # Blocking Put with timeout to allow checking stop_event
-                    inserted = False
-                    while not inserted and not self.stop_event.is_set() and self.seek_queue.empty():
-                        try:
-                            self.output_queue.put(tensor_block, timeout=0.1)
-                            inserted = True
-                            self.event_callback("status", "Playing")
-                        except queue.Full:
-                            # If queue is full, just wait and try again
-                            # This throttles the decoding to the playback speed
-                            continue
-
-            self.event_callback("status", "Finished")
-            self.event_callback("eof", True)
+            if not self.stop_event.is_set() and (not self.looping_callback or not self.looping_callback()):
+                self.event_callback("status", "Finished")
+                self.event_callback("eof", True)
 
         except Exception as e:
             logger.error(f"Worker Crash: {e}")
@@ -217,6 +242,7 @@ class MediaPlayerWidget(QWidget):
         self.file_widget = self.proxy.create_param_widget("file_path")
         layout.addWidget(self.file_widget)
 
+
         # Row 2: Metadata
         self.lbl_title = QLabel(self.stored_title)
         self.lbl_title.setStyleSheet("color: #ccc; font-weight: bold; font-size: 11pt;")
@@ -237,6 +263,11 @@ class MediaPlayerWidget(QWidget):
         self.btn_play.setFixedSize(60, 30)
         self.btn_play.clicked.connect(self.toggle_play)
 
+        self.btn_loop = QPushButton("Once")
+        self.btn_loop.setCheckable(True)
+        self.btn_loop.setFixedSize(60, 30)
+        self.btn_loop.clicked.connect(self.toggle_loop)
+
         self.lbl_status = QLabel("Idle")
         self.lbl_status.setStyleSheet("color: #888;")
 
@@ -245,6 +276,7 @@ class MediaPlayerWidget(QWidget):
         self.lbl_time.setStyleSheet("font-family: monospace;")
 
         r5.addWidget(self.btn_play)
+        r5.addWidget(self.btn_loop)
         r5.addWidget(self.lbl_status)
         r5.addStretch()
         r5.addWidget(self.lbl_time)
@@ -254,6 +286,11 @@ class MediaPlayerWidget(QWidget):
         playing = self.btn_play.isChecked()
         self.btn_play.setText("Pause" if playing else "Play")
         self.proxy.set_parameter("playing", playing)
+
+    def toggle_loop(self):
+        is_loop = self.btn_loop.isChecked()
+        self.btn_loop.setText("Loop" if is_loop else "Once")
+        self.proxy.set_parameter("looping", is_loop)
 
     def on_slider_release(self):
         val = self.slider.value() / 1000.0
@@ -280,6 +317,10 @@ class MediaPlayerWidget(QWidget):
     def update_from_params(self, params):
         if "file_path" in params:
             self.file_widget.update_from_backend(params["file_path"])
+        if "looping" in params:
+            l = bool(params["looping"])
+            self.btn_loop.setChecked(l)
+            self.btn_loop.setText("Loop" if l else "Once")
         if "playing" in params:
             p = bool(params["playing"])
             self.btn_play.setChecked(p)
@@ -298,7 +339,8 @@ class MediaPlayerNode(Node):
     def __init__(self, name=""):
         super().__init__(name)
         self.add_file_param("file_path", "", filter="Audio Files (*.mp3 *.wav *.flac *.m4a);;All (*.*)")
-        self.add_bool_param("playing", False)
+        self.add_bool_param("playing", True)
+        self.add_bool_param("looping", False)
         self.add_float_param("seek_ratio", -1.0)
         self.add_output("out")
 
@@ -376,7 +418,11 @@ class MediaPlayerNode(Node):
 
         if MEDIA_DEPS_AVAILABLE:
             self.worker = MediaStreamWorker(
-                path, self.queue, lambda type, data: self._handle_worker_event(type, data), start_time=start_time
+                path, 
+                self.queue, 
+                lambda type, data: self._handle_worker_event(type, data), 
+                looping_callback=lambda: self.params["looping"].value,
+                start_time=start_time
             )
             self.worker.start()
         else:
@@ -393,6 +439,9 @@ class MediaPlayerNode(Node):
         elif type == "eof":
             self.eof = True
             self.status_msg = "Finished"
+        elif type == "seeked":
+            self.playback_frames = int(data * SAMPLE_RATE)
+            self.eof = False
 
     def process(self):
         # If play param is False, we just output silence.
@@ -432,11 +481,6 @@ class MediaPlayerNode(Node):
             "progress": progress,
             "playing_state": self.params["playing"].value,
         }
-
-    def stop(self):
-        """Called when audio transport stops. Pause logical playback."""
-        self.params["playing"].set(False)
-        self.params["playing"].sync()
 
     def remove(self):
         """Called when node is deleted. Cleanup threads."""
