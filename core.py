@@ -78,50 +78,35 @@ class Graph:
                 n.set_master(n == node)
 
     def recalculate_order(self):
-        state = {n.id: 0 for n in self.nodes}
+        in_degree = {n.id: 0 for n in self.nodes}
+        adj = {n.id: [] for n in self.nodes}
+
+        for n in self.nodes:
+            upstream_ids = set()
+            for u in self._get_upstream_nodes(n):
+                if u.id in in_degree:
+                    upstream_ids.add(u.id)
+            
+            in_degree[n.id] = len(upstream_ids)
+            for u_id in upstream_ids:
+                adj[u_id].append(n.id)
+
+        queue = collections.deque([n.id for n in self.nodes if in_degree[n.id] == 0])
         order = []
 
-        for root_node in self.nodes:
-            if state[root_node.id] != 0:
-                continue
+        while queue:
+            curr_id = queue.popleft()
+            curr_node = self.node_map.get(curr_id)
+            if curr_node:
+                order.append(curr_node)
 
-            stack = [(root_node, collections.deque(self._get_upstream_nodes(root_node)))]
+            for neighbor_id in adj[curr_id]:
+                in_degree[neighbor_id] -= 1
+                if in_degree[neighbor_id] == 0:
+                    queue.append(neighbor_id)
 
-            while stack:
-                parent, children = stack[-1]
-
-                if state[parent.id] == 0:
-                    state[parent.id] = 1
-
-                found_unvisited_child = False
-                cycle_detected = False
-                
-                # Check for cycle among all remaining children before recursing
-                for child in children:
-                    if state[child.id] == 1 or state[child.id] == 3:
-                        cycle_detected = True
-                        state[parent.id] = 3
-                        logging.warning(f"Cycle detected involving node {child.name}")
-                        
-                if cycle_detected:
-                    stack.pop()
-                    continue
-
-                while children:
-                    child = children.popleft()
-                    if state[child.id] == 0:
-                        stack.append((child, collections.deque(self._get_upstream_nodes(child))))
-                        found_unvisited_child = True
-                        break
-
-                if not found_unvisited_child:
-                    stack.pop()
-                    is_invalid = any(state[c.id] == 3 for c in self._get_upstream_nodes(parent))
-                    if is_invalid:
-                        state[parent.id] = 3
-                    elif state[parent.id] != 3:
-                        state[parent.id] = 2
-                        order.append(parent)
+        if len(order) != len(self.nodes):
+            logging.warning("Cycle detected in graph! Cyclic nodes omitted from execution.")
 
         self.execution_order = order
 
@@ -237,6 +222,9 @@ class Engine:
                         node = None
                 else:
                     node = type_name_or_node
+                    # Critical Fix: Set ID and POS for pre-instantiated nodes
+                    node.id = nid
+                    node.pos = pos
 
                 if node:
 
@@ -277,7 +265,6 @@ class Engine:
                     n.remove()
 
                 self.graph.remove_node(nid)
-                gc.collect()
                 try:
                     self.output_queue.put_nowait({"type": "node_removed", "node_id": nid})
                 except Exception: pass
@@ -512,7 +499,9 @@ class Engine:
                 for node in self.graph.nodes:
                     node.sync()
 
-                for node in self.graph.execution_order:
+                # Snapshot to avoid race conditions with graph deletion
+                current_order = list(self.graph.execution_order)
+                for node in current_order:
                     try:
                         t0 = time.perf_counter()
                         node.process()

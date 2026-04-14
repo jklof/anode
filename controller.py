@@ -85,6 +85,13 @@ class AppController(QObject):
                 if m_type == "telemetry":
                     self.telemetryUpdated.emit(msg)
                 elif m_type == "param_update":
+                    # FIX: Keep the local snapshot in sync with the parameter change
+                    if "nodes" in self._latest_snapshot:
+                        for n in self._latest_snapshot["nodes"]:
+                            if n["id"] == msg["node_id"] and "params" in n:
+                                if msg["param"] in n["params"]:
+                                    n["params"][msg["param"]]["value"] = msg["value"]
+                                    break
                     self.parameterUpdated.emit(msg)
                 elif m_type == "graph_update":
                     self._latest_snapshot = msg
