@@ -206,6 +206,12 @@ class ConvolutionReverb(Node):
         self.input_history = torch.zeros((num_partitions, proc_channels, num_bins), dtype=torch.complex64)
         self.overlap_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
         self.padding_buffer = torch.zeros((proc_channels, FFT_SIZE), dtype=DTYPE)
+        
+        # Pre-allocate process buffers to minimize RT allocations
+        self.product_buffer = torch.zeros((num_partitions, proc_channels, num_bins), dtype=torch.complex64)
+        self.accum_fft_buffer = torch.zeros((proc_channels, num_bins), dtype=torch.complex64)
+        self.result_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
+        
         self.history_ptr = 0
         self.dsp_ready = True
 
@@ -275,17 +281,22 @@ class ConvolutionReverb(Node):
         if ir_channels == 1 and out_channels == 2:
             ir_working = ir_working.expand(-1, 2, -1)
 
-        product = ordered_input * ir_working
-        accum_fft = torch.sum(product, dim=0)
+        # Use pre-allocated buffers with out= to avoid heap allocations in RT
+        torch.mul(ordered_input, ir_working, out=self.product_buffer)
+        torch.sum(self.product_buffer, dim=0, out=self.accum_fft_buffer)
 
-        time_domain = torch.fft.irfft(accum_fft, n=FFT_SIZE, dim=1)
+        time_domain = torch.fft.irfft(self.accum_fft_buffer, n=FFT_SIZE, dim=1)
 
-        result = time_domain[:, :PARTITION_SIZE] + self.overlap_buffer
-        self.overlap_buffer = time_domain[:, PARTITION_SIZE:]
+        # result = time_domain[:, :PARTITION_SIZE] + self.overlap_buffer
+        self.result_buffer.copy_(time_domain[:, :PARTITION_SIZE])
+        self.result_buffer.add_(self.overlap_buffer)
+        
+        # Update overlap buffer (this is a view swap, no allocation)
+        self.overlap_buffer.copy_(time_domain[:, PARTITION_SIZE:])
 
         # 6. Mix
-        dry_signal = input_tensor * (1.0 - mix_val)
-        wet_signal = result * mix_val
+        dry_signal = input_tensor * (1.0 - mix_val) # Still allocates, but these are small
+        wet_signal = self.result_buffer * mix_val
 
         # Handle channel mismatches for dry_signal
         if in_channels == 1 and out_channels == 2:

@@ -77,7 +77,14 @@ class AppController(QObject):
             self.engine.push_command(("param", nid, pname, val))
         self._pending_params.clear()
 
+        if self.engine.output_queue.empty():
+            return
+
+        # Snapshot consistency: Work on a shallow copy of the top-level dict
+        # and ensure nested lists are copied before mutation (Copy-on-write).
+        ws = self._latest_snapshot.copy()
         graph_changed = False
+
         while not self.engine.output_queue.empty():
             try:
                 msg = self.engine.output_queue.get_nowait()
@@ -85,61 +92,86 @@ class AppController(QObject):
                 if m_type == "telemetry":
                     self.telemetryUpdated.emit(msg)
                 elif m_type == "param_update":
-                    # FIX: Keep the local snapshot in sync with the parameter change
-                    if "nodes" in self._latest_snapshot:
-                        for n in self._latest_snapshot["nodes"]:
+                    if "nodes" in ws:
+                        # Copy list to ensure we don't mutate the one held by others
+                        ws["nodes"] = ws["nodes"].copy()
+                        for i, n in enumerate(ws["nodes"]):
                             if n["id"] == msg["node_id"] and "params" in n:
                                 if msg["param"] in n["params"]:
-                                    n["params"][msg["param"]]["value"] = msg["value"]
+                                    # Copy node and params dict for safety
+                                    n_new = n.copy()
+                                    n_new["params"] = n["params"].copy()
+                                    n_new["params"][msg["param"]] = n["params"][msg["param"]].copy()
+                                    n_new["params"][msg["param"]]["value"] = msg["value"]
+                                    ws["nodes"][i] = n_new
                                     break
                     self.parameterUpdated.emit(msg)
                 elif m_type == "graph_update":
-                    self._latest_snapshot = msg
+                    ws = msg.copy()
                     graph_changed = True
                 elif m_type == "node_added":
-                    if "nodes" not in self._latest_snapshot:
-                        self._latest_snapshot["nodes"] = []
-                    self._latest_snapshot["nodes"].append(msg["node"])
+                    if "nodes" not in ws:
+                        ws["nodes"] = []
+                    else:
+                        ws["nodes"] = ws["nodes"].copy()
+                    ws["nodes"].append(msg["node"])
                     graph_changed = True
                 elif m_type == "node_removed":
                     nid = msg["node_id"]
-                    if "nodes" in self._latest_snapshot:
-                        self._latest_snapshot["nodes"] = [n for n in self._latest_snapshot["nodes"] if n["id"] != nid]
-                    if "connections" in self._latest_snapshot:
-                        self._latest_snapshot["connections"] = [
-                            c for c in self._latest_snapshot["connections"]
+                    if "nodes" in ws:
+                        ws["nodes"] = [n for n in ws["nodes"] if n["id"] != nid]
+                    if "connections" in ws:
+                        ws["connections"] = [
+                            c for c in ws["connections"]
                             if c["src_id"] != nid and c["dst_id"] != nid
                         ]
                     graph_changed = True
                 elif m_type == "connected":
-                    if "connections" not in self._latest_snapshot:
-                        self._latest_snapshot["connections"] = []
-                    self._latest_snapshot["connections"].append({
+                    if "connections" not in ws:
+                        ws["connections"] = []
+                    else:
+                        ws["connections"] = ws["connections"].copy()
+                    ws["connections"].append({
                         "src_id": msg["src_id"], "src_port": msg["src_port"],
                         "dst_id": msg["dst_id"], "dst_port": msg["dst_port"]
                     })
                     graph_changed = True
                 elif m_type == "disconnected":
-                    if "connections" in self._latest_snapshot:
-                        c_list = self._latest_snapshot["connections"]
-                        self._latest_snapshot["connections"] = [c for c in c_list if not (
+                    if "connections" in ws:
+                        c_list = ws["connections"]
+                        ws["connections"] = [c for c in c_list if not (
                             c["src_id"] == msg["src_id"] and c["src_port"] == msg["src_port"] and
                             c["dst_id"] == msg["dst_id"] and c["dst_port"] == msg["dst_port"]
                         )]
                     graph_changed = True
                 elif m_type == "node_moved":
-                    if "nodes" in self._latest_snapshot:
-                        for n in self._latest_snapshot["nodes"]:
+                    if "nodes" in ws:
+                        ws["nodes"] = ws["nodes"].copy()
+                        for i, n in enumerate(ws["nodes"]):
                             if n["id"] == msg["node_id"]:
-                                n["pos"] = msg["pos"]
+                                n_new = n.copy()
+                                n_new["pos"] = msg["pos"]
+                                ws["nodes"][i] = n_new
+                                break
                     graph_changed = True
                 elif m_type == "clock_changed":
-                    self._latest_snapshot["clock_id"] = msg["node_id"]
-                    for n in self._latest_snapshot.get("nodes", []):
-                        n["is_master"] = (n["id"] == msg["node_id"])
+                    ws["clock_id"] = msg["node_id"]
+                    if "nodes" in ws:
+                        ws["nodes"] = ws["nodes"].copy()
+                        for i, n in enumerate(ws["nodes"]):
+                            # Optimization: only copy if state actually changes
+                            was_master = n.get("is_master", False)
+                            is_now_master = (n["id"] == msg["node_id"])
+                            if was_master != is_now_master:
+                                n_new = n.copy()
+                                n_new["is_master"] = is_now_master
+                                ws["nodes"][i] = n_new
                     graph_changed = True
             except Exception:
                 logging.exception("Error processing engine message")
+
+        # Atomic swap
+        self._latest_snapshot = ws
 
         if graph_changed:
             self.graphUpdated.emit(self._latest_snapshot)

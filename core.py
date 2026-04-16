@@ -172,7 +172,7 @@ class Engine:
         self.running = False
         self.abort_flag = False
         self.command_queue = queue.Queue()
-        self.output_queue = queue.Queue(maxsize=100)
+        self.output_queue = queue.Queue(maxsize=200)
         self.thread = None
         self._tick_semaphore = None
         self.max_buffered_frames = 4
@@ -190,16 +190,15 @@ class Engine:
             self._emit_snapshot()
 
     def _emit_snapshot(self):
-        while not self.output_queue.empty():
-            try:
-                self.output_queue.get_nowait()
-            except Exception:
-                logging.exception("Error getting message from output queue")
-
         snap = self.graph.get_snapshot()
         snap["is_running"] = self.running
         snap["reload_version"] = self.reload_version
-        self.output_queue.put(snap)
+        try:
+            self.output_queue.put_nowait(snap)
+        except queue.Full:
+            # Consistent with rest of codebase: if full, drop it.
+            # UI will sync on next timer tick / snapshot command.
+            pass
 
     def _emit_telemetry(self, cpu_load, node_data):
         if not self.output_queue.full():

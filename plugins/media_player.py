@@ -355,6 +355,35 @@ class MediaPlayerNode(Node):
         self.status_msg = "Idle"
         self.eof = False
 
+        # --- Management Thread (Non-RT) ---
+        self._mgmt_lock = threading.Lock()
+        self._mgmt_cv = threading.Condition(self._mgmt_lock)
+        self._pending_restart = None # Tuple of (path, start_time)
+        self._mgmt_running = True
+        self._mgmt_thread = threading.Thread(target=self._mgmt_loop, daemon=True)
+        self._mgmt_thread.start()
+
+    def _mgmt_loop(self):
+        """Management loop for heavy operations (thread creation, queue allocation)."""
+        while self._mgmt_running:
+            with self._mgmt_cv:
+                while self._mgmt_running and self._pending_restart is None:
+                    self._mgmt_cv.wait(timeout=0.1)
+                
+                if not self._mgmt_running:
+                    break
+                
+                path, start_time = self._pending_restart
+                self._pending_restart = None
+            
+            # Perform the heavy work outside the lock
+            self._do_restart_worker(path, start_time)
+
+    def _request_restart(self, path, start_time=0.0):
+        with self._mgmt_cv:
+            self._pending_restart = (path, start_time)
+            self._mgmt_cv.notify()
+
     def load_state(self, data: dict):
         """
         Override to trigger worker start on load.
@@ -372,7 +401,7 @@ class MediaPlayerNode(Node):
             path = self.params["file_path"].value
             if path:
                 self.current_path = path
-                self._restart_worker(path)
+                self._request_restart(path)
 
     def on_ui_param_change(self, param_name):
         if param_name in self.params:
@@ -382,12 +411,12 @@ class MediaPlayerNode(Node):
             path = self.params["file_path"].value
             if path:
                 self.current_path = path
-                self._restart_worker(path)
+                self._request_restart(path)
 
         elif param_name == "playing":
             should_play = self.params["playing"].value
             if should_play and (self.eof or self.worker is None) and self.current_path:
-                self._restart_worker(self.current_path)
+                self._request_restart(self.current_path)
 
         elif param_name == "seek_ratio":
             val = self.params["seek_ratio"].value
@@ -395,7 +424,7 @@ class MediaPlayerNode(Node):
                 target_time = val * self.total_duration
                 if self.eof or self.worker is None:
                     if self.current_path:
-                        self._restart_worker(self.current_path, start_time=target_time)
+                        self._request_restart(self.current_path, start_time=target_time)
                 elif self.worker:
                     self.worker.seek(target_time)
 
@@ -404,7 +433,8 @@ class MediaPlayerNode(Node):
                 self.params["seek_ratio"].set(-1.0)
                 self.params["seek_ratio"].sync()
 
-    def _restart_worker(self, path, start_time=0.0):
+    def _do_restart_worker(self, path, start_time=0.0):
+        # This is where the actual heavy work happens (Non-RT thread)
         if self.worker:
             self.worker.stop()
             self.worker = None
@@ -484,10 +514,17 @@ class MediaPlayerNode(Node):
 
     def remove(self):
         """Called when node is deleted. Cleanup threads."""
+        self._mgmt_running = False
+        with self._mgmt_cv:
+            self._mgmt_cv.notify_all()
+        
         if self.worker:
             self.worker.stop()
             self.worker.join(timeout=1.0)
             self.worker = None
+        
+        if self._mgmt_thread:
+            self._mgmt_thread.join(timeout=1.0)
 
     def to_dict(self):
         d = super().to_dict()
