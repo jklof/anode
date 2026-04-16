@@ -133,10 +133,7 @@ class BaseAudioDeviceNode(Node):
         self.add_int_param("device_index", -1, min_v=-1, max_v=999)
         self.ring_buffer = AudioRingBuffer(capacity_blocks=32)
         self.stream: Optional[sd.Stream] = None
-        self._status_msg = "Inactive"
-        self._active = False
-        self._latency_ms = 0.0
-        self._actual_device_idx = -1
+        self._device_state = {"active": False, "status": "Inactive", "latency": 0.0, "idx": -1}
         
         self._action_queue = queue.Queue()
         self._action_thread = threading.Thread(target=self._action_worker, daemon=True)
@@ -168,16 +165,14 @@ class BaseAudioDeviceNode(Node):
             try:
                 target_idx = sd.default.device[0 if StreamClass == sd.InputStream else 1]
             except Exception:
-                self._status_msg = "No Default Device"
-                self._actual_device_idx = -2
+                self._device_state = {"active": False, "status": "No Default Device", "latency": 0.0, "idx": -2}
                 return
 
         # 2. Query Capabilities
         try:
             info = sd.query_devices(target_idx)
         except Exception as e:
-            self._status_msg = "Device Not Found"
-            self._actual_device_idx = -2
+            self._device_state = {"active": False, "status": "Device Not Found", "latency": 0.0, "idx": -2}
             return
 
         # 3. Channel Logic (Clamp to Hardware Max)
@@ -186,8 +181,7 @@ class BaseAudioDeviceNode(Node):
         actual_channels = min(desired_channels, hw_max)
 
         if actual_channels < 1:
-            self._status_msg = "Device has 0 channels"
-            self._actual_device_idx = -2
+            self._device_state = {"active": False, "status": "Device has 0 channels", "latency": 0.0, "idx": -2}
             return
 
         # 4. Attempt Stream Open
@@ -209,25 +203,28 @@ class BaseAudioDeviceNode(Node):
                     self.stream = None
                 raise e
             
-            self._active = True
-            self._actual_device_idx = target_idx
-            self._latency_ms = self.stream.latency * 1000.0
-
             ch_str = "Mono" if actual_channels == 1 else f"{actual_channels}ch"
-            self._status_msg = f"{info['name']} ({ch_str})"
+            self._device_state = {
+                "active": True,
+                "status": f"{info['name']} ({ch_str})",
+                "latency": self.stream.latency * 1000.0,
+                "idx": target_idx
+            }
 
         except Exception as e:
             logger.error(f"Stream Open Failed: {e}")
-            self._status_msg = f"Error: {str(e)[:20]}..."
-            self._active = False
-            self._actual_device_idx = -2
+            self._device_state = {
+                "active": False,
+                "status": f"Error: {str(e)[:20]}...",
+                "latency": 0.0,
+                "idx": -2
+            }
 
     def _stop_stream(self):
         self._action_queue.put((self._stop_stream_sync, ()))
 
     def _stop_stream_sync(self):
-        self._active = False
-        self._actual_device_idx = -1
+        self._device_state = {"active": False, "status": "Inactive", "latency": 0.0, "idx": -1}
         if self.stream:
             try:
                 self.stream.stop()
@@ -236,7 +233,6 @@ class BaseAudioDeviceNode(Node):
                 pass
             self.stream = None
         self.ring_buffer.clear()
-        self._status_msg = "Inactive"
 
     def stop(self):
         self._stop_stream()
@@ -246,11 +242,12 @@ class BaseAudioDeviceNode(Node):
         self._action_queue.put(None)  # Signal worker thread to quit
 
     def get_telemetry(self) -> dict:
-        msg = self._status_msg
-        if self._active:
-            msg += f" [{self._latency_ms:.0f}ms]"
+        state = self._device_state
+        msg = state["status"]
+        if state["active"]:
+            msg += f" [{state['latency']:.0f}ms]"
 
-        return {"status": msg, "actual_device_idx": self._actual_device_idx}
+        return {"status": msg, "actual_device_idx": state["idx"]}
 
     def on_ui_param_change(self, param_name):
         if param_name == "device_index":
