@@ -318,12 +318,18 @@ class Engine:
                 if node and p in node.params:
                     node.params[p].set(val)
                     node.on_ui_param_change(p)
-                    # Push side-channel parameter update message
-                    msg = {"type": "param_update", "node_id": nid, "param": p, "value": val}
-                    try:
-                        self.output_queue.put_nowait(msg)
-                    except Exception:
-                        pass  # UI queue full; drop the update, UI will sync on next snapshot
+                    
+                    # If the parameter change alters graph ports or structure (like "code"),
+                    # we must emit a full graph update snapshot to update visual sockets.
+                    if p == "code":
+                        self._emit_snapshot()
+                    else:
+                        # Push side-channel parameter update message
+                        msg = {"type": "param_update", "node_id": nid, "param": p, "value": val}
+                        try:
+                            self.output_queue.put_nowait(msg)
+                        except Exception:
+                            pass  # UI queue full; drop the update, UI will sync on next snapshot
             elif op == "clock":
                 _, nid = cmd
                 node = self.graph.node_map.get(nid)
