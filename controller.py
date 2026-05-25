@@ -94,10 +94,16 @@ class AppController(QObject):
                     self.telemetryUpdated.emit(msg)
                 elif m_type == "param_update":
                     if "nodes" in ws:
-                        for n in ws["nodes"]:
+                        # Copy-on-write pattern to prevent mutating shared state (Issue 5)
+                        ws["nodes"] = ws["nodes"].copy()
+                        for i, n in enumerate(ws["nodes"]):
                             if n["id"] == msg["node_id"] and "params" in n:
                                 if msg["param"] in n["params"]:
-                                    n["params"][msg["param"]]["value"] = msg["value"]
+                                    n_new = n.copy()
+                                    n_new["params"] = n["params"].copy()
+                                    n_new["params"][msg["param"]] = n["params"][msg["param"]].copy()
+                                    n_new["params"][msg["param"]]["value"] = msg["value"]
+                                    ws["nodes"][i] = n_new
                                     break
                     self.parameterUpdated.emit(msg)
                 elif m_type == "graph_update":
@@ -140,9 +146,13 @@ class AppController(QObject):
                     graph_changed = True
                 elif m_type == "node_moved":
                     if "nodes" in ws:
-                        for n in ws["nodes"]:
+                        # Copy-on-write pattern to prevent mutating shared state
+                        ws["nodes"] = ws["nodes"].copy()
+                        for i, n in enumerate(ws["nodes"]):
                             if n["id"] == msg["node_id"]:
-                                n["pos"] = msg["pos"]
+                                n_new = n.copy()
+                                n_new["pos"] = msg["pos"]
+                                ws["nodes"][i] = n_new
                                 break
                     self.nodeMoved.emit(msg["node_id"], msg["pos"])
                 elif m_type == "clock_changed":

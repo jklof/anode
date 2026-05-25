@@ -10,6 +10,8 @@ from typing import Dict, List, Optional, Tuple
 import plugin_system
 from base import BLOCK_SIZE, SAMPLE_RATE, IClockProvider, Node
 
+_STRUCTURAL_OPS = frozenset({"add", "del", "conn", "disconn", "restore", "clear", "load", "reload", "clock"})
+
 
 class Graph:
     def __init__(self):
@@ -192,14 +194,20 @@ class Engine:
         self._tick_semaphore.release()
 
     def push_command(self, cmd: Tuple):
+        """
+        Pushes a command to the engine.
+        Dual-Path Design:
+        - When the engine is running, the command is queued to the real-time audio thread
+          to prevent audio glitches, and the snapshot/telemetry are emitted asynchronously.
+        - When the engine is stopped, the command is executed synchronously in the UI thread
+          via _apply_command, and a snapshot is immediately emitted for structural operations
+          to keep the UI in sync. Parameter and position changes use their own side-channels.
+        """
         if self.running:
             self.command_queue.put(cmd)
         else:
             self._apply_command(cmd)
-            # Emit snapshot only for structural changes when stopped.
-            # Parameter changes and moves have their own side-channel update messages.
-            STRUCTURAL_OPS = {"add", "del", "conn", "disconn", "restore", "clear", "load", "reload", "clock"}
-            if cmd[0] in STRUCTURAL_OPS:
+            if cmd[0] in _STRUCTURAL_OPS:
                 self._emit_snapshot()
 
     def _emit_snapshot(self):

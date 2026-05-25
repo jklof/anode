@@ -46,9 +46,9 @@ try:
         IS_NODE_UI = True
         NODE_CLASS_NAME = "WaveformDisplay"
 
-        def __init__(self, node_logic):
+        def __init__(self, proxy):
             super().__init__()
-            self.node = node_logic
+            self.proxy = proxy
             self.setMinimumSize(250, 150)
             self.data = None
 
@@ -73,8 +73,10 @@ try:
             # Drain queue to get the LATEST frame, discarding older ones if any
             try:
                 latest = None
-                while not self.node.monitor_queue.empty():
-                    latest = self.node.monitor_queue.get_nowait()
+                q = getattr(self.proxy, "monitor_queue", None)
+                if q:
+                    while not q.empty():
+                        latest = q.get_nowait()
 
                 # Only update if data has changed to prevent unnecessary repaints
                 if latest is not None and (self.data is None or not np.array_equal(self.data, latest)):
