@@ -19,7 +19,12 @@ class Graph:
         self.node_map: Dict[str, Node] = {}
         self._execution_order: List[Node] = []
         self._order_dirty = True
+        self.structure_dirty = False
         self.clock_source: Optional[IClockProvider] = None
+
+    def mark_dirty(self):
+        self._order_dirty = True
+        self.structure_dirty = True
 
     @property
     def execution_order(self) -> List[Node]:
@@ -209,7 +214,8 @@ class Engine:
             self.command_queue.put(cmd)
         else:
             self._apply_command(cmd)
-            if cmd[0] in _STRUCTURAL_OPS:
+            if cmd[0] in _STRUCTURAL_OPS or self.graph.structure_dirty:
+                self.graph.structure_dirty = False
                 self._emit_snapshot()
 
     def _emit_snapshot(self):
@@ -319,10 +325,10 @@ class Engine:
                     node.params[p].set(val)
                     node.on_ui_param_change(p)
                     
-                    # If the parameter change alters graph ports or structure (like "code"),
-                    # we must emit a full graph update snapshot to update visual sockets.
-                    if p == "code":
-                        self._emit_snapshot()
+                    # If this parameter change triggered a structural update, we skip the side-channel
+                    # message because a full snapshot update is being emitted instead.
+                    if self.graph.structure_dirty:
+                        pass
                     else:
                         # Push side-channel parameter update message
                         msg = {"type": "param_update", "node_id": nid, "param": p, "value": val}
@@ -552,6 +558,11 @@ class Engine:
                     except Exception as e:
                         logging.exception(f"Error processing node {node.name} (id: {node.id}): {e}")
                         node.error_msg = str(e)
+
+                # Check if any node marked structure as dirty during the current block processing
+                if self.graph.structure_dirty:
+                    self.graph.structure_dirty = False
+                    self._emit_snapshot()
 
                 now = time.perf_counter()
                 if now >= next_telemetry_time:

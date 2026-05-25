@@ -156,8 +156,7 @@ class ScriptNode(Node):
             if name not in self.outputs:
                 self.add_output(name)
 
-        if hasattr(self, "graph") and self.graph:
-            self.graph.recalculate_order()
+        self.request_graph_rebuild()
 
         # 3. Compile Python Bytecode
         try:

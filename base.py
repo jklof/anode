@@ -218,6 +218,14 @@ class Node:
     def on_ui_param_change(self, param_name: str):
         pass
 
+    def request_graph_rebuild(self):
+        """
+        Signals to the parent graph that this node's internal structure (such as
+        inputs, outputs, or custom layout) has changed and needs to be resynchronized with the UI.
+        """
+        if hasattr(self, "graph") and self.graph:
+            self.graph.mark_dirty()
+
     def to_dict(self) -> dict:
         return {
             "id": self.id,
