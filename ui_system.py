@@ -1351,9 +1351,18 @@ class GraphView(QGraphicsView):
             self.scene().drag_start = None
             self.scene().drag_target = None
             self.setDragMode(QGraphicsView.RubberBandDrag)
+        
         if self._panning_mode:
+            # Dispatch a fake LeftButton release event to match the fake press event.
+            # This releases the internal scroll drag state machine in QGraphicsView.
+            fake_event = QMouseEvent(
+                event.type(), event.position(), event.globalPosition(), Qt.LeftButton, Qt.NoButton, event.modifiers()
+            )
+            super().mouseReleaseEvent(fake_event)
             self.setDragMode(QGraphicsView.RubberBandDrag)
             self._panning_mode = False
+            return
+            
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
