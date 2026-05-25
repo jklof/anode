@@ -13,6 +13,7 @@ try:
     from PySide6.QtWidgets import QWidget, QVBoxLayout, QPlainTextEdit, QPushButton, QLabel, QTextEdit
     from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QTextCursor, QFont
     from PySide6.QtCore import Qt, QTimer, QSignalBlocker
+
     GUI_AVAILABLE = True
 except ImportError:
     GUI_AVAILABLE = False
@@ -35,6 +36,7 @@ audio_out = sig * g
 # Log/debug via state if needed
 state['counter'] += 1
 """
+
 
 # ==============================================================================
 # 1. AST Parser Helper
@@ -64,45 +66,65 @@ def parse_ports(code_str: str) -> tuple[list[str], list[str]]:
         pass
     return inputs, outputs
 
+
 # ==============================================================================
 # 2. Python Syntax Highlighter
 # ==============================================================================
 if GUI_AVAILABLE:
+
     class PythonSyntaxHighlighter(QSyntaxHighlighter):
         def __init__(self, parent=None):
             super().__init__(parent)
             self.highlighting_rules = []
 
             keyword_format = QTextCharFormat()
-            keyword_format.setForeground(QColor("#ff79c6")) # Pink
+            keyword_format.setForeground(QColor("#ff79c6"))  # Pink
             keywords = [
-                r"\bif\b", r"\belif\b", r"\belse\b", r"\bfor\b", r"\bwhile\b",
-                r"\bin\b", r"\bis\b", r"\bnot\b", r"\band\b", r"\bor\b",
-                r"\bdef\b", r"\bclass\b", r"\breturn\b", r"\bpass\b",
-                r"\bcontinue\b", r"\bbreak\b", r"\btry\b", r"\bexcept\b",
-                r"\bfinally\b", r"\braise\b", r"\bimport\b", r"\bfrom\b",
-                r"\bas\b", r"\bwith\b"
+                r"\bif\b",
+                r"\belif\b",
+                r"\belse\b",
+                r"\bfor\b",
+                r"\bwhile\b",
+                r"\bin\b",
+                r"\bis\b",
+                r"\bnot\b",
+                r"\band\b",
+                r"\bor\b",
+                r"\bdef\b",
+                r"\bclass\b",
+                r"\breturn\b",
+                r"\bpass\b",
+                r"\bcontinue\b",
+                r"\bbreak\b",
+                r"\btry\b",
+                r"\bexcept\b",
+                r"\bfinally\b",
+                r"\braise\b",
+                r"\bimport\b",
+                r"\bfrom\b",
+                r"\bas\b",
+                r"\bwith\b",
             ]
             for word in keywords:
                 self.highlighting_rules.append((re.compile(word), keyword_format))
 
             builtin_format = QTextCharFormat()
-            builtin_format.setForeground(QColor("#8be9fd")) # Cyan
+            builtin_format.setForeground(QColor("#8be9fd"))  # Cyan
             builtins = [r"\btorch\b", r"\bnp\b", r"\bmath\b", r"\bstate\b", r"\binputs\b", r"\boutputs\b"]
             for word in builtins:
                 self.highlighting_rules.append((re.compile(word), builtin_format))
 
             number_format = QTextCharFormat()
-            number_format.setForeground(QColor("#bd93f9")) # Purple
+            number_format.setForeground(QColor("#bd93f9"))  # Purple
             self.highlighting_rules.append((re.compile(r"\b[0-9]+\.?[0-9]*\b"), number_format))
 
             string_format = QTextCharFormat()
-            string_format.setForeground(QColor("#f1fa8c")) # Yellow
+            string_format.setForeground(QColor("#f1fa8c"))  # Yellow
             self.highlighting_rules.append((re.compile(r"'.*?'"), string_format))
             self.highlighting_rules.append((re.compile(r'".*?"'), string_format))
 
             comment_format = QTextCharFormat()
-            comment_format.setForeground(QColor("#6272a4")) # Gray/Blue
+            comment_format.setForeground(QColor("#6272a4"))  # Gray/Blue
             self.highlighting_rules.append((re.compile(r"#[^\n]*"), comment_format))
 
         def highlightBlock(self, text):
@@ -110,6 +132,7 @@ if GUI_AVAILABLE:
                 for match in pattern.finditer(text):
                     start, end = match.span()
                     self.setFormat(start, end - start, format)
+
 
 # ==============================================================================
 # 3. Node Logic Class
@@ -180,10 +203,7 @@ class ScriptNode(Node):
         self._recompile()
 
     def get_telemetry(self) -> dict:
-        return {
-            "error_msg": self.error_msg,
-            "error_line": self.error_line
-        }
+        return {"error_msg": self.error_msg, "error_line": self.error_line}
 
     def process(self):
         if not self.compiled_code:
@@ -192,12 +212,7 @@ class ScriptNode(Node):
             return
 
         # Prepare context scope
-        execution_scope = {
-            "state": self.state_dict,
-            "torch": torch,
-            "np": np,
-            "math": math
-        }
+        execution_scope = {"state": self.state_dict, "torch": torch, "np": np, "math": math}
 
         # Inject input values
         for name, inp in self.inputs.items():
@@ -245,6 +260,7 @@ class ScriptNode(Node):
 # 4. Custom UI Widget
 # ==============================================================================
 if GUI_AVAILABLE:
+
     class ScriptNodeWidget(QWidget):
         IS_NODE_UI = True
         NODE_CLASS_NAME = "ScriptNode"
@@ -263,7 +279,7 @@ if GUI_AVAILABLE:
             self.editor.setFont(QFont("Courier New", 10))
             self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
             self.highlighter = PythonSyntaxHighlighter(self.editor.document())
-            
+
             # Populate Initial Code
             init_code = self.proxy.node_item.params["code"]["value"]
             self.editor.setPlainText(init_code)
@@ -303,7 +319,7 @@ if GUI_AVAILABLE:
             selection = QTextEdit.ExtraSelection()
             selection.format.setBackground(QColor(100, 30, 30, 150))
             selection.format.setProperty(QTextCharFormat.FullWidthSelection, True)
-            
+
             cursor = self.editor.textCursor()
             cursor.setPosition(0)
             cursor.movePosition(QTextCursor.NextBlock, QTextCursor.MoveAnchor, line_num - 1)

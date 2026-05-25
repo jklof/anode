@@ -324,7 +324,7 @@ class Engine:
                 if node and p in node.params:
                     node.params[p].set(val)
                     node.on_ui_param_change(p)
-                    
+
                     # If this parameter change triggered a structural update, we skip the side-channel
                     # message because a full snapshot update is being emitted instead.
                     if self.graph.structure_dirty:

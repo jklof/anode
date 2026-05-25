@@ -763,13 +763,13 @@ class NodeItem(QGraphicsObject):
         if self.proxy and self.widget:
             self.proxy.setPos(10, self.height)
             self.height += self.proxy.size().height() + 10
-        
+
         self.prepareGeometryChange()
         self.update()
 
     def update_from_snapshot(self, node_data):
         self.reconcile_sockets(node_data.get("inputs", []), node_data.get("outputs", []))
-        
+
         new_pos = QPointF(*node_data["pos"])
         if self.pos() != new_pos:
             self.setPos(new_pos)

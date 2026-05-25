@@ -211,7 +211,7 @@ def test_dial_node():
 
     dial_cls = plugin_system.NODE_REGISTRY.get("DialNode")
     assert dial_cls is not None
-    
+
     dial = dial_cls()
 
     # Set value parameter to 0.75

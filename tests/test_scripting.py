@@ -6,10 +6,10 @@ from core import Graph
 
 def test_script_node_compilation_and_ports():
     plugin_system.load_plugins("plugins")
-    
+
     ScriptClass = plugin_system.NODE_REGISTRY.get("ScriptNode")
     assert ScriptClass is not None
-    
+
     node = ScriptClass()
     # Verify defaults
     assert "audio_in" in node.inputs
@@ -38,7 +38,7 @@ stereo_out = (left + right) * factor
 def test_script_node_processing():
     plugin_system.load_plugins("plugins")
     ScriptClass = plugin_system.NODE_REGISTRY.get("ScriptNode")
-    
+
     graph = Graph()
     node = ScriptClass()
     node.id = "script_node"

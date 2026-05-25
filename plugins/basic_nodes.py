@@ -140,6 +140,7 @@ class ChannelJoiner(Node):
 # Dial Node (Constant Signal Generator)
 # ==============================================================================
 
+
 class DialNode(Node):
     category = "Sources"
     label = "Dial"
@@ -179,7 +180,7 @@ try:
             self.dial.setRange(0, 1000)
             self.dial.setNotchesVisible(True)
             self.dial.setWrapping(False)
-            
+
             # Set initial value
             init_val = self.proxy.node_item.params["value"]["value"]
             self.dial.setValue(int(init_val * 1000))
@@ -200,5 +201,6 @@ try:
                 if not self.dial.isSliderDown():
                     with QSignalBlocker(self.dial):
                         self.dial.setValue(int(val * 1000))
+
 except ImportError:
     pass
