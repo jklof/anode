@@ -696,6 +696,7 @@ class NodeItem(QGraphicsObject):
                 self.param_controls[p_name] = {"widget": widget, "type": ptype}
 
         if self.widget:
+            self.widget.adjustSize()  # Adjust size first to get correct layout measurements
             self.proxy.setWidget(self.widget)
             self.proxy.setPos(10, self.height)
             w_width = max(self.width - 20, self.widget.minimumSize().width())
@@ -937,6 +938,7 @@ class GraphScene(QGraphicsScene):
         self.controller.graphUpdated.connect(self.reconcile)
         self.controller.telemetryUpdated.connect(self.on_telemetry_updated)
         self.controller.parameterUpdated.connect(self.on_parameter_update)
+        self.controller.nodeMoved.connect(self.on_node_moved)
 
     def delete_selection(self):
         """
@@ -978,6 +980,12 @@ class GraphScene(QGraphicsScene):
         snap_ids = {n["id"] for n in snapshot["nodes"]}
         ui_ids = set(self.node_items.keys())
         for nid in ui_ids - snap_ids:
+            # Explicitly detach and remove wires connected to the removed node first (Issue 7)
+            for key in list(self.wire_items.keys()):
+                if nid in (key[0], key[2]):
+                    wire = self.wire_items.pop(key)
+                    wire.detach()
+                    self.removeItem(wire)
             self.removeItem(self.node_items.pop(nid))
 
         # Identify New/Updated Nodes
@@ -1050,6 +1058,18 @@ class GraphScene(QGraphicsScene):
             # Call update_single_param to handle the efficient update
             node_item.update_single_param(param, value)
 
+    def on_node_moved(self, node_id, pos):
+        """
+        Handle granular node position updates programmatically.
+        """
+        if node_id in self.node_items:
+            item = self.node_items[node_id]
+            new_pos = QPointF(*pos)
+            if item.pos() != new_pos:
+                item.setPos(new_pos)
+                item._last_committed_pos = new_pos
+                item.update()
+
     def toggle_load_view(self, show):
         self._show_load = show
         for item in self.node_items.values():
@@ -1060,6 +1080,9 @@ class GraphScene(QGraphicsScene):
         Returns a dict containing selected nodes and connections.
         Only includes connections where both source and destination nodes are selected.
         Thread-safe: operates solely on UI snapshot data, no access to audio thread.
+        Note: The params dict is serialized in the snapshot format:
+        {"param_name": {"value": val, "type": ptype, "meta": pmeta}}
+        which is expected by AddNodeCommand and Restore command.
         """
         selected_nodes = []
         selected_connections = []

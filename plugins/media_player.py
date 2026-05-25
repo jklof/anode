@@ -118,8 +118,11 @@ class MediaStreamWorker(threading.Thread):
                             container.seek(timestamp, stream=stream)
                             # Clear accumulator and queue
                             buffer_accum = np.zeros((2, 0), dtype=np.float32)
-                            with self.output_queue.mutex:
-                                self.output_queue.queue.clear()
+                            try:
+                                while not self.output_queue.empty():
+                                    self.output_queue.get_nowait()
+                            except queue.Empty:
+                                pass
                             resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
                             self.event_callback("seeked", target_ts)
                         except Exception as e:
@@ -179,8 +182,11 @@ class MediaStreamWorker(threading.Thread):
                     try:
                         container.seek(0, stream=stream)
                         buffer_accum = np.zeros((2, 0), dtype=np.float32)
-                        with self.output_queue.mutex:
-                            self.output_queue.queue.clear()
+                        try:
+                            while not self.output_queue.empty():
+                                self.output_queue.get_nowait()
+                        except queue.Empty:
+                            pass
                         resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
                         self.event_callback("seeked", 0.0)
                         self.event_callback("status", "Playing")
@@ -206,8 +212,11 @@ class MediaStreamWorker(threading.Thread):
                     pass
 
     def seek(self, time_sec):
-        with self.seek_queue.mutex:
-            self.seek_queue.queue.clear()
+        try:
+            while not self.seek_queue.empty():
+                self.seek_queue.get_nowait()
+        except queue.Empty:
+            pass
         self.seek_queue.put(time_sec)
 
     def stop(self):
@@ -437,6 +446,7 @@ class MediaPlayerNode(Node):
         # This is where the actual heavy work happens (Non-RT thread)
         if self.worker:
             self.worker.stop()
+            self.worker.join(timeout=1.0)
             self.worker = None
 
         # Create NEW queue object instead of clearing

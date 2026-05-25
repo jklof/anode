@@ -643,3 +643,45 @@ def test_delete_node_command_connection_restoration():
 
         # Verify node was restored
         assert "test-node" in controller.engine.graph.node_map
+
+
+def test_lazy_evaluation_topological_sort():
+    """Verify that execution_order calculation is lazily evaluated."""
+    graph = Graph()
+    node = MockNode("A")
+    graph.add_node(node)
+    
+    assert graph._order_dirty is True
+    # Reading execution_order triggers calculation and clears dirty flag
+    order = graph.execution_order
+    assert len(order) == 1
+    assert graph._order_dirty is False
+    
+    # Mutating graph sets dirty flag back to True
+    graph.recalculate_order()
+    assert graph._order_dirty is True
+    
+    # Reading execution_order again clears it
+    assert graph.execution_order == [node]
+    assert graph._order_dirty is False
+
+
+def test_parameter_sync_tensor_and_numpy_array():
+    """Verify that Parameter.sync handles tensors and numpy arrays without crashing."""
+    import torch
+    import numpy as np
+    from base import Parameter
+    
+    # Test PyTorch Tensor
+    t_param = Parameter(1.0, "float")
+    t_param._staging = torch.tensor([2.0, 3.0])
+    # Should sync successfully without ValueError
+    t_param.sync()
+    assert isinstance(t_param.value, torch.Tensor)
+    
+    # Test Numpy Array
+    np_param = Parameter(1.0, "float")
+    np_param._staging = np.array([4.0, 5.0])
+    # Should sync successfully without ValueError
+    np_param.sync()
+    assert isinstance(np_param.value, np.ndarray)

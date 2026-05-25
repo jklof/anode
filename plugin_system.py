@@ -67,6 +67,8 @@ def load_plugins(folder="plugins"):
                                 # print(f"  -> UI: {obj.__name__} for {target}")
 
                 except Exception as e:
+                    import traceback
+                    traceback.print_exc()
                     print(f"Failed to load plugin {name}: {e}")
 
     finally:

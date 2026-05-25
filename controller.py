@@ -48,6 +48,7 @@ class AppController(QObject):
     graphUpdated = Signal(dict)
     telemetryUpdated = Signal(dict)
     parameterUpdated = Signal(dict)
+    nodeMoved = Signal(str, tuple)
 
     def __init__(self):
         super().__init__()
@@ -93,17 +94,10 @@ class AppController(QObject):
                     self.telemetryUpdated.emit(msg)
                 elif m_type == "param_update":
                     if "nodes" in ws:
-                        # Copy list to ensure we don't mutate the one held by others
-                        ws["nodes"] = ws["nodes"].copy()
-                        for i, n in enumerate(ws["nodes"]):
+                        for n in ws["nodes"]:
                             if n["id"] == msg["node_id"] and "params" in n:
                                 if msg["param"] in n["params"]:
-                                    # Copy node and params dict for safety
-                                    n_new = n.copy()
-                                    n_new["params"] = n["params"].copy()
-                                    n_new["params"][msg["param"]] = n["params"][msg["param"]].copy()
-                                    n_new["params"][msg["param"]]["value"] = msg["value"]
-                                    ws["nodes"][i] = n_new
+                                    n["params"][msg["param"]]["value"] = msg["value"]
                                     break
                     self.parameterUpdated.emit(msg)
                 elif m_type == "graph_update":
@@ -146,14 +140,11 @@ class AppController(QObject):
                     graph_changed = True
                 elif m_type == "node_moved":
                     if "nodes" in ws:
-                        ws["nodes"] = ws["nodes"].copy()
-                        for i, n in enumerate(ws["nodes"]):
+                        for n in ws["nodes"]:
                             if n["id"] == msg["node_id"]:
-                                n_new = n.copy()
-                                n_new["pos"] = msg["pos"]
-                                ws["nodes"][i] = n_new
+                                n["pos"] = msg["pos"]
                                 break
-                    graph_changed = True
+                    self.nodeMoved.emit(msg["node_id"], msg["pos"])
                 elif m_type == "clock_changed":
                     ws["clock_id"] = msg["node_id"]
                     if "nodes" in ws:
@@ -278,15 +269,16 @@ class AppController(QObject):
             if sid not in nodes_set and did not in nodes_set:
                 macro.add(DisconnectCommand(self, *c_data))
 
-        # 2. Delete Nodes
-        # (The DeleteNodeCommand now captures connections internally via snapshot)
+        # Capture all snapshots BEFORE starting the command loop (Issue 2)
+        node_snapshots = {nid: self.get_node_data(nid) for nid in node_ids}
         for nid in node_ids:
-            node_data = self.get_node_data(nid)
-            if node_data:
-                macro.add(DeleteNodeCommand(self, nid, node_data))
-                # Optimistic Update to prevent subsequent loop iterations from seeing it
-                if "nodes" in self._latest_snapshot:
-                    self._latest_snapshot["nodes"] = [n for n in self._latest_snapshot["nodes"] if n["id"] != nid]
+            if node_snapshots[nid]:
+                macro.add(DeleteNodeCommand(self, nid, node_snapshots[nid]))
+
+        # Perform optimistic snapshot updates AFTER building all commands
+        for nid in node_ids:
+            if "nodes" in self._latest_snapshot:
+                self._latest_snapshot["nodes"] = [n for n in self._latest_snapshot["nodes"] if n["id"] != nid]
 
         if macro.commands:
             macro.execute()

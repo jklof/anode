@@ -212,6 +212,9 @@ class ConvolutionReverb(Node):
         self.accum_fft_buffer = torch.zeros((proc_channels, num_bins), dtype=torch.complex64)
         self.result_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
         
+        self.dry_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
+        self.wet_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
+        
         self.history_ptr = 0
         self.dsp_ready = True
 
@@ -294,20 +297,17 @@ class ConvolutionReverb(Node):
         # Update overlap buffer (this is a view swap, no allocation)
         self.overlap_buffer.copy_(time_domain[:, PARTITION_SIZE:])
 
-        # 6. Mix
-        dry_signal = input_tensor * (1.0 - mix_val) # Still allocates, but these are small
-        wet_signal = self.result_buffer * mix_val
-
-        # Handle channel mismatches for dry_signal
+        # 6. Mix (Zero allocation using pre-allocated dry/wet buffers)
+        torch.mul(input_tensor, 1.0 - mix_val, out=self.dry_buffer[:in_channels])
         if in_channels == 1 and out_channels == 2:
-            dry_signal = dry_signal.expand(2, -1)
-        elif in_channels == 2 and out_channels == 1:
-            dry_signal = dry_signal[:1, :]
+            self.dry_buffer[1].copy_(self.dry_buffer[0])
+            
+        torch.mul(self.result_buffer[:out_channels], mix_val, out=self.wet_buffer[:out_channels])
 
         target_buff = self.outputs["out"].buffer
         target_buff.zero_()
         copy_ch = min(target_buff.shape[0], out_channels)
 
         # output = dry_signal + wet_signal
-        target_buff[:copy_ch].copy_(dry_signal[:copy_ch])
-        target_buff[:copy_ch].add_(wet_signal[:copy_ch])
+        target_buff[:copy_ch].copy_(self.dry_buffer[:copy_ch])
+        target_buff[:copy_ch].add_(self.wet_buffer[:copy_ch])

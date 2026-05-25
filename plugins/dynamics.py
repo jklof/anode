@@ -46,6 +46,13 @@ class Compressor(FFINode):
 
                 self.lib.get_gain_reduction.restype = ctypes.c_float
                 self.lib.get_gain_reduction.argtypes = [ctypes.c_void_p]
+
+                # Bind and call set_samplerate
+                self.lib.set_samplerate.restype = None
+                self.lib.set_samplerate.argtypes = [ctypes.c_void_p, ctypes.c_float]
+                
+                from base import SAMPLE_RATE
+                self.lib.set_samplerate(self.dsp_handle, float(SAMPLE_RATE))
             except Exception as e:
                 print(f"Compressor Bind Error: {e}")
 

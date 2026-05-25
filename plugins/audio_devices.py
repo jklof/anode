@@ -7,7 +7,7 @@ import queue
 from typing import Optional, Dict, List
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel
-from PySide6.QtCore import Qt, QTimer, QSignalBlocker
+from PySide6.QtCore import Qt, QTimer, QSignalBlocker, Signal
 
 # ANode Imports
 from base import Node, IClockProvider, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE
@@ -348,7 +348,7 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         # Option A: If tensor is strictly [2, 512]
         # torch.t() creates a transposed view, .numpy() creates a view of that.
         # copyto is the actual data movement (interleaving).
-        np.copyto(self._scratch_buffer, tensor_data.t().numpy())
+        np.copyto(self._scratch_buffer, tensor_data.numpy().T)
 
         # 3. Write to Ring Buffer
         # Now we are passing a persistent pointer, not a new object
@@ -361,6 +361,8 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
 
 
 class AudioDeviceWidget(QWidget):
+    devicesQueried = Signal(list)
+
     def __init__(self, proxy, is_input):
         super().__init__()
         self.proxy, self.is_input = proxy, is_input
@@ -387,16 +389,26 @@ class AudioDeviceWidget(QWidget):
         layout.addWidget(self.lbl_status)
 
         self.setMinimumWidth(250)
+        self.devicesQueried.connect(self._on_devices_queried)
         QTimer.singleShot(100, self._refresh)
 
     def _refresh(self):
         self.combo.blockSignals(True)
         self.combo.clear()
+        self.combo.addItem("Scanning...", -1)
+        self.combo.setEnabled(False)
+        self.combo.blockSignals(False)
 
-        # Don't destroy active streams during refresh
-        devices = AudioDeviceManager.get_compatible_devices(self.is_input)
+        def worker():
+            devices = AudioDeviceManager.get_compatible_devices(self.is_input)
+            self.devicesQueried.emit(devices)
 
-        self.combo.addItem(f"System Default", -1)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_devices_queried(self, devices):
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        self.combo.addItem("System Default", -1)
 
         for d in devices:
             name = d["display_name"]
@@ -409,6 +421,7 @@ class AudioDeviceWidget(QWidget):
         else:
             self.combo.setCurrentIndex(0)
 
+        self.combo.setEnabled(True)
         self.combo.blockSignals(False)
 
     def _on_combo_user_action(self, index):

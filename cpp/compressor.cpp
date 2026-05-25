@@ -144,6 +144,11 @@ public:
 
     float get_last_gr() const { return _last_gr; }
 
+    void set_samplerate(float sr) {
+        _samplerate = std::max(1.0f, sr);
+        recalc_coeffs();
+    }
+
 private:
     void recalc_coeffs() {
         float ds_rate = _samplerate / static_cast<float>(SIDECHAIN_DOWNSAMPLE_FACTOR);
@@ -207,4 +212,10 @@ EXPORT void set_param(void* handle, int param_id, float value) {
 
 EXPORT float get_gain_reduction(void* handle) {
     return static_cast<CompressorProcessor*>(handle)->get_last_gr();
+}
+
+EXPORT void set_samplerate(void* handle, float samplerate) {
+    if (handle) {
+        static_cast<CompressorProcessor*>(handle)->set_samplerate(samplerate);
+    }
 }

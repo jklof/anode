@@ -42,7 +42,11 @@ class CompoundCommand(ICommand):
 
 
 class AddNodeCommand(ICommand):
-    """Command to add a node to the graph."""
+    """
+    Command to add a node to the graph.
+    Note: params dictionary is expected in the snapshot format:
+    {"param_name": {"value": val, "type": ptype, "meta": pmeta}}
+    """
 
     def __init__(self, controller, node_type, pos, node_id=None, params=None):
         self.controller = controller

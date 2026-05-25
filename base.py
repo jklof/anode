@@ -124,7 +124,14 @@ class Parameter:
             self._staging = val
 
     def sync(self):
-        if self.value != self._staging:
+        try:
+            if isinstance(self.value, (np.ndarray, torch.Tensor)) or isinstance(self._staging, (np.ndarray, torch.Tensor)):
+                changed = True
+            else:
+                changed = bool(self.value != self._staging)
+        except Exception:
+            changed = True
+        if changed:
             self.value = self._staging
             self._update_cache()
 

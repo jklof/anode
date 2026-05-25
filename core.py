@@ -15,8 +15,16 @@ class Graph:
     def __init__(self):
         self.nodes: List[Node] = []
         self.node_map: Dict[str, Node] = {}
-        self.execution_order: List[Node] = []
+        self._execution_order: List[Node] = []
+        self._order_dirty = True
         self.clock_source: Optional[IClockProvider] = None
+
+    @property
+    def execution_order(self) -> List[Node]:
+        if self._order_dirty:
+            self._recalculate_order()
+            self._order_dirty = False
+        return self._execution_order
 
     def _get_upstream_nodes(self, node: Node) -> List[Node]:
         upstream = []
@@ -78,6 +86,9 @@ class Graph:
                 n.set_master(n == node)
 
     def recalculate_order(self):
+        self._order_dirty = True
+
+    def _recalculate_order(self):
         in_degree = {n.id: 0 for n in self.nodes}
         adj = {n.id: [] for n in self.nodes}
 
@@ -108,7 +119,7 @@ class Graph:
         if len(order) != len(self.nodes):
             logging.warning("Cycle detected in graph! Cyclic nodes omitted from execution.")
 
-        self.execution_order = order
+        self._execution_order = order
 
     def _get_node_data(self, n: Node) -> dict:
         p_data = {}
@@ -185,9 +196,11 @@ class Engine:
             self.command_queue.put(cmd)
         else:
             self._apply_command(cmd)
-            # Always emit snapshot when engine is stopped to ensure UI updates
-            # This is especially important for parameter changes when audio is off
-            self._emit_snapshot()
+            # Emit snapshot only for structural changes when stopped.
+            # Parameter changes and moves have their own side-channel update messages.
+            STRUCTURAL_OPS = {"add", "del", "conn", "disconn", "restore", "clear", "load", "reload", "clock"}
+            if cmd[0] in STRUCTURAL_OPS:
+                self._emit_snapshot()
 
     def _emit_snapshot(self):
         snap = self.graph.get_snapshot()
@@ -222,6 +235,8 @@ class Engine:
                 else:
                     node = type_name_or_node
                     # Critical Fix: Set ID and POS for pre-instantiated nodes
+                    # Note: if node's __init__ had any side effects using self.id,
+                    # those would have run with a random UUID since this is assigned afterwards.
                     node.id = nid
                     node.pos = pos
 
@@ -553,7 +568,10 @@ class Engine:
         if self.graph.clock_source:
             self.graph.clock_source.abort_flag = True
         if self._tick_semaphore:
-            self._tick_semaphore.release()
+            # Release multiple times to satisfy all possible pending acquires
+            # in the worker thread, avoiding deadlocks when stopping.
+            for _ in range(self.max_buffered_frames + 1):
+                self._tick_semaphore.release()
         if self.thread:
             self.thread.join()
             self.thread = None
