@@ -711,7 +711,65 @@ class NodeItem(QGraphicsObject):
             for item in self.output_items.values():
                 item.setX(self.width)
 
+    def reconcile_sockets(self, inputs_list, outputs_list):
+        # 1. Remove visual sockets that are no longer present
+        for name in list(self.input_items.keys()):
+            if name not in inputs_list:
+                item = self.input_items.pop(name)
+                # Find and remove connected wires
+                for key in list(self.scene().wire_items.keys()):
+                    sid, sp, did, dp = key
+                    if did == self.nid and dp == name:
+                        wire = self.scene().wire_items.pop(key)
+                        wire.detach()
+                        self.scene().removeItem(wire)
+                item.setParentItem(None)
+
+        for name in list(self.output_items.keys()):
+            if name not in outputs_list:
+                item = self.output_items.pop(name)
+                # Find and remove connected wires
+                for key in list(self.scene().wire_items.keys()):
+                    sid, sp, did, dp = key
+                    if sid == self.nid and sp == name:
+                        wire = self.scene().wire_items.pop(key)
+                        wire.detach()
+                        self.scene().removeItem(wire)
+                item.setParentItem(None)
+
+        # 2. Add new sockets and align layout
+        y = Theme.DIMENSIONS["header_height"] + 10
+        for name in inputs_list:
+            if name not in self.input_items:
+                item = SocketItem(self, name, True, self.nid)
+                self.input_items[name] = item
+            else:
+                item = self.input_items[name]
+            item.setPos(0, y)
+            y += 20
+
+        y_out = Theme.DIMENSIONS["header_height"] + 10
+        for name in outputs_list:
+            if name not in self.output_items:
+                item = SocketItem(self, name, False, self.nid)
+                self.output_items[name] = item
+            else:
+                item = self.output_items[name]
+            item.setPos(self.width, y_out)
+            y_out += 20
+
+        # Update height and position of custom widget proxy
+        self.height = max(y, y_out) + 10
+        if self.proxy and self.widget:
+            self.proxy.setPos(10, self.height)
+            self.height += self.proxy.size().height() + 10
+        
+        self.prepareGeometryChange()
+        self.update()
+
     def update_from_snapshot(self, node_data):
+        self.reconcile_sockets(node_data.get("inputs", []), node_data.get("outputs", []))
+        
         new_pos = QPointF(*node_data["pos"])
         if self.pos() != new_pos:
             self.setPos(new_pos)

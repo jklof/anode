@@ -36,6 +36,7 @@ class Graph:
         return upstream
 
     def add_node(self, node: Node):
+        node.graph = self
         self.nodes.append(node)
         self.node_map[node.id] = node
         if isinstance(node, IClockProvider) and self.clock_source is None:
@@ -57,6 +58,7 @@ class Graph:
                         inp.disconnect(conn_out)
         self.nodes.remove(node)
         del self.node_map[node_id]
+        node.graph = None
         if self.clock_source is None:
             for n in self.nodes:
                 if isinstance(n, IClockProvider):
