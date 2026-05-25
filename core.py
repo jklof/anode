@@ -99,7 +99,7 @@ class Graph:
             for u in self._get_upstream_nodes(n):
                 if u.id in in_degree:
                     upstream_ids.add(u.id)
-            
+
             in_degree[n.id] = len(upstream_ids)
             for u_id in upstream_ids:
                 adj[u_id].append(n.id)
@@ -272,7 +272,8 @@ class Engine:
                             node.error_msg = f"Start Error: {e}"
                     try:
                         self.output_queue.put_nowait({"type": "node_added", "node": self.graph._get_node_data(node)})
-                    except Exception: pass
+                    except Exception:
+                        pass
             elif op == "del":
                 _, nid = cmd
                 if self.running:
@@ -289,19 +290,26 @@ class Engine:
                 self.graph.remove_node(nid)
                 try:
                     self.output_queue.put_nowait({"type": "node_removed", "node_id": nid})
-                except Exception: pass
+                except Exception:
+                    pass
             elif op == "conn":
                 _, sid, sp, did, dp = cmd
                 self.graph.connect(sid, sp, did, dp)
                 try:
-                    self.output_queue.put_nowait({"type": "connected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp})
-                except Exception: pass
+                    self.output_queue.put_nowait(
+                        {"type": "connected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp}
+                    )
+                except Exception:
+                    pass
             elif op == "disconn":
                 _, sid, sp, did, dp = cmd
                 self.graph.disconnect(sid, sp, did, dp)
                 try:
-                    self.output_queue.put_nowait({"type": "disconnected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp})
-                except Exception: pass
+                    self.output_queue.put_nowait(
+                        {"type": "disconnected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp}
+                    )
+                except Exception:
+                    pass
             elif op == "param":
                 _, nid, p, val = cmd
                 node = self.graph.node_map.get(nid)
@@ -321,7 +329,8 @@ class Engine:
                     self.graph.set_master_clock(node)
                     try:
                         self.output_queue.put_nowait({"type": "clock_changed", "node_id": nid})
-                    except Exception: pass
+                    except Exception:
+                        pass
             elif op == "move":
                 _, nid, x, y = cmd
                 node = self.graph.node_map.get(nid)
@@ -329,7 +338,8 @@ class Engine:
                     node.pos = (x, y)
                     try:
                         self.output_queue.put_nowait({"type": "node_moved", "node_id": nid, "pos": (x, y)})
-                    except Exception: pass
+                    except Exception:
+                        pass
 
             # --- NEW: Restore Command for robust Undo ---
             elif op == "restore":
@@ -355,7 +365,8 @@ class Engine:
                             node.error_msg = f"Start Error: {e}"
                     try:
                         self.output_queue.put_nowait({"type": "node_added", "node": self.graph._get_node_data(node)})
-                    except Exception: pass
+                    except Exception:
+                        pass
             # --------------------------------------------
 
             elif op == "clear":
@@ -386,7 +397,7 @@ class Engine:
                     data = json.loads(json_str)
                     if not isinstance(data, dict):
                         raise ValueError("Loaded data is not a valid JSON object.")
-                        
+
                     new_graph = Graph()
                     for n_data in data.get("nodes", []):
                         if not isinstance(n_data, dict):

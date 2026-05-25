@@ -134,7 +134,7 @@ class BaseAudioDeviceNode(Node):
         self.ring_buffer = AudioRingBuffer(capacity_blocks=32)
         self.stream: Optional[sd.Stream] = None
         self._device_state = {"active": False, "status": "Inactive", "latency": 0.0, "idx": -1}
-        
+
         self._action_queue = queue.Queue()
         self._action_thread = threading.Thread(target=self._action_worker, daemon=True)
         self._action_thread.start()
@@ -202,23 +202,18 @@ class BaseAudioDeviceNode(Node):
                     self.stream.close()
                     self.stream = None
                 raise e
-            
+
             ch_str = "Mono" if actual_channels == 1 else f"{actual_channels}ch"
             self._device_state = {
                 "active": True,
                 "status": f"{info['name']} ({ch_str})",
                 "latency": self.stream.latency * 1000.0,
-                "idx": target_idx
+                "idx": target_idx,
             }
 
         except Exception as e:
             logger.error(f"Stream Open Failed: {e}")
-            self._device_state = {
-                "active": False,
-                "status": f"Error: {str(e)[:20]}...",
-                "latency": 0.0,
-                "idx": -2
-            }
+            self._device_state = {"active": False, "status": f"Error: {str(e)[:20]}...", "latency": 0.0, "idx": -2}
 
     def _stop_stream(self):
         self._action_queue.put((self._stop_stream_sync, ()))

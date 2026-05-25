@@ -68,6 +68,7 @@ def load_plugins(folder="plugins"):
 
                 except Exception as e:
                     import traceback
+
                     traceback.print_exc()
                     print(f"Failed to load plugin {name}: {e}")
 
@@ -77,7 +78,6 @@ def load_plugins(folder="plugins"):
                 sys.path.remove(abs_folder)
             except ValueError:
                 pass
-
 
 
 def get_node_class(name):

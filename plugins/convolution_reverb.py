@@ -206,15 +206,15 @@ class ConvolutionReverb(Node):
         self.input_history = torch.zeros((num_partitions, proc_channels, num_bins), dtype=torch.complex64)
         self.overlap_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
         self.padding_buffer = torch.zeros((proc_channels, FFT_SIZE), dtype=DTYPE)
-        
+
         # Pre-allocate process buffers to minimize RT allocations
         self.product_buffer = torch.zeros((num_partitions, proc_channels, num_bins), dtype=torch.complex64)
         self.accum_fft_buffer = torch.zeros((proc_channels, num_bins), dtype=torch.complex64)
         self.result_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
-        
+
         self.dry_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
         self.wet_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
-        
+
         self.history_ptr = 0
         self.dsp_ready = True
 
@@ -293,7 +293,7 @@ class ConvolutionReverb(Node):
         # result = time_domain[:, :PARTITION_SIZE] + self.overlap_buffer
         self.result_buffer.copy_(time_domain[:, :PARTITION_SIZE])
         self.result_buffer.add_(self.overlap_buffer)
-        
+
         # Update overlap buffer (this is a view swap, no allocation)
         self.overlap_buffer.copy_(time_domain[:, PARTITION_SIZE:])
 
@@ -301,7 +301,7 @@ class ConvolutionReverb(Node):
         torch.mul(input_tensor, 1.0 - mix_val, out=self.dry_buffer[:in_channels])
         if in_channels == 1 and out_channels == 2:
             self.dry_buffer[1].copy_(self.dry_buffer[0])
-            
+
         torch.mul(self.result_buffer[:out_channels], mix_val, out=self.wet_buffer[:out_channels])
 
         target_buff = self.outputs["out"].buffer

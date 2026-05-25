@@ -125,7 +125,9 @@ class Parameter:
 
     def sync(self):
         try:
-            if isinstance(self.value, (np.ndarray, torch.Tensor)) or isinstance(self._staging, (np.ndarray, torch.Tensor)):
+            if isinstance(self.value, (np.ndarray, torch.Tensor)) or isinstance(
+                self._staging, (np.ndarray, torch.Tensor)
+            ):
                 changed = True
             else:
                 changed = bool(self.value != self._staging)

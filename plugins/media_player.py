@@ -175,7 +175,7 @@ class MediaStreamWorker(threading.Thread):
 
                 if self.stop_event.is_set():
                     break
-                    
+
                 # We hit EOF
                 if self.looping_callback and self.looping_callback():
                     self.event_callback("status", "Looping...")
@@ -250,7 +250,6 @@ class MediaPlayerWidget(QWidget):
         # Row 1: Unified File Parameter
         self.file_widget = self.proxy.create_param_widget("file_path")
         layout.addWidget(self.file_widget)
-
 
         # Row 2: Metadata
         self.lbl_title = QLabel(self.stored_title)
@@ -367,7 +366,7 @@ class MediaPlayerNode(Node):
         # --- Management Thread (Non-RT) ---
         self._mgmt_lock = threading.Lock()
         self._mgmt_cv = threading.Condition(self._mgmt_lock)
-        self._pending_restart = None # Tuple of (path, start_time)
+        self._pending_restart = None  # Tuple of (path, start_time)
         self._mgmt_running = True
         self._mgmt_thread = threading.Thread(target=self._mgmt_loop, daemon=True)
         self._mgmt_thread.start()
@@ -378,13 +377,13 @@ class MediaPlayerNode(Node):
             with self._mgmt_cv:
                 while self._mgmt_running and self._pending_restart is None:
                     self._mgmt_cv.wait(timeout=0.1)
-                
+
                 if not self._mgmt_running:
                     break
-                
+
                 path, start_time = self._pending_restart
                 self._pending_restart = None
-            
+
             # Perform the heavy work outside the lock
             self._do_restart_worker(path, start_time)
 
@@ -458,11 +457,11 @@ class MediaPlayerNode(Node):
 
         if MEDIA_DEPS_AVAILABLE:
             self.worker = MediaStreamWorker(
-                path, 
-                self.queue, 
-                lambda type, data: self._handle_worker_event(type, data), 
+                path,
+                self.queue,
+                lambda type, data: self._handle_worker_event(type, data),
                 looping_callback=lambda: self.params["looping"].value,
-                start_time=start_time
+                start_time=start_time,
             )
             self.worker.start()
         else:
@@ -527,12 +526,12 @@ class MediaPlayerNode(Node):
         self._mgmt_running = False
         with self._mgmt_cv:
             self._mgmt_cv.notify_all()
-        
+
         if self.worker:
             self.worker.stop()
             self.worker.join(timeout=1.0)
             self.worker = None
-        
+
         if self._mgmt_thread:
             self._mgmt_thread.join(timeout=1.0)
 

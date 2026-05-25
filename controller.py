@@ -16,6 +16,7 @@ class CommandHistory:
 
     def __init__(self, max_length=50):
         import collections
+
         self.undo_stack = collections.deque(maxlen=max_length)
         self.redo_stack = collections.deque(maxlen=max_length)
         self.max_length = max_length
@@ -121,28 +122,35 @@ class AppController(QObject):
                     if "nodes" in ws:
                         ws["nodes"] = [n for n in ws["nodes"] if n["id"] != nid]
                     if "connections" in ws:
-                        ws["connections"] = [
-                            c for c in ws["connections"]
-                            if c["src_id"] != nid and c["dst_id"] != nid
-                        ]
+                        ws["connections"] = [c for c in ws["connections"] if c["src_id"] != nid and c["dst_id"] != nid]
                     graph_changed = True
                 elif m_type == "connected":
                     if "connections" not in ws:
                         ws["connections"] = []
                     else:
                         ws["connections"] = ws["connections"].copy()
-                    ws["connections"].append({
-                        "src_id": msg["src_id"], "src_port": msg["src_port"],
-                        "dst_id": msg["dst_id"], "dst_port": msg["dst_port"]
-                    })
+                    ws["connections"].append(
+                        {
+                            "src_id": msg["src_id"],
+                            "src_port": msg["src_port"],
+                            "dst_id": msg["dst_id"],
+                            "dst_port": msg["dst_port"],
+                        }
+                    )
                     graph_changed = True
                 elif m_type == "disconnected":
                     if "connections" in ws:
                         c_list = ws["connections"]
-                        ws["connections"] = [c for c in c_list if not (
-                            c["src_id"] == msg["src_id"] and c["src_port"] == msg["src_port"] and
-                            c["dst_id"] == msg["dst_id"] and c["dst_port"] == msg["dst_port"]
-                        )]
+                        ws["connections"] = [
+                            c
+                            for c in c_list
+                            if not (
+                                c["src_id"] == msg["src_id"]
+                                and c["src_port"] == msg["src_port"]
+                                and c["dst_id"] == msg["dst_id"]
+                                and c["dst_port"] == msg["dst_port"]
+                            )
+                        ]
                     graph_changed = True
                 elif m_type == "node_moved":
                     if "nodes" in ws:
@@ -162,7 +170,7 @@ class AppController(QObject):
                         for i, n in enumerate(ws["nodes"]):
                             # Optimization: only copy if state actually changes
                             was_master = n.get("is_master", False)
-                            is_now_master = (n["id"] == msg["node_id"])
+                            is_now_master = n["id"] == msg["node_id"]
                             if was_master != is_now_master:
                                 n_new = n.copy()
                                 n_new["is_master"] = is_now_master

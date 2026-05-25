@@ -57,9 +57,10 @@ class AddNodeCommand(ICommand):
 
     def execute(self):
         import plugin_system
+
         cls = plugin_system.NODE_REGISTRY.get(self.node_type)
         if cls:
-            # We instantiate the Node on the UI thread to perform any heavy initialization 
+            # We instantiate the Node on the UI thread to perform any heavy initialization
             # (e.g. PyTorch tensors, C++ ctypes load_library) prior to graph insertion.
             # Passing this distinct, non-shared object across the thread queue is safe in CPython
             # because no other thread holds a reference to it yet.
@@ -101,6 +102,7 @@ class DeleteNodeCommand(ICommand):
 
         # 1. Restore the Node using the robust 'restore' opcode
         import plugin_system
+
         cls = plugin_system.NODE_REGISTRY.get(self.node_data["type"])
         if cls:
             node = cls(self.node_data["name"])
