@@ -134,3 +134,71 @@ class ChannelJoiner(Node):
                 # Copy 1st channel of mono source to ith channel of output
                 if sig.shape[0] > 0:
                     out_buffer[i].copy_(sig[0])
+
+
+# ==============================================================================
+# Dial Node (Constant Signal Generator)
+# ==============================================================================
+
+class DialNode(Node):
+    category = "Sources"
+    label = "Dial"
+
+    def __init__(self, name=""):
+        super().__init__(name)
+        self.add_float_param("value", 0.5, 0.0, 1.0)
+        self.out = self.add_output("out", channels=CHANNELS)
+
+    def process(self):
+        val = self.params["value"].value
+        self.out.buffer.fill_(val)
+
+
+try:
+    from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QDial
+    from PySide6.QtCore import Qt, QSignalBlocker
+
+    class DialNodeWidget(QWidget):
+        IS_NODE_UI = True
+        NODE_CLASS_NAME = "DialNode"
+
+        def __init__(self, node_proxy):
+            super().__init__()
+            self.proxy = node_proxy
+            self.setMinimumSize(100, 120)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(4, 4, 4, 4)
+            layout.setSpacing(4)
+
+            self.label = QLabel("Value: 0.50")
+            self.label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(self.label)
+
+            self.dial = QDial()
+            self.dial.setRange(0, 1000)
+            self.dial.setNotchesVisible(True)
+            self.dial.setWrapping(False)
+            
+            # Set initial value
+            init_val = self.proxy.node_item.params["value"]["value"]
+            self.dial.setValue(int(init_val * 1000))
+            self.label.setText(f"Value: {init_val:.2f}")
+
+            self.dial.valueChanged.connect(self.on_dial_changed)
+            layout.addWidget(self.dial)
+
+        def on_dial_changed(self, val):
+            f_val = val / 1000.0
+            self.proxy.set_parameter("value", f_val)
+            self.label.setText(f"Value: {f_val:.2f}")
+
+        def update_from_params(self, params):
+            if "value" in params:
+                val = params["value"]
+                self.label.setText(f"Value: {val:.2f}")
+                if not self.dial.isSliderDown():
+                    with QSignalBlocker(self.dial):
+                        self.dial.setValue(int(val * 1000))
+except ImportError:
+    pass

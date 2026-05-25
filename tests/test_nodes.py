@@ -203,3 +203,24 @@ def test_split_join_nodes():
     # Assert output buffer Ch1 contains 0.8
     expected_ch1 = torch.full_like(joiner.out.buffer[1], 0.8)
     assert torch.allclose(joiner.out.buffer[1], expected_ch1)
+
+
+def test_dial_node():
+    # Load plugins
+    plugin_system.load_plugins("plugins")
+
+    dial_cls = plugin_system.NODE_REGISTRY.get("DialNode")
+    assert dial_cls is not None
+    
+    dial = dial_cls()
+
+    # Set value parameter to 0.75
+    dial.params["value"].set(0.75)
+    dial.sync()
+
+    # Run process
+    dial.process()
+
+    # Assert all channels of out.buffer contain 0.75
+    expected = torch.full_like(dial.out.buffer, 0.75)
+    assert torch.allclose(dial.out.buffer, expected)
