@@ -43,7 +43,7 @@ class FFINode(Node):
         elif sys.platform == "darwin":
             lib_filename = f"lib{self.LIB_NAME}.dylib"
         else:
-            lib_filename = f"{self.LIB_NAME}.so"
+            lib_filename = f"lib{self.LIB_NAME}.so"
 
         # Look in the same folder as the defining python file
         # This handles the case where plugins are in subfolders

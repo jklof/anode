@@ -28,6 +28,9 @@ public:
           _max_channels(2) {
         
         recalc_coeffs();
+        _in_ptrs.reserve(8);
+        _sc_ptrs.reserve(8);
+        _out_ptrs.reserve(8);
         resize_buffers(_max_channels);
     }
 
@@ -52,17 +55,13 @@ public:
         }
 
         // 1. Prepare Pointers for "Planar" access within flat buffer
-        std::vector<float*> in_ptrs(channels);
-        std::vector<float*> sc_ptrs(channels);
-        std::vector<float*> out_ptrs(channels);
-
         for (int c = 0; c < channels; ++c) {
-            in_ptrs[c] = in_flat + (c * frames);
-            out_ptrs[c] = out_flat + (c * frames);
+            _in_ptrs[c] = in_flat + (c * frames);
+            _out_ptrs[c] = out_flat + (c * frames);
             if (sc_flat) {
-                sc_ptrs[c] = sc_flat + (c * frames);
+                _sc_ptrs[c] = sc_flat + (c * frames);
             } else {
-                sc_ptrs[c] = nullptr; // Use input for detection
+                _sc_ptrs[c] = nullptr; // Use input for detection
             }
         }
 
@@ -75,10 +74,10 @@ public:
             float max_val = 0.0f;
             for (int ch = 0; ch < channels; ++ch) {
                 float sample;
-                if (sc_ptrs[ch]) {
-                    sample = sc_ptrs[ch][i];
+                if (_sc_ptrs[ch]) {
+                    sample = _sc_ptrs[ch][i];
                 } else {
-                    sample = in_ptrs[ch][i];
+                    sample = _in_ptrs[ch][i];
                 }
                 max_val = std::max(max_val, std::abs(sample));
             }
@@ -133,10 +132,10 @@ public:
                 float delayed_sample = _delay_buffer[read_idx];
                 
                 // Output = Delayed Input * GR * Makeup
-                out_ptrs[ch][i] = delayed_sample * gain_reduction_linear[i] * makeup_linear;
+                _out_ptrs[ch][i] = delayed_sample * gain_reduction_linear[i] * makeup_linear;
                 
                 // Write Input to Delay
-                _delay_buffer[write_idx] = in_ptrs[ch][i];
+                _delay_buffer[write_idx] = _in_ptrs[ch][i];
             }
             _write_head = (_write_head + 1) % _delay_samples;
         }
@@ -161,6 +160,9 @@ private:
     void resize_buffers(int channels) {
         _max_channels = channels;
         _delay_buffer.assign(static_cast<size_t>(_max_channels) * _delay_samples, 0.0f);
+        _in_ptrs.resize(channels);
+        _sc_ptrs.resize(channels);
+        _out_ptrs.resize(channels);
         _write_head = 0;
     }
 
@@ -176,6 +178,10 @@ private:
     float _release_coeff;
     float _envelope;
     float _last_gr = 1.0f;
+
+    std::vector<float*> _in_ptrs;
+    std::vector<float*> _sc_ptrs;
+    std::vector<float*> _out_ptrs;
 
     std::vector<float> _delay_buffer;
     std::vector<float> power_sidechain;
