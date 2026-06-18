@@ -164,6 +164,8 @@ class Node:
         self.inputs: Dict[str, InputSlot] = {}
         self.outputs: Dict[str, OutputSlot] = {}
         self.params: Dict[str, Parameter] = {}
+        self._nrt_epoch = 0
+        self._nrt_inbox = None
 
     def add_input(self, name: str, param_name: str = None) -> InputSlot:
         slot = InputSlot(name, self, param_name)
@@ -193,9 +195,22 @@ class Node:
     def add_file_param(self, name: str, val: str, filter: str = "All Files (*.*)", mode: str = "open"):
         self.params[name] = Parameter(val, "file", filter=filter, mode=mode)
 
+    def submit_nrt(self, fn, *args, tag=None):
+        """Schedule fn(*args) on the engine's background pool. Never blocks.
+        Override on_nrt_complete() to receive the result on a later tick."""
+        if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
+            self.graph.engine.nrt.submit(self, fn, args, tag)
+
+    def on_nrt_complete(self, tag, ok, result):
+        """Override in subclasses to receive background task results. Called
+        from sync(), so it's safe to mutate node state here."""
+        pass
+
     def sync(self):
         for p in self.params.values():
             p.sync()
+        if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
+            self.graph.engine.nrt.drain(self)
 
     def process(self):
         raise NotImplementedError

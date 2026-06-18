@@ -2,8 +2,6 @@ import torch
 import torch.fft
 import torchaudio
 import numpy as np
-import threading
-import queue
 import os
 import logging
 
@@ -21,78 +19,6 @@ logger = logging.getLogger(__name__)
 # Constants for Partitioned Convolution
 PARTITION_SIZE = BLOCK_SIZE
 FFT_SIZE = 2 * PARTITION_SIZE
-
-
-class IrLoaderThread(threading.Thread):
-    def __init__(self, path, result_queue):
-        super().__init__(daemon=True)
-        self.path = path
-        self.result_queue = result_queue
-
-    def run(self):
-        try:
-            if not os.path.exists(self.path):
-                self.result_queue.put(("error", f"File not found: {self.path}"))
-                return
-
-            try:
-                waveform, sr = torchaudio.load(self.path)
-            except Exception as e:
-                self.result_queue.put(("error", f"Load Failed: {e}"))
-                return
-
-            if sr != SAMPLE_RATE:
-                resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=SAMPLE_RATE)
-                waveform = resampler(waveform)
-
-            if waveform.shape[0] > 2:
-                waveform = waveform[:2, :]
-
-            max_val = torch.max(torch.abs(waveform))
-            if max_val > 0:
-                waveform /= max_val
-
-            # Compensation for convolution energy gain
-            waveform *= 0.2
-
-            num_samples = waveform.shape[1]
-            num_partitions = int(np.ceil(num_samples / PARTITION_SIZE))
-            if num_partitions == 0:
-                num_partitions = 1
-
-            pad_len = num_partitions * PARTITION_SIZE - num_samples
-            if pad_len > 0:
-                waveform = torch.nn.functional.pad(waveform, (0, pad_len))
-
-            num_ir_channels = waveform.shape[0]
-            num_bins = FFT_SIZE // 2 + 1
-            complex_dtype = torch.complex64
-
-            ir_ffts = torch.zeros((num_partitions, num_ir_channels, num_bins), dtype=complex_dtype)
-
-            for i in range(num_partitions):
-                start = i * PARTITION_SIZE
-                end = start + PARTITION_SIZE
-                chunk = waveform[:, start:end]
-                chunk_padded = torch.nn.functional.pad(chunk, (0, PARTITION_SIZE))
-                fft_chunk = torch.fft.rfft(chunk_padded, n=FFT_SIZE, dim=1)
-                ir_ffts[i] = fft_chunk
-
-            self.result_queue.put(
-                (
-                    "success",
-                    {
-                        "ir_ffts": ir_ffts,
-                        "num_partitions": num_partitions,
-                        "channels": num_ir_channels,
-                        "path": self.path,
-                    },
-                )
-            )
-
-        except Exception as e:
-            logger.error(f"IR Load Error: {e}")
-            self.result_queue.put(("error", str(e)))
 
 
 # ==============================================================================
@@ -161,7 +87,6 @@ class ConvolutionReverb(Node):
         self.add_float_param("mix", 0.5, 0.0, 1.0)
         self.add_file_param("ir_path", "", filter="Audio Files (*.wav *.flac *.mp3)")
 
-        self.loader_queue = queue.Queue()
         self.loading = False
         self.current_ir_path = ""
 
@@ -194,8 +119,52 @@ class ConvolutionReverb(Node):
         self.current_ir_path = path
         self._status = "Loading..."
         self._current_filename = os.path.basename(path)
-        t = IrLoaderThread(path, self.loader_queue)
-        t.start()
+        self.submit_nrt(self._load_ir_blocking, path)
+
+    def _load_ir_blocking(self, path):
+        """Runs on an NRT pool thread. Body is the old IrLoaderThread.run()."""
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"File not found: {path}")
+        waveform, sr = torchaudio.load(path)
+        if sr != SAMPLE_RATE:
+            waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=SAMPLE_RATE)(waveform)
+        if waveform.shape[0] > 2:
+            waveform = waveform[:2, :]
+        max_val = torch.max(torch.abs(waveform))
+        if max_val > 0:
+            waveform /= max_val
+        waveform *= 0.2
+        num_samples = waveform.shape[1]
+        num_partitions = max(1, int(np.ceil(num_samples / PARTITION_SIZE)))
+        pad_len = num_partitions * PARTITION_SIZE - num_samples
+        if pad_len > 0:
+            waveform = torch.nn.functional.pad(waveform, (0, pad_len))
+        num_ir_channels = waveform.shape[0]
+        num_bins = FFT_SIZE // 2 + 1
+        ir_ffts = torch.zeros((num_partitions, num_ir_channels, num_bins), dtype=torch.complex64)
+        for i in range(num_partitions):
+            start = i * PARTITION_SIZE
+            chunk = waveform[:, start:start + PARTITION_SIZE]
+            chunk_padded = torch.nn.functional.pad(chunk, (0, PARTITION_SIZE))
+            ir_ffts[i] = torch.fft.rfft(chunk_padded, n=FFT_SIZE, dim=1)
+        return {"ir_ffts": ir_ffts, "num_partitions": num_partitions,
+                "channels": num_ir_channels, "path": path}
+
+    def on_nrt_complete(self, tag, ok, result):
+        if ok:
+            self.ir_ffts = result["ir_ffts"]
+            self.dsp_ready = False
+            self.input_history = None
+            if self.overlap_buffer is not None:
+                self.overlap_buffer.zero_()
+            self.current_ir_path = result["path"]
+            self.loading = False
+            self._status = "Ready"
+            self._current_filename = os.path.basename(result["path"])
+        else:
+            self.loading = False
+            self._status = "Error"
+            self._current_filename = "Load Failed"
 
     def get_telemetry(self) -> dict:
         return {"status": self._status, "filename": self._current_filename}
@@ -221,28 +190,7 @@ class ConvolutionReverb(Node):
     def process(self):
         input_tensor = self.inputs["in"].get_tensor()
 
-        # 1. Check for Load
-        try:
-            msg = self.loader_queue.get_nowait()
-            if msg[0] == "success":
-                data = msg[1]
-                self.ir_ffts = data["ir_ffts"]
-                self.dsp_ready = False
-                self.input_history = None
-                if self.overlap_buffer is not None:
-                    self.overlap_buffer.zero_()
-                self.current_ir_path = data["path"]
-                self.loading = False
-                self._status = "Ready"
-                self._current_filename = os.path.basename(data["path"])
-            elif msg[0] == "error":
-                self.loading = False
-                self._status = "Error"
-                self._current_filename = "Load Failed"
-        except queue.Empty:
-            pass
-
-        # 2. Get mix parameter
+        # 1. Get mix parameter
         mix_val = self.params["mix"].value
 
         # 3. Bypass / Not Ready

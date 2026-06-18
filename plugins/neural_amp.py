@@ -93,14 +93,14 @@ class NamNode(FFINode):
         # Bind Custom Function
         if self.lib:
             try:
-                self.lib.load_nam_model.restype = None
-                self.lib.load_nam_model.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_double, ctypes.c_int]
+                self.lib.load_model_sync.restype = None
+                self.lib.load_model_sync.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_double, ctypes.c_int]
 
                 if hasattr(self.lib, "reset"):
                     self.lib.reset.restype = None
                     self.lib.reset.argtypes = [ctypes.c_void_p]
             except AttributeError as e:
-                print(f"Error: 'load_nam_model' not found in DLL: {e}")
+                print(f"Error: 'load_model_sync' not found in DLL: {e}")
 
     def on_ui_param_change(self, param_name: str):
         super().on_ui_param_change(param_name)
@@ -109,13 +109,19 @@ class NamNode(FFINode):
             self.params[param_name].sync()
             path = self.params["model_path"].value
             if self.lib and self.dsp_handle and path:
-                # Update status
-                self._status = "Active"
-                self._current_filename = os.path.basename(path)
+                self._status = "Loading..."
+                self.submit_nrt(self._load_blocking, path)
 
-                # Trigger C++ Load
-                b_path = path.encode("utf-8")
-                self.lib.load_nam_model(self.dsp_handle, b_path, float(SAMPLE_RATE), int(BLOCK_SIZE))
+    def _load_blocking(self, path):
+        self.lib.load_model_sync(self.dsp_handle, path.encode("utf-8"),
+                                  float(SAMPLE_RATE), int(BLOCK_SIZE))
+        return os.path.basename(path)
+
+    def on_nrt_complete(self, tag, ok, result):
+        if ok:
+            self._status, self._current_filename = "Active", result
+        else:
+            self._status = "Error"
 
     def get_telemetry(self) -> dict:
         return {"status": self._status, "filename": self._current_filename}

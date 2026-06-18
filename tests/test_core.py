@@ -181,6 +181,7 @@ class MockEngine:
 
     def __init__(self):
         self.graph = Graph()
+        self.nrt = None
         self.running = False
         self._apply_command_called = False
         self._last_command = None

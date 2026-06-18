@@ -6,6 +6,7 @@ import time
 import queue
 import json
 import logging
+import concurrent.futures
 from typing import Dict, List, Optional, Tuple
 import plugin_system
 from base import BLOCK_SIZE, SAMPLE_RATE, IClockProvider, Node
@@ -21,6 +22,7 @@ class Graph:
         self._order_dirty = True
         self.structure_dirty = False
         self.clock_source: Optional[IClockProvider] = None
+        self.engine = None
 
     def mark_dirty(self):
         self._order_dirty = True
@@ -185,9 +187,97 @@ class Graph:
         return json.dumps(data, indent=2)
 
 
+class NRTExecutor:
+    """
+    Centralized non-real-time task runner. Replaces the ad hoc background-thread
+    patterns scattered across plugins (action queues, loader threads, mgmt threads).
+
+    Two APIs:
+      - submit(): bounded pool, for one-shot jobs (model/IR loads, device queries,
+        stream open/close). Results are delivered to node.on_nrt_complete() on a
+        later tick via drain(), never blocking the caller.
+      - spawn_stream()/stop_stream(): for genuinely long-running producers (e.g.
+        media playback) that shouldn't occupy a pool slot indefinitely.
+
+    Per-node epoch/inbox state lives on the Node instance itself, not in a shared
+    dict here, so no lock is needed: submit()/drain() for a given node are always
+    invoked from whichever thread is currently applying engine commands, and that
+    is already serialized by Engine (audio thread when running, UI thread when
+    stopped — never both at once).
+    """
+
+    def __init__(self, max_workers=6):
+        self._pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="anode-nrt"
+        )
+
+    def submit(self, node, fn, args, tag=None):
+        node._nrt_epoch += 1
+        epoch = node._nrt_epoch
+        if node._nrt_inbox is None:
+            node._nrt_inbox = queue.SimpleQueue()
+        inbox = node._nrt_inbox
+
+        def _run():
+            try:
+                inbox.put((epoch, tag, True, fn(*args)))
+            except Exception as e:
+                inbox.put((epoch, tag, False, e))
+
+        self._pool.submit(_run)
+
+    def drain(self, node):
+        inbox = node._nrt_inbox
+        if inbox is None:
+            return
+        while True:
+            try:
+                epoch, tag, ok, payload = inbox.get_nowait()
+            except queue.Empty:
+                return
+            if epoch != node._nrt_epoch:
+                continue  # superseded by a newer submit() — discard silently
+            node.on_nrt_complete(tag, ok, payload)
+
+    def discard(self, node):
+        """Invalidate any in-flight results for this node. O(1), never blocks.
+        Call this when a node is deleted."""
+        node._nrt_epoch += 1
+
+    def spawn_stream(self, target, *args):
+        """For long-running producers that shouldn't occupy a pool slot."""
+        t = threading.Thread(target=target, args=args, daemon=True)
+        t.start()
+        return t
+
+    def stop_stream(self, node, stop_fn, thread, timeout=2.0):
+        """Non-blocking stream teardown: stop+join happens on a pool thread,
+        not the caller."""
+        if thread is None:
+            return
+
+        def _shutdown():
+            try:
+                stop_fn()
+            finally:
+                thread.join(timeout=timeout)
+                if thread.is_alive():
+                    logging.warning(
+                        f"NRT stream thread for node {node.id} did not exit "
+                        f"within {timeout}s; abandoning it."
+                    )
+
+        self.submit(node, _shutdown, ())
+
+    def shutdown(self, wait=True):
+        self._pool.shutdown(wait=wait)
+
+
 class Engine:
     def __init__(self):
         self.graph = Graph()
+        self.graph.engine = self
+        self.nrt = NRTExecutor()
         self.reload_version = 0
         self.running = False
         self.abort_flag = False
@@ -294,6 +384,8 @@ class Engine:
                 if n:
                     # Clean up C++ handles or other resources
                     n.remove()
+                    if self.nrt:
+                        self.nrt.discard(n)
 
                 self.graph.remove_node(nid)
                 try:
@@ -388,6 +480,7 @@ class Engine:
                     n.stop()
                     n.remove()
                 self.graph = Graph()
+                self.graph.engine = self
                 gc.collect()
                 self._emit_snapshot()
 
@@ -433,6 +526,7 @@ class Engine:
                     if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
                         new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
                     self.graph = new_graph
+                    self.graph.engine = self
                     if self.running:
                         for n in self.graph.nodes:
                             if n == self.graph.clock_source:
@@ -473,6 +567,7 @@ class Engine:
                     if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
                         new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
                     self.graph = new_graph
+                    self.graph.engine = self
                     if self.running:
                         for n in self.graph.nodes:
                             if n == self.graph.clock_source:

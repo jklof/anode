@@ -363,34 +363,8 @@ class MediaPlayerNode(Node):
         self.status_msg = "Idle"
         self.eof = False
 
-        # --- Management Thread (Non-RT) ---
-        self._mgmt_lock = threading.Lock()
-        self._mgmt_cv = threading.Condition(self._mgmt_lock)
-        self._pending_restart = None  # Tuple of (path, start_time)
-        self._mgmt_running = True
-        self._mgmt_thread = threading.Thread(target=self._mgmt_loop, daemon=True)
-        self._mgmt_thread.start()
-
-    def _mgmt_loop(self):
-        """Management loop for heavy operations (thread creation, queue allocation)."""
-        while self._mgmt_running:
-            with self._mgmt_cv:
-                while self._mgmt_running and self._pending_restart is None:
-                    self._mgmt_cv.wait(timeout=0.1)
-
-                if not self._mgmt_running:
-                    break
-
-                path, start_time = self._pending_restart
-                self._pending_restart = None
-
-            # Perform the heavy work outside the lock
-            self._do_restart_worker(path, start_time)
-
     def _request_restart(self, path, start_time=0.0):
-        with self._mgmt_cv:
-            self._pending_restart = (path, start_time)
-            self._mgmt_cv.notify()
+        self.submit_nrt(self._do_restart_worker, path, start_time)
 
     def load_state(self, data: dict):
         """
@@ -442,14 +416,17 @@ class MediaPlayerNode(Node):
                 self.params["seek_ratio"].sync()
 
     def _do_restart_worker(self, path, start_time=0.0):
-        # This is where the actual heavy work happens (Non-RT thread)
+        # This is where the actual heavy work happens (NRT pool thread)
         if self.worker:
             self.worker.stop()
-            self.worker.join(timeout=1.0)
+            self.worker.join(timeout=2.0)
+            if self.worker.is_alive():
+                logging.warning(f"MediaPlayerNode {self.id}: previous worker did not "
+                                 f"exit in time; abandoning it.")
             self.worker = None
 
         # Create NEW queue object instead of clearing
-        self.queue = queue.Queue(maxsize=500)  # ✅ Thread-safe
+        self.queue = queue.Queue(maxsize=500)
 
         self.playback_frames = int(start_time * SAMPLE_RATE)
         self.total_duration = 0.0
@@ -522,18 +499,9 @@ class MediaPlayerNode(Node):
         }
 
     def remove(self):
-        """Called when node is deleted. Cleanup threads."""
-        self._mgmt_running = False
-        with self._mgmt_cv:
-            self._mgmt_cv.notify_all()
-
+        """Called when node is deleted. Non-blocking via NRT executor."""
         if self.worker:
-            self.worker.stop()
-            self.worker.join(timeout=1.0)
-            self.worker = None
-
-        if self._mgmt_thread:
-            self._mgmt_thread.join(timeout=1.0)
+            self.graph.engine.nrt.stop_stream(self, self.worker.stop, self.worker)
 
     def to_dict(self):
         d = super().to_dict()

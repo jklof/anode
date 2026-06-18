@@ -3,7 +3,6 @@ import numpy as np
 import sounddevice as sd
 import logging
 import threading
-import queue
 from typing import Optional, Dict, List
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox, QPushButton, QLabel
@@ -135,23 +134,8 @@ class BaseAudioDeviceNode(Node):
         self.stream: Optional[sd.Stream] = None
         self._device_state = {"active": False, "status": "Inactive", "latency": 0.0, "idx": -1}
 
-        self._action_queue = queue.Queue()
-        self._action_thread = threading.Thread(target=self._action_worker, daemon=True)
-        self._action_thread.start()
-
-    def _action_worker(self):
-        while True:
-            action = self._action_queue.get()
-            if action is None:
-                break
-            func, args = action
-            try:
-                func(*args)
-            except Exception as e:
-                logger.error(f"Device Node Task Error: {e}")
-
     def _start_stream(self, StreamClass, callback, channels=None):
-        self._action_queue.put((self._start_stream_sync, (StreamClass, callback, channels)))
+        self.submit_nrt(self._start_stream_sync, StreamClass, callback, channels)
 
     def _start_stream_sync(self, StreamClass, callback, channels=None):
         self._stop_stream_sync()
@@ -216,7 +200,7 @@ class BaseAudioDeviceNode(Node):
             self._device_state = {"active": False, "status": f"Error: {str(e)[:20]}...", "latency": 0.0, "idx": -2}
 
     def _stop_stream(self):
-        self._action_queue.put((self._stop_stream_sync, ()))
+        self.submit_nrt(self._stop_stream_sync)
 
     def _stop_stream_sync(self):
         self._device_state = {"active": False, "status": "Inactive", "latency": 0.0, "idx": -1}
@@ -234,7 +218,6 @@ class BaseAudioDeviceNode(Node):
 
     def remove(self):
         self._stop_stream()
-        self._action_queue.put(None)  # Signal worker thread to quit
 
     def get_telemetry(self) -> dict:
         state = self._device_state
