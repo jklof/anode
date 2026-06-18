@@ -347,8 +347,10 @@ class Engine:
                     node.pos = pos
 
                 if node:
+                    # Fix: Add node to graph first so node.graph is valid for parameter change callbacks
+                    self.graph.add_node(node)
 
-                    # Apply initial parameters BEFORE starting the node (atomic creation)
+                    # Apply initial parameters AFTER adding to graph (atomic creation)
                     if initial_params:
                         for param_name, param_data in initial_params.items():
                             if param_name in node.params:
@@ -360,8 +362,6 @@ class Engine:
                                     val = param_data
                                 node.params[param_name].set(val)
                                 node.on_ui_param_change(param_name)
-
-                    self.graph.add_node(node)
                     if self.running:
                         try:
                             node.start()
@@ -459,10 +459,11 @@ class Engine:
                 if cls:
                     node = node_instance if node_instance else cls(node_data["name"])
                     node.id = node_data["id"]
+                    # Fix: Add node first so load_state has a valid graph reference to submit background tasks
+                    self.graph.add_node(node)
                     # This restores everything: pos, params, internal meta
                     if not node_instance:
                         node.load_state(node_data)
-                    self.graph.add_node(node)
                     if self.running:
                         try:
                             node.start()
@@ -506,6 +507,7 @@ class Engine:
                         raise ValueError("Loaded data is not a valid JSON object.")
 
                     new_graph = Graph()
+                    new_graph.engine = self  # Fix: Set engine reference before loading nodes so submit_nrt works
                     for n_data in data.get("nodes", []):
                         if not isinstance(n_data, dict):
                             continue
@@ -514,8 +516,9 @@ class Engine:
                             node = cls(n_data.get("name", ""))
                             if "id" in n_data:
                                 node.id = n_data["id"]
-                            node.load_state(n_data)
+                            # Fix: Add node to graph first so load_state has graph reference
                             new_graph.add_node(node)
+                            node.load_state(n_data)
                     for c in data.get("connections", []):
                         if not isinstance(c, dict):
                             continue
@@ -554,13 +557,15 @@ class Engine:
                 try:
                     data = json.loads(current_json)
                     new_graph = Graph()
+                    new_graph.engine = self  # Fix: Set engine reference before loading nodes so submit_nrt works
                     for n_data in data["nodes"]:
                         cls = plugin_system.NODE_REGISTRY.get(n_data["type"])
                         if cls:
                             node = cls(n_data["name"])
                             node.id = n_data["id"]
-                            node.load_state(n_data)
+                            # Fix: Add node to graph first so load_state has graph reference
                             new_graph.add_node(node)
+                            node.load_state(n_data)
                     for c in data["connections"]:
                         if c["src_id"] in new_graph.node_map and c["dst_id"] in new_graph.node_map:
                             new_graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])

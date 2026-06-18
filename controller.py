@@ -79,6 +79,26 @@ class AppController(QObject):
             self.engine.push_command(("param", nid, pname, val))
         self._pending_params.clear()
 
+        # Fix: If the engine is stopped, completed background NRT tasks (like file loads)
+        # do not trigger on_nrt_complete because node.sync() is only called in the engine's 
+        # real-time processing loop. We periodically poll and drain completed NRT tasks when stopped.
+        if not self.engine.running:
+            nrt_completed = False
+            for node in self.engine.graph.nodes:
+                inbox = getattr(node, "_nrt_inbox", None)
+                if inbox and not inbox.empty():
+                    node.sync()
+                    nrt_completed = True
+            
+            if nrt_completed:
+                self.engine._emit_snapshot()
+                node_data = {}
+                for node in self.engine.graph.nodes:
+                    telemetry = node.get_telemetry()
+                    if telemetry:
+                        node_data[node.id] = telemetry
+                self.engine._emit_telemetry(0.0, node_data)
+
         if self.engine.output_queue.empty():
             return
 
@@ -86,27 +106,17 @@ class AppController(QObject):
         # and ensure nested lists are copied before mutation (Copy-on-write).
         ws = self._latest_snapshot.copy()
         graph_changed = False
+        
+        # We collect non-structural messages (telemetry, param_update) to process 
+        # AFTER structural changes are applied. This guarantees UI elements exist.
+        non_structural_msgs = []
 
         while not self.engine.output_queue.empty():
             try:
                 msg = self.engine.output_queue.get_nowait()
                 m_type = msg.get("type")
-                if m_type == "telemetry":
-                    self.telemetryUpdated.emit(msg)
-                elif m_type == "param_update":
-                    if "nodes" in ws:
-                        # Copy-on-write pattern to prevent mutating shared state (Issue 5)
-                        ws["nodes"] = ws["nodes"].copy()
-                        for i, n in enumerate(ws["nodes"]):
-                            if n["id"] == msg["node_id"] and "params" in n:
-                                if msg["param"] in n["params"]:
-                                    n_new = n.copy()
-                                    n_new["params"] = n["params"].copy()
-                                    n_new["params"][msg["param"]] = n["params"][msg["param"]].copy()
-                                    n_new["params"][msg["param"]]["value"] = msg["value"]
-                                    ws["nodes"][i] = n_new
-                                    break
-                    self.parameterUpdated.emit(msg)
+                if m_type in ("telemetry", "param_update"):
+                    non_structural_msgs.append(msg)
                 elif m_type == "graph_update":
                     ws = msg.copy()
                     graph_changed = True
@@ -179,11 +189,29 @@ class AppController(QObject):
             except Exception:
                 logging.exception("Error processing engine message")
 
-        # Atomic swap
+        # 1. Apply structural changes first
         self._latest_snapshot = ws
-
         if graph_changed:
             self.graphUpdated.emit(self._latest_snapshot)
+
+        # 2. Process non-structural updates now that UI nodes are guaranteed to exist
+        for msg in non_structural_msgs:
+            m_type = msg.get("type")
+            if m_type == "telemetry":
+                self.telemetryUpdated.emit(msg)
+            elif m_type == "param_update":
+                if "nodes" in self._latest_snapshot:
+                    self._latest_snapshot["nodes"] = self._latest_snapshot["nodes"].copy()
+                    for i, n in enumerate(self._latest_snapshot["nodes"]):
+                        if n["id"] == msg["node_id"] and "params" in n:
+                            if msg["param"] in n["params"]:
+                                n_new = n.copy()
+                                n_new["params"] = n["params"].copy()
+                                n_new["params"][msg["param"]] = n["params"][msg["param"]].copy()
+                                n_new["params"][msg["param"]]["value"] = msg["value"]
+                                self._latest_snapshot["nodes"][i] = n_new
+                                break
+                self.parameterUpdated.emit(msg)
 
     def start_audio(self):
         self.engine.start()

@@ -13,54 +13,77 @@ from base import Node, IClockProvider, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE
 
 logger = logging.getLogger(__name__)
 
+# Global lock for PortAudio (sounddevice) stream operations to prevent Segfaults
+_sounddevice_lock = threading.Lock()
+
 # ==============================================================================
 # High-Performance Ring Buffer
 # ==============================================================================
 
 
 class AudioRingBuffer:
+    """
+    Lock-free single-producer / single-consumer ring buffer.
+
+    Each counter is written by exactly one thread:
+      - write_count: written only by the producer (engine thread for output,
+        hardware callback for input).
+      - read_count:  written only by the consumer (hardware callback for output,
+        engine thread for input).
+
+    Under CPython's GIL, integer reads/writes are atomic at the Python level, so
+    no mutex is needed for the normal read/write paths.
+
+    clear() is the one exception: it resets both counters and zeroes the storage.
+    It is only called during stream teardown (via _stop_stream_sync, which runs on
+    an NRT pool thread after the stream has been stopped), so both the producer and
+    consumer have ceased activity by the time it executes. The one-call-site
+    comment in _stop_stream_sync documents this assumption.
+    """
+
     def __init__(self, capacity_blocks=32, block_size=BLOCK_SIZE, channels=CHANNELS):
         self.capacity_blocks = capacity_blocks
         self.block_size = block_size
         self.channels = channels
-        self.total_frames = capacity_blocks * block_size
-        self.storage = np.zeros((self.total_frames, channels), dtype=np.float32)
-        self.write_count = 0
-        self.read_count = 0
-        self.lock = threading.Lock()
+        # Flat storage: rows are frames, columns are channels.
+        # Sliced by block boundaries: block i lives at rows [i*block_size, (i+1)*block_size).
+        self.storage = np.zeros(
+            (capacity_blocks * block_size, channels), dtype=np.float32
+        )
+        # Monotonic counters. Each is written by its owning thread only.
+        self.write_count = 0  # producer thread
+        self.read_count = 0   # consumer thread
 
     def write(self, data: np.ndarray) -> bool:
-        with self.lock:
-            available_space = self.capacity_blocks - (self.write_count - self.read_count)
-            if available_space < 1:
-                return False  # Overrun
-
-            start_idx = (self.write_count % self.capacity_blocks) * self.block_size
-            frames_to_write = min(self.block_size, data.shape[0])
-            self.storage[start_idx : start_idx + frames_to_write, :] = data[:frames_to_write]
-            self.write_count += 1
-            return True
+        """Called by the producer thread only."""
+        if self.write_count - self.read_count >= self.capacity_blocks:
+            return False  # overrun — caller receives silence or drops block
+        start = (self.write_count % self.capacity_blocks) * self.block_size
+        frames = min(self.block_size, data.shape[0])
+        self.storage[start:start + frames, :] = data[:frames]
+        self.write_count += 1
+        return True
 
     def read(self, outdata: np.ndarray) -> bool:
-        with self.lock:
-            available_data = self.write_count - self.read_count
-            if available_data < 1:
-                return False  # Underrun
-
-            start_idx = (self.read_count % self.capacity_blocks) * self.block_size
-            outdata[:] = self.storage[start_idx : start_idx + self.block_size, :]
-            self.read_count += 1
-            return True
+        """Called by the consumer thread only."""
+        if self.write_count - self.read_count < 1:
+            return False  # underrun
+        start = (self.read_count % self.capacity_blocks) * self.block_size
+        outdata[:] = self.storage[start:start + self.block_size]
+        self.read_count += 1
+        return True
 
     def clear(self):
         """
-        Clears the buffer. Note: Calling this while the audio thread is actively
-        streaming will cause an intentional underrun and an audio click.
+        Reset the buffer. Only safe to call after the stream has stopped and
+        neither the producer nor the consumer is active. Resetting both counters
+        to 0 is correct here because the buffer is about to be reused for a
+        new stream; any in-flight producer/consumer activity would already have
+        been terminated by _stop_stream_sync before this is reached.
         """
-        with self.lock:
-            self.write_count = 0
-            self.read_count = 0
-            self.storage.fill(0)
+        self.write_count = 0
+        self.read_count = 0
+        self.storage.fill(0)
 
 
 # ==============================================================================
@@ -71,52 +94,50 @@ class AudioRingBuffer:
 class AudioDeviceManager:
     @staticmethod
     def get_compatible_devices(is_input: bool, target_rate: int = SAMPLE_RATE) -> List[Dict]:
-        devices = []
-        try:
-            # NOTE: Removed sd._terminate() / sd._initialize() here.
-            # Doing a full reset while other streams might be running (e.g. Input running, Output refreshing)
-            # causes instability and crashes. standard query_devices is usually sufficient.
+        with _sounddevice_lock:
+            devices = []
+            try:
+                host_apis = sd.query_hostapis()
+                all_devices = sd.query_devices()
 
-            host_apis = sd.query_hostapis()
-            all_devices = sd.query_devices()
+                for idx, dev in enumerate(all_devices):
+                    max_ch = dev.get("max_input_channels" if is_input else "max_output_channels", 0)
+                    if max_ch <= 0:
+                        continue
 
-            for idx, dev in enumerate(all_devices):
-                max_ch = dev.get("max_input_channels" if is_input else "max_output_channels", 0)
-                if max_ch <= 0:
-                    continue
+                    # Strict Sample Rate Check
+                    try:
+                        if is_input:
+                            sd.check_input_settings(
+                                device=idx, channels=min(2, max_ch), samplerate=target_rate, dtype="float32"
+                            )
+                        else:
+                            sd.check_output_settings(
+                                device=idx, channels=min(2, max_ch), samplerate=target_rate, dtype="float32"
+                            )
+                    except Exception:
+                        continue
 
-                # Strict Sample Rate Check
-                try:
-                    if is_input:
-                        sd.check_input_settings(
-                            device=idx, channels=min(2, max_ch), samplerate=target_rate, dtype="float32"
-                        )
-                    else:
-                        sd.check_output_settings(
-                            device=idx, channels=min(2, max_ch), samplerate=target_rate, dtype="float32"
-                        )
-                except Exception:
-                    continue
+                    api_index = dev["hostapi"]
+                    api_name = host_apis[api_index]["name"] if api_index < len(host_apis) else "Unknown"
 
-                api_index = dev["hostapi"]
-                api_name = host_apis[api_index]["name"] if api_index < len(host_apis) else "Unknown"
+                    dev_info = dict(dev)
+                    dev_info["id"] = idx
+                    dev_info["display_name"] = f"{dev['name']} [{api_name}]"
+                    devices.append(dev_info)
 
-                dev_info = dict(dev)
-                dev_info["id"] = idx
-                dev_info["display_name"] = f"{dev['name']} [{api_name}]"
-                devices.append(dev_info)
+            except Exception as e:
+                logger.error(f"Device Query Error: {e}")
 
-        except Exception as e:
-            logger.error(f"Device Query Error: {e}")
-
-        return devices
+            return devices
 
     @staticmethod
     def get_default_id(is_input: bool) -> int:
-        try:
-            return sd.default.device[0] if is_input else sd.default.device[1]
-        except:
-            return -1
+        with _sounddevice_lock:
+            try:
+                return sd.default.device[0] if is_input else sd.default.device[1]
+            except:
+                return -1
 
 
 # ==============================================================================
@@ -138,71 +159,75 @@ class BaseAudioDeviceNode(Node):
         self.submit_nrt(self._start_stream_sync, StreamClass, callback, channels)
 
     def _start_stream_sync(self, StreamClass, callback, channels=None):
-        self._stop_stream_sync()
+        with _sounddevice_lock:
+            self._stop_stream_sync_internal()
 
-        # KEY CHANGE: Ensure we are reading the synced value
-        requested_idx = self.params["device_index"].value
-        target_idx = requested_idx
+            # KEY CHANGE: Ensure we are reading the synced value
+            requested_idx = self.params["device_index"].value
+            target_idx = requested_idx
 
-        # 1. Resolve Default
-        if target_idx == -1:
+            # 1. Resolve Default
+            if target_idx == -1:
+                try:
+                    target_idx = sd.default.device[0 if StreamClass == sd.InputStream else 1]
+                except Exception:
+                    self._device_state = {"active": False, "status": "No Default Device", "latency": 0.0, "idx": -2}
+                    return
+
+            # 2. Query Capabilities
             try:
-                target_idx = sd.default.device[0 if StreamClass == sd.InputStream else 1]
-            except Exception:
-                self._device_state = {"active": False, "status": "No Default Device", "latency": 0.0, "idx": -2}
+                info = sd.query_devices(target_idx)
+            except Exception as e:
+                self._device_state = {"active": False, "status": "Device Not Found", "latency": 0.0, "idx": -2}
                 return
 
-        # 2. Query Capabilities
-        try:
-            info = sd.query_devices(target_idx)
-        except Exception as e:
-            self._device_state = {"active": False, "status": "Device Not Found", "latency": 0.0, "idx": -2}
-            return
+            # 3. Channel Logic (Clamp to Hardware Max)
+            desired_channels = channels or CHANNELS
+            hw_max = info.get("max_input_channels" if StreamClass == sd.InputStream else "max_output_channels", 0)
+            actual_channels = min(desired_channels, hw_max)
 
-        # 3. Channel Logic (Clamp to Hardware Max)
-        desired_channels = channels or CHANNELS
-        hw_max = info.get("max_input_channels" if StreamClass == sd.InputStream else "max_output_channels", 0)
-        actual_channels = min(desired_channels, hw_max)
+            if actual_channels < 1:
+                self._device_state = {"active": False, "status": "Device has 0 channels", "latency": 0.0, "idx": -2}
+                return
 
-        if actual_channels < 1:
-            self._device_state = {"active": False, "status": "Device has 0 channels", "latency": 0.0, "idx": -2}
-            return
-
-        # 4. Attempt Stream Open
-        try:
-            # print(f"DEBUG: Opening Device ID {target_idx} ({info['name']}) Ch: {actual_channels}")
-            self.stream = StreamClass(
-                device=target_idx,
-                samplerate=SAMPLE_RATE,
-                blocksize=BLOCK_SIZE,
-                channels=actual_channels,
-                dtype="float32",
-                callback=callback,
-            )
+            # 4. Attempt Stream Open
             try:
-                self.stream.start()
+                self.stream = StreamClass(
+                    device=target_idx,
+                    samplerate=SAMPLE_RATE,
+                    blocksize=BLOCK_SIZE,
+                    channels=actual_channels,
+                    dtype="float32",
+                    callback=callback,
+                )
+                try:
+                    self.stream.start()
+                except Exception as e:
+                    if self.stream:
+                        self.stream.close()
+                        self.stream = None
+                    raise e
+
+                ch_str = "Mono" if actual_channels == 1 else f"{actual_channels}ch"
+                self._device_state = {
+                    "active": True,
+                    "status": f"{info['name']} ({ch_str})",
+                    "latency": self.stream.latency * 1000.0,
+                    "idx": target_idx,
+                }
+
             except Exception as e:
-                if self.stream:
-                    self.stream.close()
-                    self.stream = None
-                raise e
-
-            ch_str = "Mono" if actual_channels == 1 else f"{actual_channels}ch"
-            self._device_state = {
-                "active": True,
-                "status": f"{info['name']} ({ch_str})",
-                "latency": self.stream.latency * 1000.0,
-                "idx": target_idx,
-            }
-
-        except Exception as e:
-            logger.error(f"Stream Open Failed: {e}")
-            self._device_state = {"active": False, "status": f"Error: {str(e)[:20]}...", "latency": 0.0, "idx": -2}
+                logger.error(f"Stream Open Failed: {e}")
+                self._device_state = {"active": False, "status": f"Error: {str(e)[:20]}...", "latency": 0.0, "idx": -2}
 
     def _stop_stream(self):
         self.submit_nrt(self._stop_stream_sync)
 
     def _stop_stream_sync(self):
+        with _sounddevice_lock:
+            self._stop_stream_sync_internal()
+
+    def _stop_stream_sync_internal(self):
         self._device_state = {"active": False, "status": "Inactive", "latency": 0.0, "idx": -1}
         if self.stream:
             try:
