@@ -4,6 +4,8 @@ import torchaudio
 import numpy as np
 import os
 import logging
+import soundfile as sf
+import resampy
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -122,31 +124,52 @@ class ConvolutionReverb(Node):
         self.submit_nrt(self._load_ir_blocking, path)
 
     def _load_ir_blocking(self, path):
-        """Runs on an NRT pool thread. Body is the old IrLoaderThread.run()."""
+        """Runs on an NRT pool thread. Uses soundfile/resampy (0% PyTorch) for
+        file I/O and resampling to avoid OpenMP deadlocks with the audio thread."""
         if not os.path.exists(path):
             raise FileNotFoundError(f"File not found: {path}")
-        waveform, sr = torchaudio.load(path)
+
+        # 1. Load WAV file into numpy array using soundfile (Pure C/Numpy, 0% PyTorch)
+        data, sr = sf.read(path, dtype='float32')
+        if len(data.shape) == 1:
+            waveform = data[np.newaxis, :]  # Mono: Shape (1, samples)
+        else:
+            waveform = data.T  # Stereo/Multi: Shape (channels, samples)
+
+        # 2. Resample using resampy if sample rate doesn't match
         if sr != SAMPLE_RATE:
-            waveform = torchaudio.transforms.Resample(orig_freq=sr, new_freq=SAMPLE_RATE)(waveform)
+            waveform = resampy.resample(waveform, sr, SAMPLE_RATE, axis=-1)
+
+        # 3. Limit to max 2 channels
         if waveform.shape[0] > 2:
             waveform = waveform[:2, :]
-        max_val = torch.max(torch.abs(waveform))
+
+        # 4. Normalize
+        max_val = np.max(np.abs(waveform))
         if max_val > 0:
             waveform /= max_val
         waveform *= 0.2
+
+        # 5. Partition and Pad
         num_samples = waveform.shape[1]
         num_partitions = max(1, int(np.ceil(num_samples / PARTITION_SIZE)))
         pad_len = num_partitions * PARTITION_SIZE - num_samples
         if pad_len > 0:
-            waveform = torch.nn.functional.pad(waveform, (0, pad_len))
+            waveform = np.pad(waveform, ((0, 0), (0, pad_len)))
+
         num_ir_channels = waveform.shape[0]
         num_bins = FFT_SIZE // 2 + 1
+
+        # Convert to PyTorch Tensor right before FFT
+        waveform_tensor = torch.from_numpy(waveform)
+
         ir_ffts = torch.zeros((num_partitions, num_ir_channels, num_bins), dtype=torch.complex64)
         for i in range(num_partitions):
             start = i * PARTITION_SIZE
-            chunk = waveform[:, start:start + PARTITION_SIZE]
+            chunk = waveform_tensor[:, start:start + PARTITION_SIZE]
             chunk_padded = torch.nn.functional.pad(chunk, (0, PARTITION_SIZE))
             ir_ffts[i] = torch.fft.rfft(chunk_padded, n=FFT_SIZE, dim=1)
+
         return {"ir_ffts": ir_ffts, "num_partitions": num_partitions,
                 "channels": num_ir_channels, "path": path}
 

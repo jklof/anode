@@ -19,6 +19,7 @@ from ui_icons import create_icon
 import torch
 
 torch.set_float32_matmul_precision("high")
+torch.set_num_threads(1)  # Prevent OpenMP deadlocks on CPU between audio and NRT threads
 
 
 class MainWindow(QMainWindow):
