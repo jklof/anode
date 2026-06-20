@@ -20,48 +20,74 @@ logger = logging.getLogger(__name__)
 
 
 class AudioRingBuffer:
+    """
+    Lock-free single-producer/single-consumer ring buffer.
+
+    Safe without locks because each instance is used by exactly one producer
+    thread and one consumer thread for its entire lifetime (see class docstring
+    in the surrounding module / RT02 task notes for the full argument). Relies
+    on CPython's GIL for atomic, immediately-visible plain-attribute access;
+    does not hold under a free-threaded (no-GIL) CPython build.
+    """
+
     def __init__(self, capacity_blocks=32, block_size=BLOCK_SIZE, channels=CHANNELS):
         self.capacity_blocks = capacity_blocks
         self.block_size = block_size
         self.channels = channels
         self.total_frames = capacity_blocks * block_size
         self.storage = np.zeros((self.total_frames, channels), dtype=np.float32)
-        self.write_count = 0
-        self.read_count = 0
-        self.lock = threading.Lock()
+        self.write_count = 0   # written only by the producer thread
+        self.read_count = 0    # written only by the consumer thread
+        self._clear_requested = False  # set by a third (NRT) thread; consumed
+                                        # by whichever of producer/consumer is
+                                        # still active when clear() is requested
 
     def write(self, data: np.ndarray) -> bool:
-        with self.lock:
-            available_space = self.capacity_blocks - (self.write_count - self.read_count)
-            if available_space < 1:
-                return False  # Overrun
+        if self._clear_requested:
+            self._do_clear()
 
-            start_idx = (self.write_count % self.capacity_blocks) * self.block_size
-            frames_to_write = min(self.block_size, data.shape[0])
-            self.storage[start_idx : start_idx + frames_to_write, :] = data[:frames_to_write]
-            self.write_count += 1
-            return True
+        available_space = self.capacity_blocks - (self.write_count - self.read_count)
+        if available_space < 1:
+            return False  # Overrun
+
+        start_idx = (self.write_count % self.capacity_blocks) * self.block_size
+        frames_to_write = min(self.block_size, data.shape[0])
+        self.storage[start_idx : start_idx + frames_to_write, :] = data[:frames_to_write]
+        self.write_count += 1
+        return True
 
     def read(self, outdata: np.ndarray) -> bool:
-        with self.lock:
-            available_data = self.write_count - self.read_count
-            if available_data < 1:
-                return False  # Underrun
+        if self._clear_requested:
+            self._do_clear()
 
-            start_idx = (self.read_count % self.capacity_blocks) * self.block_size
-            outdata[:] = self.storage[start_idx : start_idx + self.block_size, :]
-            self.read_count += 1
-            return True
+        available_data = self.write_count - self.read_count
+        if available_data < 1:
+            return False  # Underrun
+
+        start_idx = (self.read_count % self.capacity_blocks) * self.block_size
+        outdata[:] = self.storage[start_idx : start_idx + self.block_size, :]
+        self.read_count += 1
+        return True
 
     def clear(self):
         """
-        Clears the buffer. Note: Calling this while the audio thread is actively
-        streaming will cause an intentional underrun and an audio click.
+        Request a reset. Does not mutate shared state directly — this may be
+        called from a third thread (e.g. an NRT pool thread tearing down a
+        stopped stream), so the actual reset is deferred to the next
+        read()/write() call made by whichever of {producer, consumer} is still
+        active. Safe by construction: clear() is only ever called after the
+        hardware stream has been stopped and closed, which guarantees the
+        callback-thread side of this buffer will never run again — so only the
+        other (still-active) side can observe and act on this flag, with no
+        concurrent writer for it to race against.
         """
-        with self.lock:
-            self.write_count = 0
-            self.read_count = 0
-            self.storage.fill(0)
+        self._clear_requested = True
+
+    def _do_clear(self):
+        self.write_count = 0
+        self.read_count = 0
+        self.storage.fill(0)
+        self._clear_requested = False
 
 
 # ==============================================================================
