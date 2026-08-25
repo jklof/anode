@@ -26,7 +26,6 @@ dependencies:
   - av
   - mido
   - pysoundfile
-  - portaudio
   - yt-dlp
   - pyside6
 
