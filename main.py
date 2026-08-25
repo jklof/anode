@@ -1,4 +1,5 @@
 import sys
+import logging
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -262,6 +263,7 @@ def set_dark_theme(app):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     app = QApplication(sys.argv)
     set_dark_theme(app)
     w = MainWindow()

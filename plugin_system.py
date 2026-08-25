@@ -3,6 +3,7 @@ import sys
 import importlib
 import importlib.util
 import inspect
+import logging
 from typing import Dict, Type, Any, Optional
 from base import Node
 
@@ -11,6 +12,12 @@ UI_REGISTRY: Dict[str, Type[Any]] = {}
 
 # Track loaded modules to allow reloading
 _loaded_modules = {}
+
+# Top-level modules of the app itself. A plugin file with one of these names
+# would shadow the real module on sys.path.
+_PROJECT_MODULES = frozenset(
+    {"base", "core", "commands", "controller", "main", "plugin_system", "theme", "ui_icons", "ui_system", "ffi_base"}
+)
 
 
 def load_plugins(folder="plugins"):
@@ -32,23 +39,32 @@ def load_plugins(folder="plugins"):
         added_to_path = True
 
     try:
-        print(f"--- Loading Plugins from '{folder}' ---")
+        logging.info(f"--- Loading Plugins from '{folder}' ---")
 
         for f in os.listdir(folder):
             if f.endswith(".py"):
                 name = f[:-3]
+
+                # Refuse plugins whose names would shadow an already-imported
+                # module (stdlib, third-party) or one of the app's own modules.
+                if name in _PROJECT_MODULES:
+                    logging.warning(f"Skipping plugin '{name}': name collides with an app module.")
+                    continue
+                if name in sys.modules and name not in _loaded_modules:
+                    logging.warning(f"Skipping plugin '{name}': name shadows already-imported module.")
+                    continue
 
                 try:
                     # Hot Reload Logic
                     if name in _loaded_modules:
                         # If previously loaded, force a reload of the module object
                         mod = importlib.reload(_loaded_modules[name])
-                        print(f"Reloaded: {name}")
+                        logging.info(f"Reloaded: {name}")
                     else:
                         # First time load
                         mod = importlib.import_module(name)
                         _loaded_modules[name] = mod
-                        print(f"Loaded: {name}")
+                        logging.info(f"Loaded: {name}")
 
                     # Inspect the module for Nodes and UIs
                     for mem_name, obj in inspect.getmembers(mod, inspect.isclass):
@@ -57,20 +73,15 @@ def load_plugins(folder="plugins"):
                         # Register Logic Class
                         if issubclass(obj, Node) and obj is not Node:
                             NODE_REGISTRY[obj.__name__] = obj
-                            # print(f"  -> Node: {obj.__name__}")
 
                         # Register UI Class
                         if hasattr(obj, "IS_NODE_UI") and obj.IS_NODE_UI:
                             target = getattr(obj, "NODE_CLASS_NAME", None)
                             if target:
                                 UI_REGISTRY[target] = obj
-                                # print(f"  -> UI: {obj.__name__} for {target}")
 
                 except Exception as e:
-                    import traceback
-
-                    traceback.print_exc()
-                    print(f"Failed to load plugin {name}: {e}")
+                    logging.exception(f"Failed to load plugin {name}: {e}")
 
     finally:
         if added_to_path:

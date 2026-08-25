@@ -16,25 +16,17 @@ dependencies:
   - pytorch-cuda=12.1
 
   # ---- Everything else ----
+  # Only dependencies actually imported by the app / plugins.
+  # (scipy, librosa, onnxruntime, mido and the pip TTS/ASR extras were
+  # removed as unused — re-add if you need them for local experiments.)
   - cmake
   - cxx-compiler
   - numpy
-  - scipy
-  - librosa
   - resampy
-  - onnxruntime
   - av
-  - mido
   - pysoundfile
   - yt-dlp
   - pyside6
 
   - pip:
       - sounddevice
-      - pydub
-      - pytubefix
-      - pylibrb
-      - kokoro-onnx
-      - misaki[en]
-      - openai-whisper
-      - webrtcvad-wheels

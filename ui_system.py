@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFileDialog,
 )
-from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot, QLineF, QCoreApplication
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot, QCoreApplication
 from PySide6.QtGui import (
     QPainter,
     QPen,
@@ -31,7 +31,6 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPixmap,
     QBrush,
-    QKeySequence,
 )
 from PySide6.QtSvg import QSvgRenderer
 from ui_icons import create_colored_logo
@@ -39,10 +38,9 @@ from theme import Theme
 
 import plugin_system
 import os
-import math
 import json
 import uuid
-import base
+import logging
 
 
 class NodeProxy:
@@ -80,10 +78,15 @@ class NodeProxy:
         meta = p_data["meta"]
         val = p_data["value"]
 
-        def callback(new_value):
-            self.controller.set_parameter(self.node_id, param_name, new_value)
+        return ParamWidgetFactory.create(param_name, ptype, meta, val, self.make_param_callback(param_name))
 
-        return ParamWidgetFactory.create(param_name, ptype, meta, val, callback)
+    def make_param_callback(self, param_name):
+        """Returns a callback that routes UI edits to the controller."""
+
+        def callback(new_value):
+            self.set_parameter(param_name, new_value)
+
+        return callback
 
 
 class SocketItem(QGraphicsItem):
@@ -99,13 +102,19 @@ class SocketItem(QGraphicsItem):
         self._hovered = False
 
     def boundingRect(self):
-        pad = 10
-        return QRectF(
-            -Theme.DIMENSIONS["socket_radius"] - pad,
-            -Theme.DIMENSIONS["socket_radius"] - pad,
-            (Theme.DIMENSIONS["socket_radius"] + pad) * 2,
-            (Theme.DIMENSIONS["socket_radius"] + pad) * 2,
-        )
+        # Must cover the full painted extent including port labels
+        # (paint() draws text from x=-105 to x=+105), otherwise Qt clips
+        # repaints and hover/unhover leaves smearing artifacts.
+        radius = Theme.DIMENSIONS["socket_radius"]
+        return QRectF(-105.0, -radius - 10, 210.0, (radius + 10) * 2)
+
+    def shape(self):
+        # Hit-testing stays tight around the socket dot even though the
+        # bounding rect spans the label area.
+        path = QPainterPath()
+        r = Theme.DIMENSIONS["socket_radius"] + 10
+        path.addEllipse(QPointF(0, 0), r, r)
+        return path
 
     def paint(self, painter, option, widget):
         if self._hovered:
@@ -249,17 +258,21 @@ class ConnectionItem(QGraphicsPathItem):
 
     def contextMenuEvent(self, event):
         menu = QMenu()
-        action_del = menu.addAction("Delete Connection")
-
-        def delete_action():
-            if self.isSelected():
-                self.scene().delete_selection()
-            elif self.logic_key:
-                sid, sp, did, dp = self.logic_key
-                self.scene().controller.disconnect_nodes(sid, sp, did, dp)
 
         if self.logic_key:
+            action_del = menu.addAction("Delete Connection")
+
+            def delete_action():
+                if self.isSelected():
+                    self.scene().delete_selection()
+                else:
+                    sid, sp, did, dp = self.logic_key
+                    self.scene().controller.disconnect_nodes(sid, sp, did, dp)
+
             action_del.triggered.connect(delete_action)
+        elif self.isSelected():
+            menu.addAction("Delete Selected", lambda: self.scene().delete_selection())
+
         menu.exec(event.screenPos())
         event.accept()
 
@@ -297,7 +310,8 @@ class FloatParamWidget(QWidget):
 
     def _update_slider_from_value(self, value):
         """Update slider position based on float value."""
-        norm = (value - self.metadata["min"]) / (self.metadata["max"] - self.metadata["min"])
+        span = self.metadata["max"] - self.metadata["min"]
+        norm = 0.5 if span <= 0 else (value - self.metadata["min"]) / span
         self.slider.setValue(int(norm * 1000))
 
     def _on_slider_changed(self, value):
@@ -618,7 +632,10 @@ class NodeItem(QGraphicsObject):
         self.nid = node_data["id"]
         self.node_type = node_data["type"]
         self.node_name = node_data["name"]
-        self.params = node_data["params"]
+        # Owned copy of the snapshot params: NodeItem writes values
+        # optimistically (update_single_param) and must never mutate the
+        # controller-owned snapshot dicts.
+        self.params = {k: dict(v) for k, v in node_data.get("params", {}).items()}
         self.monitor_queue = node_data["monitor_queue"]
         self.controller = controller
         self.can_be_master = node_data.get("can_be_master", False)
@@ -635,6 +652,10 @@ class NodeItem(QGraphicsObject):
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
         self.setCursor(QCursor(Qt.SizeAllCursor))
+
+        # True between mousePress and mouseRelease while the user may be
+        # dragging; snapshot updates must not fight the pointer meanwhile.
+        self._drag_active = False
 
         # Initialize position cache
         self._last_committed_pos = self.pos()
@@ -664,6 +685,14 @@ class NodeItem(QGraphicsObject):
         # UI Construction (Proxy/Widget) is DEFERRED to build_ui()
         # This ensures the NodeItem is in the scene before QComboBox/Complex widgets init.
 
+    def _make_param_callback(self, param_name):
+        """Returns a callback that routes UI edits to the controller."""
+
+        def callback(new_value):
+            self.controller.set_parameter(self.nid, param_name, new_value)
+
+        return callback
+
     def build_ui(self):
         """
         Called by GraphScene AFTER adding this item to the scene.
@@ -671,27 +700,37 @@ class NodeItem(QGraphicsObject):
         self.proxy = QGraphicsProxyWidget(self)
         self.widget = None
         CustomUIClass = plugin_system.get_ui_class(self.node_type)
+        custom_ui_ok = False
 
         if CustomUIClass:
             self.proxy_obj = NodeProxy(self.nid, self.controller, self.monitor_queue, self)
-            self.widget = CustomUIClass(self.proxy_obj)
+            try:
+                self.widget = CustomUIClass(self.proxy_obj)
+                custom_ui_ok = True
+            except Exception as e:
+                # A faulty plugin UI must not crash graph reconciliation;
+                # fall back to an error placeholder / generic widgets.
+                logging.exception(f"Custom UI for {self.node_type} failed to build: {e}")
+                self.widget = None
 
         if not self.widget and self.params:
             self.widget = QWidget()
             self.widget.setObjectName("genericNodeContainer")  # Give it an ID
             self.layout = QVBoxLayout()
             self.widget.setLayout(self.layout)
-            # NEW LINE: Target ID for transparency, use specific CSS for text color to avoid breaking complex widgets
+            # Target ID for transparency, use specific CSS for text color to avoid breaking complex widgets
             self.widget.setStyleSheet(Theme.STYLES["generic_node_container"])
+            if not custom_ui_ok and CustomUIClass:
+                err = QLabel(f"Custom UI failed — see logs")
+                err.setStyleSheet("color: #ff6666; font-size: 10px;")
+                err.setWordWrap(True)
+                self.layout.addWidget(err)
             for p_name, p_data in self.params.items():
                 ptype = p_data["type"]
                 meta = p_data["meta"]
                 val = p_data["value"]
 
-                def callback(new_value, name=p_name):
-                    self.controller.set_parameter(self.nid, name, new_value)
-
-                widget = ParamWidgetFactory.create(p_name, ptype, meta, val, callback)
+                widget = ParamWidgetFactory.create(p_name, ptype, meta, val, self._make_param_callback(p_name))
                 self.layout.addWidget(widget)
                 self.param_controls[p_name] = {"widget": widget, "type": ptype}
 
@@ -700,7 +739,7 @@ class NodeItem(QGraphicsObject):
             self.proxy.setWidget(self.widget)
             self.proxy.setPos(10, self.height)
             w_width = max(self.width - 20, self.widget.minimumSize().width())
-            w_height = self.widget.minimumSize().height() if CustomUIClass else self.widget.sizeHint().height()
+            w_height = self.widget.minimumSize().height() if custom_ui_ok else self.widget.sizeHint().height()
             self.proxy.resize(w_width, w_height)
 
             # Expand Node if UI is wider/taller
@@ -770,10 +809,14 @@ class NodeItem(QGraphicsObject):
     def update_from_snapshot(self, node_data):
         self.reconcile_sockets(node_data.get("inputs", []), node_data.get("outputs", []))
 
-        new_pos = QPointF(*node_data["pos"])
-        if self.pos() != new_pos:
-            self.setPos(new_pos)
-            self.update()
+        # While the user is dragging, don't fight the pointer: snapshot
+        # positions arriving mid-drag would rubber-band the node back and
+        # corrupt _last_committed_pos (the undo baseline).
+        if not self._drag_active:
+            new_pos = QPointF(*node_data["pos"])
+            if self.pos() != new_pos:
+                self.setPos(new_pos)
+                self.update()
 
         self.can_be_master = node_data.get("can_be_master", False)
         prev_master = self.is_master
@@ -805,16 +848,19 @@ class NodeItem(QGraphicsObject):
             simple_params = {k: v["value"] for k, v in new_params.items()}
             self.widget.update_from_params(simple_params)
 
-        # Cache the latest params data for thread-safe access by clipboard operations
-        self.params = new_params
+        # Take ownership of the latest params (per-entry copies) so
+        # update_single_param can write values without touching the
+        # controller-owned snapshot dicts.
+        self.params = {k: dict(v) for k, v in new_params.items()}
 
         self.error_msg = node_data.get("error")
         self.setToolTip(self.error_msg if self.error_msg else self.node_name)
 
         self.update()
 
-        # Update position cache after setting position
-        self._last_committed_pos = self.pos()
+        # Update position cache after setting position (never mid-drag)
+        if not self._drag_active:
+            self._last_committed_pos = self.pos()
 
     def set_processing_load(self, pct):
         self._processing_load = pct
@@ -912,22 +958,24 @@ class NodeItem(QGraphicsObject):
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event):
+        self._drag_active = event.button() == Qt.LeftButton
+
         # Check if clicking the clock icon area (Top Right)
         if self.can_be_master:
             local_pos = event.pos()
             # Hit box: Top 30px (header), Rightmost 30px
             if local_pos.y() <= Theme.DIMENSIONS["header_height"] and local_pos.x() >= (self.width - 30):
                 self.controller.set_master_clock(self.nid)
+                self._drag_active = False
                 event.accept()
                 return
 
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
-        # Send move command only once when mouse is released
-        # We calculate the delta based on THIS node's movement, then apply
-        # that delta to find the previous position of all selected nodes.
+        self._drag_active = False
 
+        # Send move command only once when mouse is released
         super().mouseReleaseEvent(event)
 
         # 1. Check if we actually moved
@@ -943,8 +991,9 @@ class NodeItem(QGraphicsObject):
                     # Current position (already updated by QGraphicsItem internals)
                     new_pos = (item.pos().x(), item.pos().y())
 
-                    # Previous position
-                    # We assume item._last_committed_pos holds the state before the drag started
+                    # Previous position: _last_committed_pos holds the state
+                    # before the drag started (guarded against mid-drag
+                    # snapshot updates)
                     prev_pos = (item._last_committed_pos.x(), item._last_committed_pos.y())
 
                     # Only record if it actually changed
@@ -1138,7 +1187,8 @@ class GraphScene(QGraphicsScene):
         """
         Returns a dict containing selected nodes and connections.
         Only includes connections where both source and destination nodes are selected.
-        Thread-safe: operates solely on UI snapshot data, no access to audio thread.
+        Operates on the UI thread only, using the NodeItem-owned param copies
+        (never the controller's snapshot dicts).
         Note: The params dict is serialized in the snapshot format:
         {"param_name": {"value": val, "type": ptype, "meta": pmeta}}
         which is expected by AddNodeCommand and Restore command.
@@ -1357,7 +1407,9 @@ class GraphView(QGraphicsView):
 
         pos = event.position().toPoint()
         item = self.itemAt(pos)
-        if isinstance(item, SocketItem):
+        # Only the left button starts a wire drag; right-click on a socket
+        # falls through to normal context-menu handling.
+        if event.button() == Qt.LeftButton and isinstance(item, SocketItem):
             self.scene().drag_start = item
             self.setDragMode(QGraphicsView.NoDrag)
             self.scene().temp_wire = ConnectionItem(item, self.mapToScene(pos))

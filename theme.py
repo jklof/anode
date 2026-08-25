@@ -1,5 +1,4 @@
-from PySide6.QtGui import QColor, QFont
-from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 
 
 class Theme:
@@ -16,7 +15,6 @@ class Theme:
         "socket_input": QColor("#ff9900"),
         "socket_output": QColor("#00ccff"),
         # Wire colors
-        "wire_normal": QColor("white"),
         "wire_selected": QColor("yellow"),
         "wire_hovered": QColor("#00ccff"),
         "wire_temp_white": QColor("white"),
@@ -48,12 +46,6 @@ class Theme:
         "node_width": 160,
         "header_height": 30,
         "socket_radius": 6,
-    }
-
-    # Fonts
-    FONTS = {
-        "node_title": QFont("Arial", 10, QFont.Bold),
-        "socket_label": QFont("Arial", 8),
     }
 
     # Z-layers

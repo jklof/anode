@@ -286,6 +286,9 @@ class Engine:
         self.thread = None
         self._tick_semaphore = None
         self.max_buffered_frames = 4
+        # Per-node processing stats. Lives on the Engine (not _worker locals) so
+        # entries can be pruned when nodes are deleted.
+        self._stats_buffer = {}
 
     def tick(self):
         self._tick_semaphore.release()
@@ -299,14 +302,46 @@ class Engine:
         - When the engine is stopped, the command is executed synchronously in the UI thread
           via _apply_command, and a snapshot is immediately emitted for structural operations
           to keep the UI in sync. Parameter and position changes use their own side-channels.
+
+        Exception: "save" never touches the RT loop. Its file I/O runs on the NRT
+        pool regardless of transport state (see _save_graph).
         """
         if self.running:
+            if cmd[0] == "save":
+                self._save_graph(cmd[1])
+                return
             self.command_queue.put(cmd)
         else:
             self._apply_command(cmd)
             if cmd[0] in _STRUCTURAL_OPS or self.graph.structure_dirty:
                 self.graph.structure_dirty = False
                 self._emit_snapshot()
+
+    def _save_graph(self, filename):
+        """Serialize and write the patch to disk. When the engine is running this
+        executes on an NRT pool thread so file I/O never stalls the audio loop;
+        when stopped it runs synchronously on the caller's thread."""
+        if not filename:
+            return
+
+        def _job():
+            try:
+                json_str = self.graph.to_json()
+                with open(filename, "w") as f:
+                    f.write(json_str)
+                logging.info(f"Saved patch to {filename}")
+            except Exception as e:
+                logging.error(f"Save Error: {e}")
+
+        if self.running:
+            threading.Thread(target=_job, daemon=True, name="anode-save").start()
+        else:
+            _job()
+
+    def _gc_deferred(self):
+        """Run a full collection off-thread. Full gc.collect() calls can stall for
+        hundreds of milliseconds and must never execute on the RT loop."""
+        threading.Thread(target=gc.collect, daemon=True, name="anode-gc").start()
 
     def _emit_snapshot(self):
         snap = self.graph.get_snapshot()
@@ -388,6 +423,9 @@ class Engine:
                         self.nrt.discard(n)
 
                 self.graph.remove_node(nid)
+                # Prune stale telemetry so dead node ids don't accumulate or
+                # skew the global CPU average.
+                self._stats_buffer.pop(nid, None)
                 try:
                     self.output_queue.put_nowait({"type": "node_removed", "node_id": nid})
                 except Exception:
@@ -482,18 +520,11 @@ class Engine:
                     n.remove()
                 self.graph = Graph()
                 self.graph.engine = self
-                gc.collect()
+                self._gc_deferred()
                 self._emit_snapshot()
 
             elif op == "save":
-                _, filename = cmd
-                try:
-                    json_str = self.graph.to_json()
-                    with open(filename, "w") as f:
-                        f.write(json_str)
-                    print(f"Saved patch to {filename}")
-                except Exception as e:
-                    print(f"Save Error: {e}")
+                self._save_graph(cmd[1])
 
             elif op == "load":
                 _, json_str = cmd
@@ -537,12 +568,12 @@ class Engine:
                             else:
                                 n.start()
                     self._emit_snapshot()
-                    gc.collect()
+                    self._gc_deferred()
                 except Exception as e:
-                    print(f"Load Failed: {e}")
+                    logging.error(f"Load Failed: {e}")
 
             elif op == "reload":
-                print("Engine: Reloading plugins...")
+                logging.info("Engine: Reloading plugins...")
                 current_json = self.graph.to_json()
                 for n in self.graph.nodes:
                     n.stop()
@@ -552,7 +583,7 @@ class Engine:
                 try:
                     plugin_system.load_plugins()
                 except Exception as e:
-                    print(f"Engine: Reload failed: {e}")
+                    logging.error(f"Engine: Reload failed: {e}")
                     return
                 try:
                     data = json.loads(current_json)
@@ -580,19 +611,19 @@ class Engine:
                             else:
                                 n.start()
                     self._emit_snapshot()
-                    print("Engine: Hot reload complete.")
-                    gc.collect()
+                    logging.info("Engine: Hot reload complete.")
+                    self._gc_deferred()
                 except Exception as e:
-                    print(f"Engine: Restore failed after reload: {e}")
+                    logging.error(f"Engine: Restore failed after reload: {e}")
 
             elif op == "snapshot":
                 self._emit_snapshot()
 
-        except Exception as e:
-            print(f"Cmd Error: {e}")
+        except Exception:
+            logging.exception("Cmd Error")
 
     def _worker(self):
-        print("Engine: Started")
+        logging.info("Engine: Started")
         gc.disable()
         with torch.no_grad():
 
@@ -618,7 +649,6 @@ class Engine:
             block_duration_sec = BLOCK_SIZE / SAMPLE_RATE
             telemetry_interval = 0.1
             next_telemetry_time = time.perf_counter() + telemetry_interval
-            stats_buffer = {}
             last_gc_time = time.time()
             GC_INTERVAL = 5.0
 
@@ -654,7 +684,7 @@ class Engine:
                         node.process()
                         node.error_msg = None
                         dt = time.perf_counter() - t0
-                        stats_buffer[node.id] = (dt / block_duration_sec) * 100.0
+                        self._stats_buffer[node.id] = (dt / block_duration_sec) * 100.0
                     except Exception as e:
                         logging.exception(f"Error processing node {node.name} (id: {node.id}): {e}")
                         node.error_msg = str(e)
@@ -666,6 +696,7 @@ class Engine:
 
                 now = time.perf_counter()
                 if now >= next_telemetry_time:
+                    stats_buffer = self._stats_buffer
                     global_cpu = sum(stats_buffer.values()) / len(stats_buffer) if stats_buffer else 0.0
                     node_data = {"__cpu__": stats_buffer.copy()}
                     for node in self.graph.nodes:
@@ -684,7 +715,7 @@ class Engine:
         if self.graph.clock_source:
             self.graph.clock_source.stop_clock()
         self._emit_snapshot()
-        print("Engine: Stopped")
+        logging.info("Engine: Stopped")
 
     def start(self):
         if self.running:

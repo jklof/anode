@@ -264,7 +264,7 @@ class AppController(QObject):
         # 1. Capture state NOW from our local cache
         node_data = self.get_node_data(node_id)
         if not node_data:
-            print(f"Warning: Attempted to delete unknown node {node_id}")
+            logging.warning(f"Attempted to delete unknown node {node_id}")
             return
 
         cmd = DeleteNodeCommand(self, node_id, node_data)
@@ -388,7 +388,7 @@ class AppController(QObject):
                 self.engine.push_command(("load", json_str))
                 self.history = CommandHistory()
         except Exception as e:
-            print(f"Controller Load Error: {e}")
+            logging.error(f"Controller Load Error: {e}")
 
     def clear(self):
         """Clear the graph."""

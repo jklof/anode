@@ -1,6 +1,5 @@
 import torch
 import torch.fft
-import torchaudio
 import numpy as np
 import os
 import logging
@@ -204,6 +203,13 @@ class ConvolutionReverb(Node):
         self.accum_fft_buffer = torch.zeros((proc_channels, num_bins), dtype=torch.complex64)
         self.result_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
 
+        # Circular-history ordering: precomputed index buffers so process() does
+        # not allocate per block. _ordered_input receives the time-aligned view
+        # of input_history via index_select(out=).
+        self._partition_indices = torch.arange(num_partitions)
+        self._wrap_indices = torch.empty(num_partitions, dtype=torch.long)
+        self._ordered_input = torch.zeros((num_partitions, proc_channels, num_bins), dtype=torch.complex64)
+
         self.dry_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
         self.wet_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
 
@@ -247,9 +253,14 @@ class ConvolutionReverb(Node):
         self.history_ptr = (self.history_ptr - 1) % self.input_history.shape[0]
         self.input_history[self.history_ptr] = current_fft
 
-        indices = torch.arange(self.history_ptr, self.history_ptr + self.input_history.shape[0])
-        indices %= self.input_history.shape[0]
-        ordered_input = self.input_history[indices]
+        # Time-aligned ordering of the circular history. Zero-allocation:
+        # (base + ptr) % N is computed into pre-allocated index buffers and
+        # index_select writes into a pre-allocated output.
+        num_partitions = self.input_history.shape[0]
+        torch.add(self._partition_indices, self.history_ptr, out=self._wrap_indices)
+        torch.remainder(self._wrap_indices, num_partitions, out=self._wrap_indices)
+        torch.index_select(self.input_history, 0, self._wrap_indices, out=self._ordered_input)
+        ordered_input = self._ordered_input
 
         ir_working = self.ir_ffts
         if ir_channels == 1 and out_channels == 2:
@@ -259,6 +270,8 @@ class ConvolutionReverb(Node):
         torch.mul(ordered_input, ir_working, out=self.product_buffer)
         torch.sum(self.product_buffer, dim=0, out=self.accum_fft_buffer)
 
+        # torch.fft has no out= variant; this one small allocation per block is
+        # unavoidable with the public API.
         time_domain = torch.fft.irfft(self.accum_fft_buffer, n=FFT_SIZE, dim=1)
 
         # result = time_domain[:, :PARTITION_SIZE] + self.overlap_buffer
