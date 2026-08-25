@@ -47,7 +47,10 @@ public:
 
     // ANode buffers are flat: [Ch0_Samples..., Ch1_Samples...]
     // We process them using the flat pointers directly to avoid allocations.
-    void process(float* in_flat, float* sc_flat, float* out_flat, int channels, int frames) {
+    // sc_channels declares the real channel count of sc_flat so a mono
+    // sidechain into a stereo compressor reads channel 0 replicated instead
+    // of walking out of bounds.
+    void process(float* in_flat, float* sc_flat, float* out_flat, int channels, int frames, int sc_channels) {
         if (!in_flat || !out_flat) return;
 
         if (channels != _max_channels) {
@@ -58,10 +61,12 @@ public:
         for (int c = 0; c < channels; ++c) {
             _in_ptrs[c] = in_flat + (c * frames);
             _out_ptrs[c] = out_flat + (c * frames);
-            if (sc_flat) {
-                _sc_ptrs[c] = sc_flat + (c * frames);
-            } else {
+            if (!sc_flat || sc_channels <= 0) {
                 _sc_ptrs[c] = nullptr; // Use input for detection
+            } else if (c < sc_channels) {
+                _sc_ptrs[c] = sc_flat + (static_cast<size_t>(c) * frames);
+            } else {
+                _sc_ptrs[c] = sc_flat; // Replicate sidechain channel 0
             }
         }
 
@@ -204,12 +209,14 @@ EXPORT void destroy(void* handle) {
 
 // Standard ANode API (no sidechain)
 EXPORT void process(void* handle, float* in, float* out, int channels, int frames) {
-    static_cast<CompressorProcessor*>(handle)->process(in, nullptr, out, channels, frames);
+    static_cast<CompressorProcessor*>(handle)->process(in, nullptr, out, channels, frames, 0);
 }
 
-// Extended API (with sidechain)
-EXPORT void process_with_sidechain(void* handle, float* in, float* sc, float* out, int channels, int frames) {
-    static_cast<CompressorProcessor*>(handle)->process(in, sc, out, channels, frames);
+// Extended API (with sidechain). sc_channels is the actual channel count of sc;
+// when sc has fewer channels than `channels`, channel 0 is replicated.
+EXPORT void process_with_sidechain(void* handle, float* in, float* sc, float* out, int channels, int frames,
+                                   int sc_channels) {
+    static_cast<CompressorProcessor*>(handle)->process(in, sc, out, channels, frames, sc_channels);
 }
 
 EXPORT void set_param(void* handle, int param_id, float value) {

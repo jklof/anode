@@ -3,7 +3,7 @@ import os
 import sys
 import torch
 import logging
-from base import Node, BLOCK_SIZE, CHANNELS
+from base import Node, BLOCK_SIZE, CHANNELS, SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,12 @@ class FFINode(Node):
             if not self.dsp_handle:
                 logger.error(f"[{self.name}] Failed to create C++ instance.")
                 self.error_msg = "C++ Init Failed"
+            elif hasattr(self.lib, "set_samplerate"):
+                # Optional part of the standard ABI: propagate the engine rate.
+                try:
+                    self.lib.set_samplerate(self.dsp_handle, float(SAMPLE_RATE))
+                except Exception as e:
+                    logger.error(f"[{self.name}] set_samplerate failed: {e}")
 
     def _load_library(self):
         if not self.LIB_NAME:
@@ -81,6 +87,11 @@ class FFINode(Node):
         # void set_param(void* handle, int param_id, float value)
         self.lib.set_param.restype = None
         self.lib.set_param.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_float]
+
+        # void set_samplerate(void* handle, float samplerate) — optional
+        if hasattr(self.lib, "set_samplerate"):
+            self.lib.set_samplerate.restype = None
+            self.lib.set_samplerate.argtypes = [ctypes.c_void_p, ctypes.c_float]
 
     def _preprocess_input(self, in_tensor: torch.Tensor, scratch_buffer: torch.Tensor) -> torch.Tensor:
         """Hook for subclasses to modify input tensor before C++ processing. Default pass-through."""

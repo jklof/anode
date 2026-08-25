@@ -22,26 +22,31 @@ public:
           _mix(0.5f),
           _write_head(0),
           _max_channels(2) {
-        
-        // Pre-calculate buffer size
-        _buffer_size = static_cast<int>(_samplerate * MAX_DELAY_SECONDS);
-        _delay_buffer.resize(_buffer_size * _max_channels, 0.0f);
+        set_samplerate(_samplerate);
         update_delay_samples();
     }
 
     void set_param(int id, float value) {
         switch(id) {
             case 0: // Time (ms)
-                _time_ms = std::max(0.0f, value); 
-                update_delay_samples(); 
+                _time_ms = std::max(0.0f, value);
+                update_delay_samples();
                 break;
             case 1: // Feedback
                 _feedback = std::max(0.0f, std::min(value, 1.1f)); // Allow slight self-oscillation
                 break;
             case 2: // Mix
-                _mix = std::max(0.0f, std::min(value, 1.0f)); 
+                _mix = std::max(0.0f, std::min(value, 1.0f));
                 break;
         }
+    }
+
+    // Reallocation here only happens at init / rate change (not in process()).
+    void set_samplerate(float samplerate) {
+        _samplerate = std::max(1.0f, samplerate);
+        _buffer_size = static_cast<int>(_samplerate * MAX_DELAY_SECONDS);
+        _delay_buffer.assign(static_cast<size_t>(_buffer_size) * _max_channels, 0.0f);
+        _write_head = 0;
     }
 
     void process(float* in_flat, float* out_flat, int channels, int frames) {
@@ -145,4 +150,10 @@ EXPORT void process(void* handle, float* in, float* out, int channels, int frame
 
 EXPORT void set_param(void* handle, int param_id, float value) {
     static_cast<DelayProcessor*>(handle)->set_param(param_id, value);
+}
+
+EXPORT void set_samplerate(void* handle, float samplerate) {
+    if (handle) {
+        static_cast<DelayProcessor*>(handle)->set_samplerate(samplerate);
+    }
 }

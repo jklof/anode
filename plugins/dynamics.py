@@ -1,7 +1,10 @@
 import ctypes
+import logging
 import torch
 from ffi_base import FFINode
 from base import CHANNELS, BLOCK_SIZE
+
+logger = logging.getLogger(__name__)
 
 
 class Compressor(FFINode):
@@ -42,6 +45,7 @@ class Compressor(FFINode):
                     ctypes.POINTER(ctypes.c_float),  # Out
                     ctypes.c_int,
                     ctypes.c_int,
+                    ctypes.c_int,  # Sidechannel channel count
                 ]
 
                 self.lib.get_gain_reduction.restype = ctypes.c_float
@@ -55,7 +59,7 @@ class Compressor(FFINode):
 
                 self.lib.set_samplerate(self.dsp_handle, float(SAMPLE_RATE))
             except Exception as e:
-                print(f"Compressor Bind Error: {e}")
+                logger.error(f"Compressor Bind Error: {e}")
 
     def process(self):
         if not self.lib or not self.dsp_handle:
@@ -67,6 +71,7 @@ class Compressor(FFINode):
         # 2. Sidechain Input
         # If not connected, we pass None to C++ (which handles it by using main input)
         sc_ptr = None
+        sc_channels = 0
         if self.inputs["sidechain"].connected_outputs:
             sc_tensor = self.inputs["sidechain"].get_tensor()
 
@@ -75,10 +80,16 @@ class Compressor(FFINode):
                 sc_tensor = sc_tensor.cpu()
 
             if sc_tensor.is_contiguous():
-                sc_ptr = ctypes.cast(sc_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
+                sc_buffer = sc_tensor
             else:
                 self._sc_buffer.copy_(sc_tensor)
-                sc_ptr = ctypes.cast(self._sc_buffer.data_ptr(), ctypes.POINTER(ctypes.c_float))
+                sc_buffer = self._sc_buffer
+
+            sc_channels = sc_buffer.shape[0]
+            # The C++ side replicates channel 0 when sc_channels < main
+            # channels, so a mono sidechain into a stereo compressor stays
+            # in-bounds and uses the mono signal for detection.
+            sc_ptr = ctypes.cast(sc_buffer.data_ptr(), ctypes.POINTER(ctypes.c_float))
 
         # 3. Prepare Input Buffer (Generic handling from FFI logic)
         # We manually handle contiguity here similar to base class but for local tensors
@@ -106,7 +117,8 @@ class Compressor(FFINode):
 
         # 6. Execute DSP
         if sc_ptr:
-            self.lib.process_with_sidechain(self.dsp_handle, in_ptr, sc_ptr, out_ptr, process_channels, BLOCK_SIZE)
+            self.lib.process_with_sidechain(self.dsp_handle, in_ptr, sc_ptr, out_ptr, process_channels, BLOCK_SIZE,
+                                            sc_channels)
         else:
             # Use base standard process which passes nullptr for SC
             self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
