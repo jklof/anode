@@ -35,6 +35,16 @@ copy_target_to_directory(delay "${PROJECT_SOURCE_DIR}/../plugins")
 add_library(compressor SHARED compressor.cpp)
 copy_target_to_directory(compressor "${PROJECT_SOURCE_DIR}/../plugins")
 
+# --- Target: Biquad Filter (IIR) ---
+add_library(biquad SHARED biquad.cpp)
+target_compile_features(biquad PRIVATE cxx_std_17)
+copy_target_to_directory(biquad "${PROJECT_SOURCE_DIR}/../plugins")
+
+# --- Target: Linear Phase EQ (FIR) ---
+add_library(fir_eq SHARED fir_eq.cpp)
+target_compile_features(fir_eq PRIVATE cxx_std_17)
+copy_target_to_directory(fir_eq "${PROJECT_SOURCE_DIR}/../plugins")
+
 
 # --- Target: NAM Processor ---
 FetchContent_Populate(NAM_CORE)

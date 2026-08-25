@@ -77,6 +77,7 @@ def test_biquad_low_pass_response():
 
     passed = gain_db(feed_tone(bq, 100.0), 0.5)
     assert passed > -1.0, f"100 Hz passband attenuation {passed:.2f} dB"
+    assert passed < 1.0, f"passband must stay near unity gain (+{passed:.2f} dB)"
 
     attenuated = gain_db(feed_tone(bq, 15000.0), 0.5)
     assert attenuated < -20.0, f"15 kHz stopband only {attenuated:.2f} dB"
@@ -185,6 +186,7 @@ def test_fir_low_pass_response():
 
     passed = gain_db(feed_tone(eq, 100.0, settle=8), 0.5)
     assert passed > -1.5, f"100 Hz passband {passed:.2f} dB"
+    assert passed < 1.5, f"passband must stay near unity gain (+{passed:.2f} dB)"
 
     attenuated = gain_db(feed_tone(eq, 15000.0, settle=8), 0.5)
     assert attenuated < -20.0, f"15 kHz stopband only {attenuated:.2f} dB"

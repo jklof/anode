@@ -77,7 +77,7 @@ conda run -n anode-dev python -m pytest tests/test_nodes.py -k "test_gain" -v
 - **No Blocking Calls on Audio Thread**: Never perform disk I/O, network requests, device queries, or model weight loading in `process()`, `start()`, or parameter setters.
 - **Background Tasks via `NRTExecutor`**: Use `self.submit_nrt(fn, *args, tag=...)` and handle results in `on_nrt_complete(tag, ok, result)`. The engine handles task invalidation (`_nrt_epoch`) automatically.
 - **Thread Concurrency**: Keep `torch.set_num_threads(1)` active to prevent OpenMP deadlocks between background loader threads and audio processing.
-- **Per-sample budgets**: one block = ~10.7 ms; aim for <5% (~0.5 ms) per node. Do NOT use per-sample TorchScript loops (`torch.jit.script`) for IIR-style kernels — every `.item()`/setitem goes through the dispatcher and measured ~12 ms/block; a plain-Python float loop with one `.tolist()` in and one bulk write-back runs ~25x faster (see `_biquad_df2t_block` in `plugins/filters.py`).
+- **Per-sample budgets**: one block = ~10.7 ms; aim for <5% (~0.5 ms) per node. Do NOT use per-sample loops in Python or TorchScript for IIR-style kernels — every `.item()`/setitem goes through the dispatcher and measured ~12 ms/block; a plain-Python float loop gets to ~0.5 ms/block but is only a stopgap. Real per-sample DSP belongs behind the FFI in C++: the same biquad runs at ~25 us/block natively (see `plugins/filters.py` + `cpp/biquad.cpp` / `cpp/fir_eq.cpp` for the wrapper + native pattern).
 
 ### 2. Node & Slot Development Rules
 - Every node must subclass `base.Node` (or `ffi_base.FFINode` for C++ plugins).
@@ -88,7 +88,7 @@ conda run -n anode-dev python -m pytest tests/test_nodes.py -k "test_gain" -v
   ```
 - **Anti-Ghosting**: When processing or routing between mismatched channel counts (e.g. Mono $\to$ Stereo), always explicit zero-out unused channels in output buffers.
 - **`InputSlot.get_tensor()` semantics**: an unconnected input zeroes its scratch buffer on every call and returns it. Never stash data in `_scratch` across blocks, and never feed test signals by writing to `_scratch` — mock `slot.get_tensor = lambda: block` instead (convention used in `tests/test_nodes.py` and `tests/test_filters.py`).
-- **Plugin import granularity**: `plugin_system.load_plugins()` skips the entire module if any module-level import fails, killing every node defined in that file. Guard optional/heavy dependencies with try/except at module top and degrade gracefully (see `plugins/media_player.py`). The conda env is intentionally minimal — do not add dependencies without need (e.g. there is no scipy; design DSP with numpy/torch as in `plugins/filters.py`).
+- **Plugin import granularity**: `plugin_system.load_plugins()` skips the entire module if any module-level import fails, killing every node defined in that file. Guard optional/heavy dependencies with try/except at module top and degrade gracefully (see `plugins/media_player.py`). The conda env is intentionally minimal — do not add dependencies without need (e.g. there is no scipy; do coefficient design with numpy and per-sample DSP in C++ as in `plugins/filters.py` / `cpp/fir_eq.cpp`).
 
 ### 3. Parameter Lifecycle & Synchronization
 - Parameters use a staging mechanism (`_staging` $\to$ `sync()`) to cross the UI/Engine thread boundary safely.
