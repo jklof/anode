@@ -145,10 +145,10 @@ class SpectrogramDisplay(Node):
         if in_ch >= CHANNELS:
             seg.copy_(sig[:CHANNELS])
         else:
-            # Mono (or fewer channels): duplicate channel 0 for analysis
-            seg[:, :in_ch].copy_(sig[:in_ch])
-            for c in range(in_ch, CHANNELS):
-                seg[:, c].copy_(sig[0])
+            # Fewer channels than CHANNELS (typically mono): duplicate the
+            # last available channel into every remaining ring row.
+            for c in range(CHANNELS):
+                seg[c].copy_(sig[min(c, in_ch - 1)])
         self._write_pos = (wp + BLOCK_SIZE) % FFT_SIZE
 
         # 3. Unwrap circular -> chronological [oldest ... newest]

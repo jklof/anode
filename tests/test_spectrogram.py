@@ -106,6 +106,25 @@ def test_spectrogram_mono_duplicates_pass_through():
     assert torch.allclose(out[1], mono[0]), "mono must duplicate to both channels"
 
 
+def test_spectrogram_true_mono_channel_count():
+    """Regression: a genuine (1, BLOCK) input must not crash the ring write
+    (copy_ cannot broadcast (1, B) into the (2, 1) column slice)."""
+    node = make_node()
+    n = np.arange(BLOCK_SIZE)
+    row = (0.5 * np.sin(2 * np.pi * 1000.0 * n / SAMPLE_RATE)).astype(np.float32)
+    true_mono = torch.from_numpy(row).unsqueeze(0)  # shape (1, 512)
+
+    col = stream(node, true_mono, 8)
+
+    out = node.out.buffer
+    assert out.shape[0] == CHANNELS
+    assert torch.allclose(out[0], true_mono[0])
+    assert torch.allclose(out[1], true_mono[0])
+    assert col is not None and col.shape == (CHANNELS, 128)
+    peak = int(np.argmax(col[0]))
+    assert 40 <= peak <= 90, f"mono analysis peak at bin {peak}, expected ~1 kHz"
+
+
 def test_spectrogram_column_shape_and_range():
     node = make_node()
     col = stream(node, sine_block(1000.0), 8)
