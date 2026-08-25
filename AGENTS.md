@@ -87,6 +87,8 @@ conda run -n anode-dev python -m pytest tests/test_nodes.py -k "test_gain" -v
   label = "Human Friendly Name"
   ```
 - **Anti-Ghosting**: When processing or routing between mismatched channel counts (e.g. Mono $\to$ Stereo), always explicit zero-out unused channels in output buffers.
+- **Channel-count writes**: `Tensor.copy_()` broadcasts the source to the destination's shape — copying a wide signal into a narrowed slice (e.g. `seg[:, :1].copy_(mono)`) fails at runtime. Fill rows explicitly (`seg[c].copy_(...)`) and exercise channel paths in tests with *genuine* `(1, BLOCK)` mono tensors, not tiled stereo stand-ins.
+- **Visual nodes & `monitor_queue`**: dispatch frames via `self.monitor_queue = queue.Queue(maxsize=2)`; guard `put_nowait` with `full()` checked *before* copying the payload so overflow costs nothing, and let the widget drain it on its own QTimer. Visualization must be strictly pass-through — never sanitize or otherwise modify the audio path (see `plugins/spectrogram.py`, `plugins/spectrum.py`; frame-draining test convention in `tests/test_spectrogram.py`).
 - **`InputSlot.get_tensor()` semantics**: an unconnected input zeroes its scratch buffer on every call and returns it. Never stash data in `_scratch` across blocks, and never feed test signals by writing to `_scratch` — mock `slot.get_tensor = lambda: block` instead (convention used in `tests/test_nodes.py` and `tests/test_filters.py`).
 - **Plugin import granularity**: `plugin_system.load_plugins()` skips the entire module if any module-level import fails, killing every node defined in that file. Guard optional/heavy dependencies with try/except at module top and degrade gracefully (see `plugins/media_player.py`). The conda env is intentionally minimal — do not add dependencies without need (e.g. there is no scipy; do coefficient design with numpy and per-sample DSP in C++ as in `plugins/filters.py` / `cpp/fir_eq.cpp`).
 
@@ -104,6 +106,7 @@ conda run -n anode-dev python -m pytest tests/test_nodes.py -k "test_gain" -v
   `create()`, `destroy()`, `process()`, `set_param()`, `set_samplerate()`. `ffi_base` auto-binds and calls `set_samplerate` on creation when the library exports it.
 - Audio data passed through FFI is in planar/flat `float*` buffers (`[Ch0_0..Ch0_N, Ch1_0..Ch1_N]`). Ensure tensors are contiguous (`.is_contiguous()`) and on the CPU before casting to C pointers.
 - When an extended API mixes buffers with different channel counts (e.g. mono sidechain into a stereo compressor), the C side must receive explicit channel counts per buffer — never index a smaller buffer with the main channel count (see `process_with_sidechain` in `cpp/compressor.cpp`).
+- When binding additional exports (`reset`, `load_model_sync`, extended process calls, ...), always declare `restype`/`argtypes`. An unannotated handle argument defaults to 32-bit `c_int`, silently truncating 64-bit pointers and producing delayed, unrelated-looking segfaults.
 
 ---
 
