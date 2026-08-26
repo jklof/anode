@@ -41,6 +41,7 @@ import os
 import json
 import uuid
 import logging
+import weakref
 
 
 class NodeProxy:
@@ -52,7 +53,15 @@ class NodeProxy:
         self.node_id = node_id
         self.controller = controller
         self.monitor_queue = monitor_queue
-        self.node_item = node_item
+        # Weak reference: a strong one would form the cycle
+        # NodeItem -> widget -> proxy -> NodeItem, which strands Qt objects
+        # (and their QTimers) until cyclic GC runs — possibly on the audio or
+        # gc thread, which then destroys QWidgets from a non-GUI thread (crash).
+        self._node_item_ref = weakref.ref(node_item)
+
+    @property
+    def node_item(self):
+        return self._node_item_ref()
 
     def set_parameter(self, name, value):
         self.controller.set_parameter(self.node_id, name, value)
@@ -693,6 +702,26 @@ class NodeItem(QGraphicsObject):
 
         return callback
 
+    def cleanup_ui(self):
+        """
+        Tear down the embedded custom UI deterministically, on the GUI thread.
+
+        Must be called BEFORE dropping the last strong reference to this item:
+        plugin widgets own QTimers, and letting cyclic GC destroy them (from
+        the audio/gc threads) kills timers cross-thread and segfaults.
+        """
+        widget = self.widget
+        if widget is not None:
+            timer = getattr(widget, "timer", None)
+            if timer is not None:
+                timer.stop()
+        self.widget = None
+        self.proxy_obj = None
+        if self.proxy is not None:
+            # The proxy owns the widget; deleting it tears down the subtree.
+            self.proxy.deleteLater()
+            self.proxy = None
+
     def build_ui(self):
         """
         Called by GraphScene AFTER adding this item to the scene.
@@ -1079,6 +1108,7 @@ class GraphScene(QGraphicsScene):
                 self.removeItem(item)
             self.wire_items.clear()
             for item in list(self.node_items.values()):
+                item.cleanup_ui()
                 self.removeItem(item)
             self.node_items.clear()
 
@@ -1093,7 +1123,9 @@ class GraphScene(QGraphicsScene):
                     wire = self.wire_items.pop(key)
                     wire.detach()
                     self.removeItem(wire)
-            self.removeItem(self.node_items.pop(nid))
+            item = self.node_items.pop(nid)
+            item.cleanup_ui()
+            self.removeItem(item)
 
         # Identify New/Updated Nodes
         for n_data in snapshot["nodes"]:
