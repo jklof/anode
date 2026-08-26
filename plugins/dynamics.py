@@ -1,8 +1,9 @@
 import ctypes
 import logging
+import math
 import torch
+from base import Node, CHANNELS, BLOCK_SIZE, DTYPE, SAMPLE_RATE
 from ffi_base import FFINode
-from base import CHANNELS, BLOCK_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -130,3 +131,104 @@ class Compressor(FFINode):
             gr = self.lib.get_gain_reduction(self.dsp_handle)
 
         return {"gr": gr}
+
+
+class NoiseGate(Node):
+    category = "Effects"
+    label = "Noise Gate"
+
+    """Downward expander with lookahead and hold.
+
+    Architecture per docs/new_node_specifications.md §4:
+    - Block-rate detector: one RMS level per block over a /16 decimated
+      sidechain slice. The only transient is the tiny pow(2) temp on the
+      32-sample slice (no out= variant for slice-reduce; same documented
+      exception as the FFT nodes).
+    - LOOKAHEAD (64 samples) delay ring aligns the smoothed gain trajectory
+      ahead of transients.
+    - Ballistics are one-pole-per-block toward the target gain reduction,
+      rendered as a linear gain ramp across the block (linspace out=).
+    - Sidechain falls back to the main input when unconnected; mono
+      sidechains are reduced across all dims, never indexed by CHANNELS.
+    """
+
+    LOOKAHEAD = 64
+    DECIM = 16
+
+    PARAM_ORDER = ("thresh", "ratio", "attack", "hold", "release", "range")
+
+    def __init__(self, name=""):
+        super().__init__(name)
+        self.inp = self.add_input("in")
+        self.sc = self.add_input("sidechain")
+        self.out = self.add_output("out", channels=CHANNELS)
+
+        self.add_float_param("thresh", -40.0, -80.0, 0.0)
+        self.add_float_param("ratio", 10.0, 1.0, 50.0)
+        self.add_float_param("attack", 1.0, 0.1, 50.0)
+        self.add_float_param("hold", 50.0, 0.0, 500.0)
+        self.add_float_param("release", 100.0, 5.0, 1000.0)
+        self.add_float_param("range", 60.0, 0.0, 90.0)
+
+        self.gr_db = 0.0
+        self.hold_left = 0
+        self._coeffs = (0.5, 0.1, 2400)   # att_c, rel_c, hold_samples
+        self._param_state = None
+
+        self._ring = torch.zeros((CHANNELS, self.LOOKAHEAD), dtype=DTYPE)
+        self._delayed = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
+        self._ramp = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+
+    def start(self):
+        self.gr_db = 0.0
+        self.hold_left = 0
+        self._ring.zero_()
+
+    def process(self):
+        sig = self.inp.get_tensor()
+        sc_slot = self.sc if self.sc.connected_outputs else self.inp
+        sc = sc_slot.get_tensor()
+
+        state = tuple(self.params[k].value for k in self.PARAM_ORDER)
+        if state != self._param_state:
+            self._param_state = state
+            thresh, ratio, att_ms, hold_ms, rel_ms, _range = state
+            block_dur = BLOCK_SIZE / SAMPLE_RATE
+            att_c = 1.0 - math.exp(-block_dur / max(att_ms, 1e-4) * 1000.0)
+            rel_c = 1.0 - math.exp(-block_dur / max(rel_ms, 1e-4) * 1000.0)
+            self._coeffs = (att_c, rel_c, int(hold_ms * SAMPLE_RATE / 1000.0))
+            self._thresh_db = thresh
+            self._slope = ratio - 1.0
+            self._range_db = _range
+
+        # --- Detector: RMS dB of the decimated sidechain ---
+        # Small documented transient: pow(2) temp on the (ch, 32) slice.
+        level_lin = float(torch.mean(sc[:, ::self.DECIM].pow(2)))
+        level_db = 10.0 * math.log10(level_lin + 1e-9)
+
+        # --- Target gain reduction + hold state machine ---
+        open_now = level_db >= self._thresh_db
+        target_gr = 0.0
+        if not open_now:
+            target_gr = (level_db - self._thresh_db) * self._slope
+            if target_gr < -self._range_db:
+                target_gr = -self._range_db
+        if open_now:
+            self.hold_left = self._coeffs[2]
+        elif self.hold_left > 0:
+            self.hold_left -= BLOCK_SIZE
+            target_gr = 0.0
+
+        att_c, rel_c, _ = self._coeffs
+        coeff = att_c if target_gr > self.gr_db else rel_c
+        prev_lin = 10.0 ** (self.gr_db / 20.0)
+        self.gr_db += coeff * (target_gr - self.gr_db)
+        end_lin = 10.0 ** (self.gr_db / 20.0)
+        torch.linspace(prev_lin, end_lin, BLOCK_SIZE, out=self._ramp)
+
+        # --- Lookahead delay + gain ramp application ---
+        la = self.LOOKAHEAD
+        self._delayed[:, :la].copy_(self._ring)
+        self._delayed[:, la:].copy_(sig[:, :BLOCK_SIZE - la])
+        self._ring.copy_(sig[:, BLOCK_SIZE - la:])
+        self.out.buffer.copy_(self._delayed).mul_(self._ramp)

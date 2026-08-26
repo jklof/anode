@@ -46,6 +46,17 @@ target_compile_features(fir_eq PRIVATE cxx_std_17)
 copy_target_to_directory(fir_eq "${PROJECT_SOURCE_DIR}/../plugins")
 
 
+# --- Target: Envelope Follower (CV/Gate extractor) ---
+add_library(envelope SHARED envelope.cpp)
+target_compile_features(envelope PRIVATE cxx_std_17)
+copy_target_to_directory(envelope "${PROJECT_SOURCE_DIR}/../plugins")
+
+# --- Target: Chorus / Flanger ---
+add_library(chorus SHARED chorus.cpp)
+target_compile_features(chorus PRIVATE cxx_std_17)
+copy_target_to_directory(chorus "${PROJECT_SOURCE_DIR}/../plugins")
+
+
 # --- Target: NAM Processor ---
 FetchContent_Populate(NAM_CORE)
 set(NAM_PATH ${nam_core_SOURCE_DIR})
