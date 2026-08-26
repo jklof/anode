@@ -232,3 +232,208 @@ class NoiseGate(Node):
         self._delayed[:, la:].copy_(sig[:, :BLOCK_SIZE - la])
         self._ring.copy_(sig[:, BLOCK_SIZE - la:])
         self.out.buffer.copy_(self._delayed).mul_(self._ramp)
+
+
+class BrickwallLimiter(Node):
+    category = "Effects"
+    label = "Brickwall Limiter"
+
+    LOOKAHEAD = 240
+
+    def __init__(self, name=""):
+        super().__init__(name)
+        self.add_input("in")
+        self.add_input("thresh_in", "threshold")
+        self.add_output("out", channels=CHANNELS)
+
+        self.add_float_param("threshold", -0.1, -40.0, 0.0)
+        self.add_float_param("ceiling", -0.1, -20.0, 0.0)
+        self.add_float_param("release", 50.0, 1.0, 1000.0)
+
+        self._ring = torch.zeros((CHANNELS, self.LOOKAHEAD), dtype=DTYPE)
+        self._delayed = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
+        self._mono_peak = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+        self._mono_indices = torch.zeros(BLOCK_SIZE, dtype=torch.int64)
+        self._ramp = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+        self._current_gain = 1.0
+        self._prev_gain = 1.0
+
+    def start(self):
+        self._ring.zero_()
+        self._current_gain = 1.0
+        self._prev_gain = 1.0
+
+    def process(self):
+        sig = self.inputs["in"].get_tensor()
+        # Anti-ghosting: ensure input is CHANNELS (expand mono if needed)
+        if sig.shape[0] == 1 and CHANNELS == 2:
+            sig = sig.expand(2, BLOCK_SIZE)
+
+        thresh_db = float(self.inputs["thresh_in"].get_tensor()[0, 0].item())
+        ceiling_db = self.params["ceiling"].value
+        release_ms = max(1.0, self.params["release"].value)
+
+        thresh_lin = 10.0 ** (thresh_db / 20.0)
+        ceiling_lin = 10.0 ** (ceiling_db / 20.0)
+
+        torch.abs(sig, out=self._delayed)
+        torch.max(self._delayed, dim=0, out=(self._mono_peak, self._mono_indices))
+
+        max_peak = max(float(self._mono_peak.max().item()), 1e-9)
+        if max_peak > thresh_lin:
+            target_gain = min(1.0, ceiling_lin / max_peak)
+        else:
+            target_gain = 1.0
+
+        if target_gain < self._current_gain:
+            self._current_gain = target_gain
+        else:
+            alpha_rel = 1.0 - math.exp(-(BLOCK_SIZE / SAMPLE_RATE) / (release_ms / 1000.0))
+            alpha_rel = min(1.0, alpha_rel)
+            self._current_gain += alpha_rel * (target_gain - self._current_gain)
+
+        torch.linspace(self._prev_gain, self._current_gain, BLOCK_SIZE, out=self._ramp)
+        self._prev_gain = self._current_gain
+
+        la = self.LOOKAHEAD
+        self._delayed[:, :la].copy_(self._ring)
+        self._delayed[:, la:].copy_(sig[:, :BLOCK_SIZE - la])
+        self._ring.copy_(sig[:, BLOCK_SIZE - la:])
+
+        out = self.outputs["out"].buffer
+        out.copy_(self._delayed)
+        out.mul_(self._ramp)
+        out.clamp_(-ceiling_lin, ceiling_lin)
+
+
+class TransientShaper(Node):
+    category = "Effects"
+    label = "Transient Shaper"
+
+    def __init__(self, name=""):
+        super().__init__(name)
+        self.add_input("in")
+        self.add_input("attack_mod", "attack")
+        self.add_input("sustain_mod", "sustain")
+        self.add_output("out", channels=CHANNELS)
+
+        self.add_float_param("attack", 0.0, -1.0, 2.0)
+        self.add_float_param("sustain", 0.0, -1.0, 1.0)
+        self.add_float_param("output_gain_db", 0.0, -18.0, 18.0)
+
+        self._e_fast = 0.0
+        self._e_slow = 0.0
+        self._prev_gain = 1.0
+        self._ramp = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+        self._mono = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+
+    def start(self):
+        self._e_fast = 0.0
+        self._e_slow = 0.0
+        self._prev_gain = 1.0
+
+    def process(self):
+        sig = self.inputs["in"].get_tensor()
+        attack_val = float(self.inputs["attack_mod"].get_tensor()[0, 0].item())
+        sustain_val = float(self.inputs["sustain_mod"].get_tensor()[0, 0].item())
+        out_gain = 10.0 ** (self.params["output_gain_db"].value / 20.0)
+
+        out_buf = self.outputs["out"].buffer
+        torch.abs(sig, out=out_buf)
+        torch.mean(out_buf, dim=0, out=self._mono)
+        peak = float(torch.max(self._mono).item())
+
+        dt_block = BLOCK_SIZE / SAMPLE_RATE
+        a_f = dt_block / 0.001 if peak > self._e_fast else dt_block / 0.020
+        a_s = dt_block / 0.025 if peak > self._e_slow else dt_block / 0.200
+        a_f = min(1.0, a_f)
+        a_s = min(1.0, a_s)
+
+        self._e_fast += a_f * (peak - self._e_fast)
+        self._e_slow += a_s * (peak - self._e_slow)
+
+        delta = self._e_fast - self._e_slow
+        target_gain = ((delta * (1.0 + attack_val)) + (self._e_slow * (1.0 + sustain_val))) / (self._e_fast + 1e-6)
+        target_gain = max(0.0, min(4.0, target_gain))
+
+        torch.linspace(self._prev_gain, target_gain, BLOCK_SIZE, out=self._ramp)
+        self._prev_gain = target_gain
+
+        out_buf.copy_(sig)
+        out_buf.mul_(self._ramp).mul_(out_gain)
+
+
+class AutoGain(Node):
+    category = "Utilities"
+    label = "Auto Gain / Leveler"
+
+    MAX_BLOCKS = int(10.0 * SAMPLE_RATE / BLOCK_SIZE)
+
+    def __init__(self, name=""):
+        super().__init__(name)
+        self.add_input("in")
+        self.add_output("out", channels=CHANNELS)
+
+        self.add_float_param("target_db", -14.0, -40.0, 0.0)
+        self.add_float_param("window_s", 2.0, 0.2, 10.0)
+        self.add_float_param("max_gain_db", 18.0, 0.0, 36.0)
+        self.add_float_param("silence_gate_db", -50.0, -80.0, -20.0)
+
+        self._rms_history = torch.zeros(self.MAX_BLOCKS, dtype=DTYPE)
+        self._hist_ptr = 0
+        self._hist_count = 0
+        self._current_gain_lin = 1.0
+        self._prev_gain_lin = 1.0
+        self._ramp = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+        self._mono = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+
+    def start(self):
+        self._rms_history.zero_()
+        self._hist_ptr = 0
+        self._hist_count = 0
+        self._current_gain_lin = 1.0
+        self._prev_gain_lin = 1.0
+
+    def process(self):
+        sig = self.inputs["in"].get_tensor()
+        target_db = self.params["target_db"].value
+        window_s = self.params["window_s"].value
+        max_gain_db = self.params["max_gain_db"].value
+        silence_gate_db = self.params["silence_gate_db"].value
+
+        out = self.outputs["out"].buffer
+
+        torch.mean(torch.pow(sig, 2.0), dim=0, out=self._mono)
+        rms = float(torch.sqrt(torch.mean(self._mono)).item())
+        rms_db = 20.0 * math.log10(max(rms, 1e-9))
+
+        if rms_db < silence_gate_db:
+            torch.linspace(self._prev_gain_lin, self._current_gain_lin, BLOCK_SIZE, out=self._ramp)
+            self._prev_gain_lin = self._current_gain_lin
+            out.copy_(sig)
+            out.mul_(self._ramp)
+            return
+
+        N = int(window_s * SAMPLE_RATE / BLOCK_SIZE)
+        N = max(1, min(N, self.MAX_BLOCKS))
+        self._rms_history[self._hist_ptr] = rms
+        self._hist_ptr = (self._hist_ptr + 1) % self.MAX_BLOCKS
+        self._hist_count = min(self._hist_count + 1, N)
+
+        hist_slice = self._rms_history[:self._hist_count]
+        long_rms = float(torch.sqrt(torch.mean(torch.pow(hist_slice, 2.0))).item())
+        long_rms_db = 20.0 * math.log10(max(long_rms, 1e-9))
+
+        gain_db = target_db - long_rms_db
+        gain_db = max(-max_gain_db, min(max_gain_db, gain_db))
+        target_gain = 10.0 ** (gain_db / 20.0)
+
+        alpha = 1.0 - math.exp(-(BLOCK_SIZE / SAMPLE_RATE) / 0.5)
+        alpha = min(1.0, alpha)
+        self._current_gain_lin += alpha * (target_gain - self._current_gain_lin)
+
+        torch.linspace(self._prev_gain_lin, self._current_gain_lin, BLOCK_SIZE, out=self._ramp)
+        self._prev_gain_lin = self._current_gain_lin
+
+        out.copy_(sig)
+        out.mul_(self._ramp)

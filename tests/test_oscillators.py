@@ -30,6 +30,24 @@ def set_wave(node, idx):
     node.sync()
 
 
+def _spectral_slope(node, blocks=128, warmup=20):
+    """Collect `blocks` blocks and compute spectral slope in dB/octave."""
+    node.start()
+    for _ in range(warmup):
+        node.process()
+    chunks = []
+    for _ in range(blocks):
+        node.process()
+        chunks.append(node.outputs["out"].buffer[0].clone())
+    x = torch.cat(chunks)
+    spec = torch.fft.rfft(x).abs()
+    freqs = torch.fft.rfftfreq(len(x), d=1.0 / SAMPLE_RATE)
+    log_f = torch.log2(freqs[1:])
+    log_s = torch.log2(spec[1:] + 1e-12)
+    slope = torch.sum((log_f - log_f.mean()) * (log_s - log_s.mean())) / torch.sum((log_f - log_f.mean()) ** 2)
+    return float(slope * 6.0206)  # Convert to dB/octave
+
+
 def test_oscillator_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("WaveformOscillator")
@@ -46,7 +64,6 @@ def test_sine_peak_and_frequency():
     out = run(node)
 
     assert out.abs().max() == pytest.approx(0.8, abs=0.02)
-    # Zero crossings per block ~= f * BLOCK / SR (one per positive-going half cycle)
     expected = 1000.0 * BLOCK_SIZE / SAMPLE_RATE
     assert zero_crossings(out) == pytest.approx(expected, abs=2)
 
@@ -62,11 +79,8 @@ def test_triangle_peak():
 
 
 def test_sawtooth_polyblep_smooths_wrap_jump():
-    """The BLEP residual must smooth the naive saw's full-scale wrap jump:
-    max inter-sample delta drops from ~2 (naive) to ~1 (corrected), and the
-    corrected waveform stays bounded near +-1."""
     node = make_node()
-    set_wave(node, 2)   # Sawtooth
+    set_wave(node, 2)
     node.params["freq"].set(500.0)
     node.params["amp"].set(1.0)
     node.sync()
@@ -78,8 +92,6 @@ def test_sawtooth_polyblep_smooths_wrap_jump():
 
 
 def _harmonic_specter(node, freq=500.0, periods=64):
-    """Collect an integer number of periods and FFT it. Returns the ratio of
-    the largest non-harmonic bin to the fundamental bin (in dB)."""
     samples_per_period = SAMPLE_RATE / freq
     blocks = int(round(periods * samples_per_period / BLOCK_SIZE))
     chunks = []
@@ -92,7 +104,7 @@ def _harmonic_specter(node, freq=500.0, periods=64):
     fund_bin = int(round(periods))
     harmonics = set()
     k = 1
-    while k * fund_bin < len(spec) // 2:      # ignore mirror region
+    while k * fund_bin < len(spec) // 2:
         for h in (k * fund_bin - 1, k * fund_bin, k * fund_bin + 1):
             harmonics.add(h)
         k += 1
@@ -102,9 +114,6 @@ def _harmonic_specter(node, freq=500.0, periods=64):
 
 
 def test_sawtooth_polyblep_suppresses_aliasing():
-    """Anti-aliasing is a SPECTRAL property: PolyBLEP's correction region is
-    always dt*(samples/cycle) == 1 sample wide, so local deltas stay O(1).
-    Instead, verify inharmonic content stays far below the harmonics."""
     node = make_node()
     set_wave(node, 2)
     node.params["freq"].set(500.0)
@@ -116,9 +125,8 @@ def test_sawtooth_polyblep_suppresses_aliasing():
 
 
 def test_square_pulse_width_duty_cycle():
-    """Mean of an amp-1 square is 2*pw - 1; BLEP barely shifts it."""
     node = make_node()
-    set_wave(node, 3)   # Square
+    set_wave(node, 3)
     node.params["freq"].set(200.0)
     node.params["amp"].set(1.0)
     node.params["pulse_width"].set(0.25)
@@ -130,8 +138,6 @@ def test_square_pulse_width_duty_cycle():
 
 
 def test_freq_modulation_via_bound_input():
-    """Unconnected freq_in falls back to the param cache; a connected mono
-    source modulates frequency."""
     node = make_node()
     node.params["freq"].set(440.0)
     node.sync()
@@ -148,12 +154,11 @@ def test_start_resets_phase():
     node.params["freq"].set(1000.0)
     node.sync()
     first = run(node, 3)
-    again = run(node, 1)          # phase has advanced
+    again = run(node, 1)
     assert not torch.allclose(first[-1], again)
 
     node.start()
     after_reset = run(node, 1)
-    # Deterministic from a fresh transport start: matches the very first block
     ref = make_node()
     ref.params["freq"].set(1000.0)
     ref.sync()
@@ -164,6 +169,56 @@ def test_start_resets_phase():
 def test_oscillator_no_net_allocation():
     node = make_node()
     set_wave(node, 3)
+    run(node, 5)
+
+    import gc
+    gc.collect()
+    tracemalloc.start()
+    before, _ = tracemalloc.get_traced_memory()
+    run(node, 50)
+    growth, _ = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert growth < 128 * 1024, f"net allocation {growth} bytes over 50 blocks"
+
+
+def test_colored_noise_registration():
+    plugin_system.load_plugins("plugins")
+    cls = plugin_system.NODE_REGISTRY.get("ColoredNoise")
+    assert cls is not None
+    assert cls.category == "Sources"
+    assert cls.label == "Colored Noise Generator"
+
+
+def test_colored_noise_white_peak():
+    node = make_node("ColoredNoise")
+    node.params["type"].set(0)
+    node.params["amp"].set(1.0)
+    node.sync()
+    out = run(node)
+    assert out.abs().max() <= 1.0
+
+
+def test_colored_noise_spectral_slopes():
+    node = make_node("ColoredNoise")
+    node.params["amp"].set(1.0)
+    node.sync()
+
+    node.params["type"].set(1)
+    node.sync()
+    slope_pink = _spectral_slope(node)
+    assert slope_pink < -2.0, f"Pink slope {slope_pink:.2f} dB/oct not negative enough"
+
+    node.params["type"].set(3)
+    node.sync()
+    slope_blue = _spectral_slope(node)
+    assert slope_blue > 2.0, f"Blue slope {slope_blue:.2f} dB/oct not positive enough"
+
+
+def test_colored_noise_no_net_allocation():
+    node = make_node("ColoredNoise")
+    node.params["type"].set(1)
+    node.params["amp"].set(0.5)
+    node.sync()
     run(node, 5)
 
     import gc

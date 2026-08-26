@@ -14,7 +14,7 @@ Real-time notes:
 import numpy as np
 import torch
 
-from base import Node, BLOCK_SIZE, SAMPLE_RATE, DTYPE
+from base import Node, BLOCK_SIZE, SAMPLE_RATE, DTYPE, CHANNELS
 
 
 class WaveformOscillator(Node):
@@ -105,3 +105,76 @@ class WaveformOscillator(Node):
             out.copy_(self._naive)
 
         out.mul_(amp)
+
+
+class ColoredNoise(Node):
+    category = "Sources"
+    label = "Colored Noise Generator"
+
+    TAPS = 127
+    HIST = TAPS - 1
+
+    def __init__(self, name=""):
+        super().__init__(name)
+        self.out_sig = self.add_output("out", channels=CHANNELS)
+
+        self.add_menu_param("type", ["White", "Pink (-3dB/oct)", "Brown (-6dB/oct)", "Blue (+3dB/oct)", "Violet (+6dB/oct)"], 0)
+        self.add_float_param("amp", 0.2, 0.0, 1.0)
+
+        self._raw_noise = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
+        self._conv_in = torch.zeros((1, CHANNELS, self.HIST + BLOCK_SIZE), dtype=DTYPE)
+        self._tail = torch.zeros((CHANNELS, self.HIST), dtype=DTYPE)
+        self._kernels = self._init_fir_kernels()
+
+    def _init_fir_kernels(self):
+        n = self.TAPS
+        freqs = torch.fft.rfftfreq(n, d=1.0 / SAMPLE_RATE)
+        freqs[0] = 1.0
+
+        mag_pink = freqs.pow(-0.5)
+        mag_brown = freqs.pow(-1.0)
+        mag_blue = freqs.pow(0.5)
+        mag_violet = freqs.pow(1.0)
+
+        mag_pink[0] = mag_pink[1]
+        mag_brown[0] = mag_brown[1]
+        mag_blue[0] = mag_blue[1]
+        mag_violet[0] = mag_violet[1]
+
+        def mag_to_ir(mag_spec):
+            phase = torch.rand_like(mag_spec) * 2 * torch.pi
+            spec = torch.complex(mag_spec * torch.cos(phase), mag_spec * torch.sin(phase))
+            ir = torch.fft.irfft(spec, n=n)
+            win = torch.hann_window(n, dtype=torch.float32)
+            ir = ir * win
+            ir = ir / (ir.abs().sum() + 1e-9)
+            return ir
+
+        kernels = torch.zeros((4, 1, n), dtype=torch.float32)
+        kernels[0, 0] = mag_to_ir(mag_pink)
+        kernels[1, 0] = mag_to_ir(mag_brown)
+        kernels[2, 0] = mag_to_ir(mag_blue)
+        kernels[3, 0] = mag_to_ir(mag_violet)
+        return kernels
+
+    def start(self):
+        self._tail.zero_()
+
+    def process(self):
+        color_idx = int(self.params["type"].value)
+        amp = self.params["amp"].value
+        out = self.outputs["out"].buffer
+
+        self._raw_noise.uniform_(-1.0, 1.0)
+
+        if color_idx == 0:
+            out.copy_(self._raw_noise).mul_(amp)
+            return
+
+        self._conv_in[0, :, :self.HIST].copy_(self._tail)
+        self._conv_in[0, :, self.HIST:].copy_(self._raw_noise)
+        self._tail.copy_(self._raw_noise[:, BLOCK_SIZE - self.HIST:])
+
+        kernel = self._kernels[color_idx - 1].expand(CHANNELS, 1, self.TAPS)
+        filtered = torch.nn.functional.conv1d(self._conv_in, kernel, groups=CHANNELS)
+        out.copy_(filtered[0]).mul_(amp)
