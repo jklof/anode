@@ -29,6 +29,6 @@ python main.py
 
 ## remove the environment
 ```bash
-conda deactivate anode-dev
+conda deactivate
 conda env remove --name anode-dev
 ```

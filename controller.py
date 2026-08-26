@@ -396,7 +396,15 @@ class AppController(QObject):
         self.history = CommandHistory()
 
     def reload_plugins(self):
-        """Reload all plugins."""
+        """Reload all plugins.
+
+        Stops the engine first and leaves it stopped: reloading swaps node
+        classes out from under running instances, and rebuilding the device
+        widgets re-probes ALSA devices that are still held by the live
+        stream (PortAudio prints C-level 'AlsaOpen failed' spam to stderr).
+        Hot reload is a developer feature — seamless audio across it is not
+        worth the churn; press Start afterwards if needed."""
+        self.stop_audio()
         self.engine.push_command(("reload",))
 
     # -------------------------------------------------------------------------

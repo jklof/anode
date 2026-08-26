@@ -1,8 +1,6 @@
 name: anode-dev
 
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
 
 dependencies:
@@ -10,10 +8,9 @@ dependencies:
   - pip
   - pytest
 
-  # ---- PyTorch stack (must come from pytorch channel) ----
+  # ---- PyTorch stack ----
   - pytorch
   - torchaudio
-  - pytorch-cuda=12.1
 
   # ---- Everything else ----
   # Only dependencies actually imported by the app / plugins.
