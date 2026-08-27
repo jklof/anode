@@ -48,16 +48,48 @@ class BiquadFilter(FFINode):
         self.out = self.add_output("out", channels=CHANNELS)
 
     def process(self):
-        # Base class _sync_params_to_cpp() called first in FFINode.process()
-        # Audio-rate modulation: if mod_cutoff connected, push directly after sync
-        if self.in_mod.connected_outputs and self.lib and self.dsp_handle:
-            # Block mean of the modulation signal; the C++ side clamps to its
-            # stable range before designing coefficients.
+        if not self.lib or not self.dsp_handle:
+            return
+
+        # 1. Sync staged parameters first
+        self._sync_params_to_cpp()
+
+        # 2. Audio-rate modulation: if mod_cutoff connected, push directly after staged sync
+        if self.in_mod.connected_outputs:
             sig = self.in_mod.get_tensor()
             eff = float(sig[0].mean().item())
             self.lib.set_param(self.dsp_handle, self.PARAM_MAP["cutoff"], eff)
 
-        super().process()
+        # 3. Preprocess and call native process
+        raw_tensor = self.inp.get_tensor()
+        processed_tensor = self._preprocess_input(raw_tensor, self._ffi_in_buffer)
+        in_channels = processed_tensor.shape[0]
+
+        out_slot = self.outputs.get("out")
+        if not out_slot:
+            return
+        out_tensor = out_slot.buffer
+        out_channels = out_tensor.shape[0]
+
+        if not out_tensor.is_contiguous():
+            raise RuntimeError(f"Output tensor is not contiguous. Node: {self.name}")
+
+        if processed_tensor.device.type != "cpu":
+            processed_tensor = processed_tensor.cpu()
+
+        if processed_tensor.is_contiguous():
+            processing_tensor = processed_tensor
+        else:
+            self._ffi_in_buffer.copy_(processed_tensor)
+            processing_tensor = self._ffi_in_buffer
+
+        process_channels = min(in_channels, out_channels)
+        if process_channels < out_channels:
+            out_tensor[process_channels:].zero_()
+
+        in_ptr = ctypes.cast(processing_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
+        out_ptr = ctypes.cast(out_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
+        self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
 
 
 class LinearPhaseEQ(FFINode):

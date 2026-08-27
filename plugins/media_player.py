@@ -37,12 +37,12 @@ logger = logging.getLogger(__name__)
 
 
 class MediaStreamWorker(threading.Thread):
-    def __init__(self, source: str, output_queue: queue.Queue, event_callback, looping_callback=None, start_time=0.0):
+    def __init__(self, source: str, output_queue: queue.Queue, event_queue: queue.SimpleQueue, looping: bool = False, start_time: float = 0.0):
         super().__init__(daemon=True)
         self.source = source
         self.output_queue = output_queue
-        self.event_callback = event_callback
-        self.looping_callback = looping_callback
+        self.event_queue = event_queue
+        self.looping = looping
         self.stop_event = threading.Event()
         self.seek_queue = queue.Queue()
         self.start_offset = start_time
@@ -55,7 +55,7 @@ class MediaStreamWorker(threading.Thread):
 
             # --- 1. URL Resolution ---
             if self.source.startswith("http") or "www." in self.source:
-                self.event_callback("status", "Resolving...")
+                self.event_queue.put(("status", "Resolving..."))
                 ydl_opts = {"format": "bestaudio/best", "quiet": True, "noplaylist": True}
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -64,13 +64,13 @@ class MediaStreamWorker(threading.Thread):
                         title = info.get("title", title)
                 except Exception as e:
                     logger.error(f"YTDL Error: {e}")
-                    self.event_callback("status", "URL Error")
+                    self.event_queue.put(("status", "URL Error"))
                     return
 
-            self.event_callback("meta", {"title": title})
+            self.event_queue.put(("meta", {"title": title}))
 
             # --- 2. Open Stream ---
-            self.event_callback("status", "Opening...")
+            self.event_queue.put(("status", "Opening..."))
             # Reconnect options help with network streams stopping randomly
             options = {"reconnect": "1", "reconnect_streamed": "1", "reconnect_delay_max": "10"}
 
@@ -78,16 +78,16 @@ class MediaStreamWorker(threading.Thread):
                 container = av.open(url, options=options)
             except Exception as e:
                 logger.error(f"AV Open Error: {e}")
-                self.event_callback("status", "Open Failed")
+                self.event_queue.put(("status", "Open Failed"))
                 return
 
             if not container.streams.audio:
-                self.event_callback("status", "No Audio")
+                self.event_queue.put(("status", "No Audio"))
                 return
 
             stream = container.streams.audio[0]
             duration = float(stream.duration * stream.time_base) if stream.duration else 0.0
-            self.event_callback("meta", {"duration": duration})
+            self.event_queue.put(("meta", {"duration": duration}))
 
             # --- Handle Initial Seek ---
             if self.start_offset > 0:
@@ -99,7 +99,7 @@ class MediaStreamWorker(threading.Thread):
 
             # --- 3. Configure Resampler ---
             resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
-            self.event_callback("status", "Buffering...")
+            self.event_queue.put(("status", "Buffering..."))
 
             buffer_accum = np.zeros((2, 0), dtype=np.float32)
 
@@ -111,7 +111,7 @@ class MediaStreamWorker(threading.Thread):
 
                     # Handle Seek Request
                     if not self.seek_queue.empty():
-                        self.event_callback("status", "Seeking...")
+                        self.event_queue.put(("status", "Seeking..."))
                         try:
                             target_ts = self.seek_queue.get_nowait()
                             timestamp = int(target_ts / stream.time_base)
@@ -124,11 +124,11 @@ class MediaStreamWorker(threading.Thread):
                             except queue.Empty:
                                 pass
                             resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
-                            self.event_callback("seeked", target_ts)
+                            self.event_queue.put(("seeked", target_ts))
                         except Exception as e:
                             logger.error(f"Seek Error: {e}")
 
-                        self.event_callback("status", "Buffering...")
+                        self.event_queue.put(("status", "Buffering..."))
                         continue
 
                     # Resample
@@ -167,7 +167,7 @@ class MediaStreamWorker(threading.Thread):
                             try:
                                 self.output_queue.put(tensor_block, timeout=0.1)
                                 inserted = True
-                                self.event_callback("status", "Playing")
+                                self.event_queue.put(("status", "Playing"))
                             except queue.Full:
                                 # If queue is full, just wait and try again
                                 # This throttles the decoding to the playback speed
@@ -177,8 +177,8 @@ class MediaStreamWorker(threading.Thread):
                     break
 
                 # We hit EOF
-                if self.looping_callback and self.looping_callback():
-                    self.event_callback("status", "Looping...")
+                if self.looping:
+                    self.event_queue.put(("status", "Looping..."))
                     try:
                         container.seek(0, stream=stream)
                         buffer_accum = np.zeros((2, 0), dtype=np.float32)
@@ -188,8 +188,8 @@ class MediaStreamWorker(threading.Thread):
                         except queue.Empty:
                             pass
                         resampler = av.AudioResampler(format="fltp", layout="stereo", rate=int(SAMPLE_RATE))
-                        self.event_callback("seeked", 0.0)
-                        self.event_callback("status", "Playing")
+                        self.event_queue.put(("seeked", 0.0))
+                        self.event_queue.put(("status", "Playing"))
                         continue
                     except Exception as e:
                         logger.error(f"Looping Seek Error: {e}")
@@ -197,13 +197,13 @@ class MediaStreamWorker(threading.Thread):
                 else:
                     break
 
-            if not self.stop_event.is_set() and (not self.looping_callback or not self.looping_callback()):
-                self.event_callback("status", "Finished")
-                self.event_callback("eof", True)
+            if not self.stop_event.is_set() and not self.looping:
+                self.event_queue.put(("status", "Finished"))
+                self.event_queue.put(("eof", True))
 
         except Exception as e:
             logger.error(f"Worker Crash: {e}")
-            self.event_callback("status", "Error")
+            self.event_queue.put(("status", "Error"))
         finally:
             if container:
                 try:
@@ -354,6 +354,7 @@ class MediaPlayerNode(Node):
 
         # Increase Queue size to prevent buffer underruns
         self.queue = queue.Queue(maxsize=500)
+        self._event_queue = queue.SimpleQueue()
         self.worker = None
 
         self.current_path = ""
@@ -362,6 +363,16 @@ class MediaPlayerNode(Node):
         self.current_title = "No Media"
         self.status_msg = "Idle"
         self.eof = False
+
+    def _drain_events(self):
+        if self._event_queue is None:
+            return
+        while True:
+            try:
+                ev_type, ev_data = self._event_queue.get_nowait()
+                self._handle_worker_event(ev_type, ev_data)
+            except queue.Empty:
+                break
 
     def _request_restart(self, path, start_time=0.0):
         self.submit_nrt(self._do_restart_worker, path, start_time)
@@ -400,6 +411,10 @@ class MediaPlayerNode(Node):
             if should_play and (self.eof or self.worker is None) and self.current_path:
                 self._request_restart(self.current_path)
 
+        elif param_name == "looping":
+            if self.worker:
+                self.worker.looping = bool(self.params["looping"].value)
+
         elif param_name == "seek_ratio":
             val = self.params["seek_ratio"].value
             if val >= 0:
@@ -427,17 +442,19 @@ class MediaPlayerNode(Node):
 
         # Create NEW queue object instead of clearing
         self.queue = queue.Queue(maxsize=500)
+        self._event_queue = queue.SimpleQueue()
 
         self.playback_frames = int(start_time * SAMPLE_RATE)
         self.total_duration = 0.0
         self.eof = False
 
         if MEDIA_DEPS_AVAILABLE:
+            looping_val = bool(self.params["looping"].value)
             self.worker = MediaStreamWorker(
                 path,
                 self.queue,
-                lambda type, data: self._handle_worker_event(type, data),
-                looping_callback=lambda: self.params["looping"].value,
+                self._event_queue,
+                looping=looping_val,
                 start_time=start_time,
             )
             self.worker.start()
@@ -460,6 +477,7 @@ class MediaPlayerNode(Node):
             self.eof = False
 
     def process(self):
+        self._drain_events()
         # If play param is False, we just output silence.
         # But we keep worker alive (it pauses on full queue).
         if not self.params["playing"].value:
@@ -482,6 +500,7 @@ class MediaPlayerNode(Node):
                     self.params["playing"].set(False)
 
     def get_telemetry(self) -> dict:
+        self._drain_events()
         sec = self.playback_frames / SAMPLE_RATE
         dur_str = f"{int(self.total_duration//60):02}:{int(self.total_duration%60):02}"
         time_str = f"{int(sec//60):02}:{int(sec%60):02} / {dur_str}"
@@ -504,6 +523,7 @@ class MediaPlayerNode(Node):
             self.graph.engine.nrt.stop_stream(self, self.worker.stop, self.worker)
 
     def to_dict(self):
+        self._drain_events()
         d = super().to_dict()
         d["meta"] = {"title": self.current_title, "duration": self.total_duration, "path": self.current_path}
         return d

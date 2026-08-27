@@ -26,24 +26,25 @@ A node's output channel count is an immutable part of its port contract and must
 
 ---
 
-## 3. Thread Ownership Model
+## 3. Thread Ownership Model & 2-Tier Architecture
 
-The engine thread exclusively owns live DSP execution, graph topology, parameter synchronization, and native DSP state during playback.
+ANode operates on a strict **2-Tier KISS Architecture**:
 
 ```text
-UI / CONTROL THREAD
+CONTROL DOMAIN (UI / Engine Command Dispatch / NRT Workers)
+  - Topology mutations (add, del, conn, disconn, restore, clear, load, reload)
+  - Undo/redo command history & state capture
+  - Patch serialization (to_json) & disk I/O
+  - NRT task execution & completion draining (_drain_nrt_all)
+  - Compiles authoritative Graph into immutable ExecutionPlan
         |
-        | commands / staged parameters
+        | atomic ExecutionPlan reference swap (_active_plan)
         v
-  ENGINE THREAD
-  authoritative graph + live DSP
-  parameter sync + process()
-        |
-        | immutable results / snapshots / telemetry
-        v
- NRT workers <----> UI
- disk / loading     telemetry / rendering
- preparation
+REAL-TIME (RT) DOMAIN (Engine._worker)
+  - Consumes immutable ExecutionPlan (nodes, clock_source)
+  - Syncs pre-allocated parameter tensor caches
+  - Executes node.process() under torch.no_grad()
+  - Zero heap allocations, zero mutex locks, non-blocking telemetry
 ```
 
 **No thread other than the engine thread may directly mutate live graph topology, node instances, engine parameter values, or native C++ DSP handles.**
@@ -88,14 +89,14 @@ The canonical project build uses CMake / scikit-build-core. Do not bypass it wit
 
 - Perform disk, network, or pipe I/O.
 - Acquire blocking mutexes or locks.
-- Wait on futures, promises, semaphores, or condition variables.
+- Wait on futures, promises, semaphores, or condition variables (clock synchronization semaphore waiting occurs strictly at block boundaries in the engine worker loop, not inside node DSP `process()`).
 - Start, join, or terminate OS threads.
 - Perform model loading, IR file decoding, or heavy buffer initialization.
 - Intentionally raise exceptions as normal control flow.
 - Log, print, format strings, or construct diagnostic payloads.
 - Allocate, resize, or replace fixed audio/scratch buffers.
 - Create avoidable per-block Python objects (dictionaries, lists, string formatting).
-- Call `.tobytes()`, `.item()`, or perform per-sample Python loops.
+- Call `.tobytes()` or perform per-sample Python loops. (Calling `.item()` on CPU-resident tensors is permitted once at block rate for scalar state carry, such as oscillator phase or block modulation, but strictly forbidden inside per-sample loops).
 - Call arbitrary user or un-bounded library code.
 
 ### Memory Allocation

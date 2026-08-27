@@ -101,34 +101,40 @@ class FileRecorder(Node):
     # ------------------------------------------------------------------
 
     def _writer_loop(self):
-        while not self._shutdown_event.is_set():
-            # Non-blocking pop with small sleep to avoid busy-wait
-            index, ok = self._index_queue.try_pop()
-            if not ok:
-                # Queue empty, brief sleep
+        while True:
+            item, ok = self._index_queue.try_pop()
+            if ok:
+                if item == -1:  # Sentinel to close
+                    self._writer_close()
+                    break
+                elif item >= 0:
+                    if self._file is not None:
+                        try:
+                            # Write pre-converted int16 block directly from pool
+                            self._file.writeframes(self._block_pool[item].tobytes())
+                            self._frames_written += BLOCK_SIZE
+                        except Exception as e:
+                            logger.error(f"Recorder write failed: {e}")
+                            self._writer_close()
+                            self._recording = False
+                            if "record" in self.params:
+                                self.params["record"].set(False)
+            else:
+                if self._shutdown_event.is_set():
+                    # Drain remaining queued frames before exiting
+                    while True:
+                        item, ok = self._index_queue.try_pop()
+                        if not ok:
+                            break
+                        if item >= 0 and self._file is not None:
+                            try:
+                                self._file.writeframes(self._block_pool[item].tobytes())
+                                self._frames_written += BLOCK_SIZE
+                            except Exception:
+                                pass
+                    self._writer_close()
+                    break
                 self._shutdown_event.wait(timeout=0.001)
-                continue
-
-            kind = index[0] if isinstance(index, tuple) else index
-            if kind == "open":
-                filename = index[1]
-                self._writer_open(filename)
-            elif kind == "frames":
-                block_idx = index[1]
-                if self._file is not None:
-                    try:
-                        # Write pre-converted int16 block directly from pool
-                        self._file.writeframes(self._block_pool[block_idx].tobytes())
-                        self._frames_written += BLOCK_SIZE
-                    except Exception as e:
-                        logger.error(f"Recorder write failed: {e}")
-                        self._writer_close()
-                        self._recording = False
-                        if "record" in self.params:
-                            self.params["record"].set(False)
-            elif kind == "close":
-                self._writer_close()
-                break
 
     def _writer_open(self, filename):
         self._writer_close()  # safety: never hold two handles
@@ -174,25 +180,31 @@ class FileRecorder(Node):
         while self._index_queue.try_pop()[1]:
             pass
 
-        # Queue open command
-        self._index_queue.try_push(("open", filename))
+        self._writer_open(filename)
+        if self._file is None:
+            return
 
         # Start writer thread (created off RT path via NRT or here if stopped)
-        self._writer_thread = threading.Thread(
-            target=self._writer_loop, daemon=True, name=f"anode-recorder-{self.id[:8]}"
-        )
-        self._writer_thread.start()
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None)
+        if engine and engine.nrt:
+            self._writer_thread = engine.nrt.spawn_stream(self._writer_loop)
+        else:
+            self._writer_thread = threading.Thread(
+                target=self._writer_loop, daemon=True, name=f"anode-recorder-{self.id[:8]}"
+            )
+            self._writer_thread.start()
         self._recording = True
 
     def _stop_recording(self):
         was_recording = self._recording
         self._recording = False
-        if not was_recording:
+        if not was_recording and self._writer_thread is None:
             return
 
         # Signal writer thread to close
         self._shutdown_event.set()
-        self._index_queue.try_push(("close", None))
+        self._index_queue.try_push(-1)
 
         writer = self._writer_thread
         self._writer_thread = None
@@ -233,12 +245,8 @@ class FileRecorder(Node):
             else:
                 pool_slot[:, 1] = pool_slot[:, 0]
 
-            # Try to push block index to writer thread
-            if not self._index_queue.try_push(("frames", block_idx)):
-                # Pool exhausted - drop frame (per spec)
-                pass
-            else:
-                # Advance to next pool slot (ring)
+            # Push integer block index directly (zero allocation)
+            if self._index_queue.try_push(block_idx):
                 self._write_index = (self._write_index + 1) % self.QUEUE_CAPACITY
 
     def stop(self):

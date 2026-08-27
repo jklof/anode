@@ -14,6 +14,14 @@ from base import BLOCK_SIZE, SAMPLE_RATE, IClockProvider, Node
 _STRUCTURAL_OPS = frozenset({"add", "del", "conn", "disconn", "restore", "clear", "load", "reload", "clock"})
 
 
+class ExecutionPlan:
+    __slots__ = ("nodes", "clock_source")
+
+    def __init__(self, nodes, clock_source=None):
+        self.nodes = tuple(nodes)
+        self.clock_source = clock_source
+
+
 class Graph:
     def __init__(self):
         self.nodes: List[Node] = []
@@ -27,6 +35,9 @@ class Graph:
     def mark_dirty(self):
         self._order_dirty = True
         self.structure_dirty = True
+
+    def compile_execution_plan(self) -> ExecutionPlan:
+        return ExecutionPlan(self.execution_order, self.clock_source)
 
     @property
     def execution_order(self) -> List[Node]:
@@ -342,6 +353,12 @@ class Engine:
         # Per-node processing stats. Lives on the Engine (not _worker locals) so
         # entries can be pruned when nodes are deleted.
         self._stats_buffer = {}
+        self._active_plan = self.graph.compile_execution_plan()
+
+    def _drain_nrt_all(self):
+        if self.nrt:
+            for node in self.graph.nodes:
+                self.nrt.drain(node)
 
     def tick(self):
         self._tick_semaphore.release()
@@ -474,18 +491,14 @@ class Engine:
                         pass
             elif op == "del":
                 _, nid = cmd
-                if self.running:
-                    n = self.graph.node_map.get(nid)
-                    if n:
-                        n.stop()
-
-                # --- MEMORY CLEANUP ---
                 n = self.graph.node_map.get(nid)
                 if n:
-                    # Clean up C++ handles or other resources
-                    n.remove()
                     if self.nrt:
                         self.nrt.discard(n)
+                    if self.running:
+                        n.stop()
+                    # Clean up C++ handles or other resources
+                    n.remove()
 
                 self.graph.remove_node(nid)
                 # Prune stale telemetry so dead node ids don't accumulate or
@@ -497,13 +510,21 @@ class Engine:
                     pass
             elif op == "conn":
                 _, sid, sp, did, dp = cmd
-                self.graph.connect(sid, sp, did, dp)
-                try:
-                    self.output_queue.put_nowait(
-                        {"type": "connected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp}
-                    )
-                except Exception:
-                    pass
+                success = self.graph.connect(sid, sp, did, dp)
+                if success:
+                    try:
+                        self.output_queue.put_nowait(
+                            {"type": "connected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp}
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self.output_queue.put_nowait(
+                            {"type": "connect_rejected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp}
+                        )
+                    except Exception:
+                        pass
             elif op == "disconn":
                 _, sid, sp, did, dp = cmd
                 self.graph.disconnect(sid, sp, did, dp)
@@ -705,6 +726,11 @@ class Engine:
             elif op == "snapshot":
                 self._emit_snapshot()
 
+            if op in _STRUCTURAL_OPS or self.graph.structure_dirty:
+                self.graph.structure_dirty = False
+                self._active_plan = self.graph.compile_execution_plan()
+            self._drain_nrt_all()
+
         except Exception:
             logging.exception("Cmd Error")
 
@@ -741,7 +767,9 @@ class Engine:
                     cmd = self.command_queue.get_nowait()
                     self._apply_command(cmd)
 
-                if self.graph.clock_source:
+                plan = self._active_plan
+
+                if plan.clock_source:
                     # Step A (Non-blocking check)
                     acquired = self._tick_semaphore.acquire(blocking=False)
                     # Step B (If NOT acquired)
@@ -754,12 +782,10 @@ class Engine:
                     # Fallback sleep if no clock source is defined to prevent 100% CPU usage
                     time.sleep(BLOCK_SIZE / SAMPLE_RATE)
 
-                for node in self.graph.nodes:
+                for node in plan.nodes:
                     node.sync()
 
-                # Snapshot to avoid race conditions with graph deletion
-                current_order = list(self.graph.execution_order)
-                for node in current_order:
+                for node in plan.nodes:
                     try:
                         t0 = time.perf_counter()
                         node.process()
@@ -773,14 +799,16 @@ class Engine:
                 # Check if any node marked structure as dirty during the current block processing
                 if self.graph.structure_dirty:
                     self.graph.structure_dirty = False
+                    self._active_plan = self.graph.compile_execution_plan()
                     self._emit_snapshot()
 
                 now = time.perf_counter()
                 if now >= next_telemetry_time:
+                    self._drain_nrt_all()
                     stats_buffer = self._stats_buffer
                     global_cpu = sum(stats_buffer.values()) / len(stats_buffer) if stats_buffer else 0.0
                     node_data = {"__cpu__": stats_buffer.copy()}
-                    for node in self.graph.nodes:
+                    for node in plan.nodes:
                         try:
                             telemetry = node.get_telemetry()
                             if telemetry:

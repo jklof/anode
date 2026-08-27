@@ -111,7 +111,7 @@ class SPSCRingBuffer:
     passing arbitrary Python objects between threads.
     Used by FileRecorder for block indices (not NumPy arrays).
     """
-    __slots__ = ("_buf", "_cap", "_head", "_tail", "_head_lock", "_tail_lock")
+    __slots__ = ("_buf", "_cap", "_head", "_tail")
 
     def __init__(self, capacity: int = 2):
         if capacity < 2:
@@ -120,8 +120,6 @@ class SPSCRingBuffer:
         self._buf = [None] * capacity
         self._head = 0
         self._tail = 0
-        self._head_lock = threading.Lock()
-        self._tail_lock = threading.Lock()
 
     def try_push(self, item) -> bool:
         """Audio thread: attempt to push. Returns False if full (item dropped)."""
@@ -129,18 +127,18 @@ class SPSCRingBuffer:
         if next_head == self._tail:
             return False
         self._buf[self._head] = item
-        with self._head_lock:
-            self._head = next_head
+        self._head = next_head
         return True
 
     def try_pop(self):
         """UI/writer thread: attempt to pop. Returns (item, True) or (None, False)."""
-        if self._head == self._tail:
+        h = self._head
+        t = self._tail
+        if h == t:
             return None, False
-        item = self._buf[self._tail]
-        self._buf[self._tail] = None
-        with self._tail_lock:
-            self._tail = (self._tail + 1) % self._cap
+        item = self._buf[t]
+        self._buf[t] = None
+        self._tail = (t + 1) % self._cap
         return item, True
 
 
@@ -342,8 +340,6 @@ class Node:
     def sync(self):
         for p in self.params.values():
             p.sync()
-        if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
-            self.graph.engine.nrt.drain(self)
 
     def process(self):
         raise NotImplementedError

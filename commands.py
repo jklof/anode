@@ -56,16 +56,7 @@ class AddNodeCommand(ICommand):
         self.params = params
 
     def execute(self):
-        import plugin_system
-
-        cls = plugin_system.NODE_REGISTRY.get(self.node_type)
-        if cls:
-            # We instantiate the Node on the UI thread to perform any heavy initialization
-            # (e.g. PyTorch tensors, C++ ctypes load_library) prior to graph insertion.
-            # Passing this distinct, non-shared object across the thread queue is safe in CPython
-            # because no other thread holds a reference to it yet.
-            node = cls()
-            self.controller.engine.push_command(("add", node, self.node_id, self.pos, self.params))
+        self.controller.engine.push_command(("add", self.node_type, self.node_id, self.pos, self.params))
 
     def undo(self):
         self.controller.engine.push_command(("del", self.node_id))

@@ -187,11 +187,19 @@ class MockEngine:
     """Mock engine for testing restore command without audio dependencies"""
 
     def __init__(self):
+        import queue
         self.graph = Graph()
+        self.graph.engine = self
         self.nrt = None
         self.running = False
         self._apply_command_called = False
         self._last_command = None
+        self._stats_buffer = {}
+        self.output_queue = queue.Queue()
+        self._active_plan = self.graph.compile_execution_plan()
+
+    def _drain_nrt_all(self):
+        pass
 
     def push_command(self, cmd):
         self._apply_command(cmd)
@@ -599,21 +607,8 @@ def test_delete_node_command_with_missing_snapshot_data():
 
 
 def test_delete_node_command_connection_restoration():
-    """Test that DeleteNodeCommand properly restores connections"""
+    """Test that DeleteNodeCommand properly restores connections in a real connected graph (NodeA -> NodeB -> NodeC)."""
     from commands import DeleteNodeCommand
-
-    # Mock controller
-    class MockController:
-        def __init__(self):
-            self.engine = MockEngine()
-            self._snapshot_connections = []
-
-        def get_connections_from_snapshot(self):
-            return self._snapshot_connections
-
-    controller = MockController()
-
-    # Mock plugin system registry
     from unittest.mock import patch
     from base import Node
 
@@ -626,31 +621,55 @@ def test_delete_node_command_connection_restoration():
         def process(self):
             pass
 
+    class MockController:
+        def __init__(self, engine):
+            self.engine = engine
+
     with patch("plugin_system.NODE_REGISTRY", {"TestNode": TestNode}):
-        # Create nodes
-        node_data = {"id": "test-node", "name": "Test Node", "type": "TestNode", "pos": (100, 100), "params": {}}
+        engine = MockEngine()
+        controller = MockController(engine)
 
-        restore_cmd = ("restore", node_data)
-        controller.engine.push_command(restore_cmd)
+        # 1. Construct real connected graph: NodeA -> NodeB -> NodeC
+        node_a = TestNode("NodeA")
+        node_a.id = "node-a"
+        node_b = TestNode("NodeB")
+        node_b.id = "node-b"
+        node_c = TestNode("NodeC")
+        node_c.id = "node-c"
 
-        # Set up mock connections
-        controller._snapshot_connections = [
-            {"src_id": "test-node", "src_port": "out", "dst_id": "output-node", "dst_port": "in"},
-            {"src_id": "input-node", "src_port": "out", "dst_id": "test-node", "dst_port": "in"},
-        ]
+        engine.push_command(("restore", (node_a.to_dict(), node_a)))
+        engine.push_command(("restore", (node_b.to_dict(), node_b)))
+        engine.push_command(("restore", (node_c.to_dict(), node_c)))
 
-        # Create and execute delete command (now captures state from engine graph)
-        delete_cmd = DeleteNodeCommand(controller, "test-node")
+        engine.push_command(("conn", "node-a", "out", "node-b", "in"))
+        engine.push_command(("conn", "node-b", "out", "node-c", "in"))
+
+        # Verify initial connections
+        assert len(engine.graph.node_map["node-b"].inputs["in"].connected_outputs) == 1
+        assert engine.graph.node_map["node-b"].inputs["in"].connected_outputs[0].parent.id == "node-a"
+        assert len(engine.graph.node_map["node-c"].inputs["in"].connected_outputs) == 1
+        assert engine.graph.node_map["node-c"].inputs["in"].connected_outputs[0].parent.id == "node-b"
+
+        # 2. Create and execute delete command on NodeB
+        delete_cmd = DeleteNodeCommand(controller, "node-b")
         delete_cmd.execute()
 
-        # Verify node was deleted
-        assert "test-node" not in controller.engine.graph.node_map
+        # 3. Assert NodeB and its connections are gone
+        assert "node-b" not in engine.graph.node_map
+        assert len(engine.graph.node_map["node-c"].inputs["in"].connected_outputs) == 0
 
-        # Undo delete
+        # 4. Undo delete
         delete_cmd.undo()
 
-        # Verify node was restored
-        assert "test-node" in controller.engine.graph.node_map
+        # 5. Assert NodeB is restored AND both connections are verified present in engine.graph
+        assert "node-b" in engine.graph.node_map
+        restored_b = engine.graph.node_map["node-b"]
+        current_c = engine.graph.node_map["node-c"]
+
+        assert len(restored_b.inputs["in"].connected_outputs) == 1
+        assert restored_b.inputs["in"].connected_outputs[0].parent.id == "node-a"
+        assert len(current_c.inputs["in"].connected_outputs) == 1
+        assert current_c.inputs["in"].connected_outputs[0].parent.id == "node-b"
 
 
 def test_lazy_evaluation_topological_sort():

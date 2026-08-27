@@ -87,10 +87,10 @@ class AppController(QObject):
             for node in self.engine.graph.nodes:
                 inbox = getattr(node, "_nrt_inbox", None)
                 if inbox and not inbox.empty():
-                    node.sync()
                     nrt_completed = True
             
             if nrt_completed:
+                self.engine._drain_nrt_all()
                 self.engine._emit_snapshot()
                 node_data = {}
                 for node in self.engine.graph.nodes:
@@ -148,6 +148,16 @@ class AppController(QObject):
                         }
                     )
                     graph_changed = True
+                elif m_type == "connect_rejected":
+                    if self.history.undo_stack:
+                        last_cmd = self.history.undo_stack[-1]
+                        if isinstance(last_cmd, ConnectCommand) and (
+                            last_cmd.src_id == msg["src_id"]
+                            and last_cmd.src_port == msg["src_port"]
+                            and last_cmd.dst_id == msg["dst_id"]
+                            and last_cmd.dst_port == msg["dst_port"]
+                        ):
+                            self.history.undo_stack.pop()
                 elif m_type == "disconnected":
                     if "connections" in ws:
                         c_list = ws["connections"]
@@ -349,7 +359,16 @@ class AppController(QObject):
         """Connect two nodes."""
         cmd = ConnectCommand(self, src_id, src_port, dst_id, dst_port)
         cmd.execute()
-        self.history.push(cmd)
+        if not self.engine.running:
+            src = self.engine.graph.node_map.get(src_id)
+            dst = self.engine.graph.node_map.get(dst_id)
+            connected = False
+            if src and dst and dst_port in dst.inputs and src_port in src.outputs:
+                connected = src.outputs[src_port] in dst.inputs[dst_port].connected_outputs
+            if connected:
+                self.history.push(cmd)
+        else:
+            self.history.push(cmd)
 
     def disconnect_nodes(self, src_id, src_port, dst_id, dst_port):
         """Disconnect two nodes."""

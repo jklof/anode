@@ -31,16 +31,29 @@ public:
 
     ~NamProcessor() {}  // nothing to join anymore
 
-    void load_model_sync(const char* nam_path, double sample_rate, int max_block_size) {
-        if (!nam_path) return;
+    bool load_model_sync(const char* nam_path, double sample_rate, int max_block_size) {
+        if (!nam_path) return false;
         std::unique_ptr<nam::DSP> new_dsp = nullptr;
         try {
             new_dsp = nam::get_dsp(std::filesystem::path(nam_path));
-            if (new_dsp) new_dsp->Reset(sample_rate, max_block_size);
-        } catch (...) {}
-        std::lock_guard<std::mutex> lock(_staged_mutex);
-        _staged_dsp = std::move(new_dsp);
-        _has_staged.store(true, std::memory_order_release);
+            if (new_dsp) {
+                new_dsp->Reset(sample_rate, max_block_size);
+            }
+        } catch (...) {
+            return false;
+        }
+        if (!new_dsp) {
+            return false;
+        }
+
+        std::unique_ptr<nam::DSP> to_delete = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(_staged_mutex);
+            to_delete = std::move(_discarded_dsp);
+            _staged_dsp = std::move(new_dsp);
+            _has_staged.store(true, std::memory_order_release);
+        }
+        return true;
     }
 
     void reset_state() {
@@ -54,6 +67,7 @@ public:
         if (_has_staged.load(std::memory_order_acquire)) {
             if (_staged_mutex.try_lock()) {
                 if (_has_staged.load(std::memory_order_relaxed)) {
+                    _discarded_dsp = std::move(_dsp);
                     _dsp = std::move(_staged_dsp);
                     _has_staged.store(false, std::memory_order_release);
                 }
@@ -94,6 +108,7 @@ public:
 private:
     std::unique_ptr<nam::DSP> _dsp;
     std::unique_ptr<nam::DSP> _staged_dsp;
+    std::unique_ptr<nam::DSP> _discarded_dsp;
     std::atomic<bool> _has_staged{false};
     std::mutex _staged_mutex;
     
@@ -110,8 +125,9 @@ extern "C" {
     }
     EXPORT void set_param(void* handle, int param_id, float value) {}
     
-    EXPORT void load_model_sync(void* handle, const char* path, double sr, int bs) {
-        static_cast<NamProcessor*>(handle)->load_model_sync(path, sr, bs);
+    EXPORT int load_model_sync(void* handle, const char* path, double sr, int bs) {
+        if (!handle) return 0;
+        return static_cast<NamProcessor*>(handle)->load_model_sync(path, sr, bs) ? 1 : 0;
     }
 
     EXPORT void reset(void* handle) {

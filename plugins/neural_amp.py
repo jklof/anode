@@ -93,7 +93,7 @@ class NamNode(FFINode):
         # Bind Custom Function
         if self.lib:
             try:
-                self.lib.load_model_sync.restype = None
+                self.lib.load_model_sync.restype = ctypes.c_int
                 self.lib.load_model_sync.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_double, ctypes.c_int]
 
                 if hasattr(self.lib, "reset"):
@@ -114,8 +114,10 @@ class NamNode(FFINode):
                 self.submit_nrt(self._load_blocking, path)
 
     def _load_blocking(self, path):
-        self.lib.load_model_sync(self.dsp_handle, path.encode("utf-8"),
-                                  float(SAMPLE_RATE), int(BLOCK_SIZE))
+        res = self.lib.load_model_sync(self.dsp_handle, path.encode("utf-8"),
+                                       float(SAMPLE_RATE), int(BLOCK_SIZE))
+        if not res:
+            raise RuntimeError(f"Failed to load NAM model from {path}")
         return os.path.basename(path)
 
     def on_nrt_complete(self, tag, ok, result):
