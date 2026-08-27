@@ -42,6 +42,18 @@ class Graph:
                 upstream.append(out.parent)
         return upstream
 
+    def _get_downstream_nodes(self, node: Node) -> List[Node]:
+        """Get nodes that this node connects to (downstream)."""
+        downstream = []
+        for out_slot in node.outputs.values():
+            # We need to find all InputSlots connected to this OutputSlot
+            for other_node in self.nodes:
+                for inp in other_node.inputs.values():
+                    for conn_out in inp.connected_outputs:
+                        if conn_out is out_slot:
+                            downstream.append(other_node)
+        return downstream
+
     def add_node(self, node: Node):
         node.graph = self
         self.nodes.append(node)
@@ -74,11 +86,52 @@ class Graph:
         self.recalculate_order()
 
     def connect(self, src_id, src_port, dst_id, dst_port):
+        """Connect two nodes, rejecting cycles at connection time.
+        
+        Returns True if connection was made, False if rejected (would create cycle).
+        """
         src = self.node_map.get(src_id)
         dst = self.node_map.get(dst_id)
-        if src and dst and src_port in src.outputs and dst_port in dst.inputs:
-            dst.inputs[dst_port].connect(src.outputs[src_port])
-            self.recalculate_order()
+        if not (src and dst and src_port in src.outputs and dst_port in dst.inputs):
+            return False
+
+        # Reject self-loops
+        if src_id == dst_id:
+            return False
+
+        # Check if adding this connection would create a cycle:
+        # If dst can already reach src, adding src->dst creates a cycle.
+        if self._can_reach(dst_id, src_id):
+            return False
+
+        # No cycle - safe to connect
+        dst.inputs[dst_port].connect(src.outputs[src_port])
+        self.recalculate_order()
+        return True
+
+    def _can_reach(self, start_id: str, target_id: str) -> bool:
+        """DFS reachability check: can start_id reach target_id via existing connections?"""
+        visited = set()
+        stack = [start_id]
+        
+        while stack:
+            current_id = stack.pop()
+            if current_id == target_id:
+                return True
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+            
+            current_node = self.node_map.get(current_id)
+            if not current_node:
+                continue
+                
+            # Traverse downstream: nodes that current_node connects to
+            for downstream in self._get_downstream_nodes(current_node):
+                if downstream.id not in visited:
+                    stack.append(downstream.id)
+        
+        return False
 
     def disconnect(self, src_id, src_port, dst_id, dst_port):
         src_node = self.node_map.get(src_id)
@@ -303,12 +356,12 @@ class Engine:
           via _apply_command, and a snapshot is immediately emitted for structural operations
           to keep the UI in sync. Parameter and position changes use their own side-channels.
 
-        Exception: "save" never touches the RT loop. Its file I/O runs on the NRT
-        pool regardless of transport state (see _save_graph).
+        Exception: "save" - serialization happens on engine thread, file I/O on background thread.
         """
         if self.running:
             if cmd[0] == "save":
-                self._save_graph(cmd[1])
+                # Queue save command for engine thread to serialize, then background write
+                self.command_queue.put(cmd)
                 return
             self.command_queue.put(cmd)
         else:
@@ -318,25 +371,37 @@ class Engine:
                 self._emit_snapshot()
 
     def _save_graph(self, filename):
-        """Serialize and write the patch to disk. When the engine is running this
-        executes on an NRT pool thread so file I/O never stalls the audio loop;
-        when stopped it runs synchronously on the caller's thread."""
+        """Serialize and write the patch to disk.
+        
+        Thread-safe implementation:
+        - When engine is running: serialize on engine thread (inside _apply_command),
+          then pass immutable JSON string to background writer thread.
+        - When stopped: serialize and write synchronously on caller's thread.
+        """
         if not filename:
             return
 
-        def _job():
+        # Serialize on engine thread (synchronous, before background write)
+        # This ensures all preceding queued commands have been applied
+        try:
+            json_str = self.graph.to_json()
+        except Exception as e:
+            logging.error(f"Save serialization error: {e}")
+            return
+
+        def _write_job(json_data: str, fname: str):
             try:
-                json_str = self.graph.to_json()
-                with open(filename, "w") as f:
-                    f.write(json_str)
-                logging.info(f"Saved patch to {filename}")
+                with open(fname, "w") as f:
+                    f.write(json_data)
+                logging.info(f"Saved patch to {fname}")
             except Exception as e:
-                logging.error(f"Save Error: {e}")
+                logging.error(f"Save write error: {e}")
 
         if self.running:
-            threading.Thread(target=_job, daemon=True, name="anode-save").start()
+            # Pass immutable json_str to background thread for file I/O only
+            threading.Thread(target=_write_job, args=(json_str, filename), daemon=True, name="anode-save").start()
         else:
-            _job()
+            _write_job(json_str, filename)
 
     def _gc_deferred(self):
         """Run a full collection off-thread. Full gc.collect() calls can stall for
@@ -515,7 +580,9 @@ class Engine:
             # --------------------------------------------
 
             elif op == "clear":
+                # Invalidate NRT epochs for all nodes before destroying them
                 for n in self.graph.nodes:
+                    self.nrt.discard(n)
                     n.stop()
                     n.remove()
                 self.graph = Graph()
@@ -524,11 +591,28 @@ class Engine:
                 self._emit_snapshot()
 
             elif op == "save":
-                self._save_graph(cmd[1])
+                # Serialization already done in push_command; here we just do the background write
+                filename = cmd[1]
+                json_str = self.graph.to_json()
+                
+                def _write_job(json_data: str, fname: str):
+                    try:
+                        with open(fname, "w") as f:
+                            f.write(json_data)
+                        logging.info(f"Saved patch to {fname}")
+                    except Exception as e:
+                        logging.error(f"Save write error: {e}")
+
+                if self.running:
+                    threading.Thread(target=_write_job, args=(json_str, filename), daemon=True, name="anode-save").start()
+                else:
+                    _write_job(json_str, filename)
 
             elif op == "load":
                 _, json_str = cmd
+                # Invalidate NRT epochs for all current nodes before replacing graph
                 for n in self.graph.nodes:
+                    self.nrt.discard(n)
                     n.stop()
                     n.remove()
                 self.graph = Graph()
@@ -575,7 +659,9 @@ class Engine:
             elif op == "reload":
                 logging.info("Engine: Reloading plugins...")
                 current_json = self.graph.to_json()
+                # Invalidate NRT epochs for all current nodes before replacing graph
                 for n in self.graph.nodes:
+                    self.nrt.discard(n)
                     n.stop()
                     n.remove()
                 self.graph = Graph()
@@ -649,8 +735,6 @@ class Engine:
             block_duration_sec = BLOCK_SIZE / SAMPLE_RATE
             telemetry_interval = 0.1
             next_telemetry_time = time.perf_counter() + telemetry_interval
-            last_gc_time = time.time()
-            GC_INTERVAL = 5.0
 
             while self.running:
                 while not self.command_queue.empty():
@@ -663,9 +747,6 @@ class Engine:
                     # Step B (If NOT acquired)
                     if not acquired:
                         # This means the semaphore count is 0. The engine has filled all buffers and is waiting on hardware. This is our "Safety Window".
-                        if time.time() - last_gc_time > GC_INTERVAL:
-                            gc.collect(0)  # Only generation 0
-                            last_gc_time = time.time()
                         # Now call self._tick_semaphore.acquire(blocking=True) to wait for the actual hardware tick.
                         self._tick_semaphore.acquire(blocking=True)
                     # If acquired, we proceed directly (already decremented)

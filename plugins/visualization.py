@@ -1,7 +1,6 @@
 import numpy as np
-import queue
 import torch
-from base import Node
+from base import Node, BLOCK_SIZE, CHANNELS, TelemetryRingBuffer
 
 
 class WaveformDisplay(Node):
@@ -13,37 +12,44 @@ class WaveformDisplay(Node):
         super().__init__(name)
         self.inp = self.add_input("in")
         self.out = self.add_output("out")
-        # Keep queue small to drop frames gracefully
-        self.monitor_queue = queue.Queue(maxsize=1)
+        # Pre-allocated SPSC telemetry buffer owning 4 isolated slots
+        self.monitor_queue = TelemetryRingBuffer(
+            capacity=4, shape=(CHANNELS, self.VISUAL_WIDTH), dtype=np.float32
+        )
+        # Pre-allocated analysis buffer for visualization downsampling
+        self._analysis_buf = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
+        # Pre-allocated downsampled buffer
+        self._downsampled = torch.zeros((CHANNELS, self.VISUAL_WIDTH), dtype=torch.float32)
 
     def process(self):
         sig = self.inp.get_tensor()
 
-        # 1. Sanitize signal to prevent UI freezing
-        sig = torch.clamp(sig, -1.0, 1.0)
-        sig = torch.nan_to_num(sig, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        # 2. Pass-through audio efficiently (In-place copy to output buffer)
+        # 1. STRICT BIT-EXACT PASS-THROUGH: Copy input directly to output
+        # No clamping, no sanitization on the main audio path
         self.out.buffer.copy_(sig)
 
-        # 3. Handle Visualization Queue
-        if not self.monitor_queue.full():
-            # Downsample for the visual trace
-            num_samples = sig.shape[-1]
-            step = max(1, num_samples // self.VISUAL_WIDTH)
-            downsampled_sig = sig[..., ::step]
+        # 2. Visualization: Perform analysis on private buffer copy
+        # Downsample for the visual trace
+        num_samples = sig.shape[-1]
+        step = max(1, num_samples // self.VISUAL_WIDTH)
 
-            # PACKAGE PAYLOAD:
-            # We include the shape metadata.
-            # Note: sig.shape is a torch.Size (tuple), which is allocation-efficient.
-            payload = {"samples": downsampled_sig.cpu().numpy().copy(), "shape": sig.shape}  # e.g., (2, 512)
-            self.monitor_queue.put_nowait(payload)
+        # Copy to analysis buffer (private, can be sanitized)
+        self._analysis_buf.copy_(sig)
+        # Sanitize ONLY the analysis buffer
+        self._analysis_buf.clamp_(-1.0, 1.0)
+        torch.nan_to_num(self._analysis_buf, nan=0.0, posinf=1.0, neginf=-1.0, out=self._analysis_buf)
+
+        # Downsample
+        self._downsampled.copy_(self._analysis_buf[..., ::step])
+
+        # 3. Push to telemetry ring buffer (copies into ring slot; zero allocation)
+        self.monitor_queue.push(self._downsampled.numpy())
 
 
 try:
     from PySide6.QtWidgets import QWidget
     from PySide6.QtCore import Qt, QTimer, QPointF, QRectF
-    from PySide6.QtGui import QPainter, QPen, QColor, QPolygonF, QFont
+    from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
     class WaveformWidget(QWidget):
         IS_NODE_UI = True
@@ -54,8 +60,7 @@ try:
             self.proxy = proxy
             self.setMinimumSize(250, 150)
             self.data = None
-            self.data_shape = (0, 0)
-            self.shape_text = ""
+            self.shape_text = f"{CHANNELS} Ch x {BLOCK_SIZE}"
 
             # Pre-allocate colors
             self.bg_color = QColor(20, 20, 20)
@@ -66,7 +71,7 @@ try:
             self.overlay_bg = QColor(0, 0, 0, 160)
 
             self.timer = QTimer(self)
-            self.timer.interval = 33  # ~30 FPS
+            self.timer.setInterval(33)  # ~30 FPS
             self.timer.timeout.connect(self.poll)
             self.timer.start()
 
@@ -74,30 +79,16 @@ try:
             self._last_width = 0
 
         def poll(self):
-            try:
-                latest = None
-                q = getattr(self.proxy, "monitor_queue", None)
-                if q:
-                    while not q.empty():
-                        latest = q.get_nowait()
-
+            q = getattr(self.proxy, "monitor_queue", None)
+            if q is not None:
+                latest = q.pop_latest()
                 if latest is not None:
-                    self.data = latest["samples"]
-                    # Performance: Only re-format string if shape changes
-                    if self.data_shape != latest["shape"]:
-                        self.data_shape = latest["shape"]
-                        # Format: "[Channels] Ch x [Frames]"
-                        self.shape_text = f"{self.data_shape[0]} Ch x {self.data_shape[1]}"
-
+                    self.data = latest
                     self.update()
-            except queue.Empty:
-                pass
 
         def paintEvent(self, event):
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing)
-
-            # Fill Background
             painter.fillRect(self.rect(), self.bg_color)
 
             if self.data is None:
@@ -123,29 +114,22 @@ try:
                 painter.setPen(QPen(self.channel_colors[ch % 2], 1.5))
                 chan_data = self.data[ch]
                 y_coords = np.clip(center_y - (chan_data * scale_y), 0, h)
-
                 points = [QPointF(x, y) for x, y in zip(self._cached_x, y_coords) if np.isfinite(y)]
                 painter.drawPolyline(points)
 
             # --- 3. Draw Debug Shape Overlay ---
             if self.shape_text:
                 painter.setFont(QFont("Monospace", 8, QFont.Bold))
-
-                # Calculate metrics for the background "pill"
                 metrics = painter.fontMetrics()
                 text_width = metrics.horizontalAdvance(self.shape_text)
                 text_height = metrics.height()
-
-                # Position: Top Right with margin
                 margin = 8
                 bg_rect = QRectF(w - text_width - (margin * 2), margin, text_width + margin, text_height + 4)
 
-                # Draw Background Pill
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(self.overlay_bg)
                 painter.drawRoundedRect(bg_rect, 4, 4)
 
-                # Draw Shape Text
                 painter.setPen(self.debug_text_color)
                 painter.drawText(bg_rect, Qt.AlignCenter, self.shape_text)
 

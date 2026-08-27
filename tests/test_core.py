@@ -116,19 +116,26 @@ def test_recalculate_order_chain():
 
 
 def test_cycle_detection():
+    """Test cycle detection in graph - cycles rejected at connection time."""
     graph = Graph()
     nodeA = MockNode("A")
     nodeB = MockNode("B")
     graph.add_node(nodeA)
     graph.add_node(nodeB)
-    graph.connect("A", "out", "B", "in")
-
-    # Try to create cycle A -> B -> A
-    graph.connect("B", "out", "A", "in")
-
-    # Should have logged warning but not crash
+    # First connection succeeds
+    assert graph.connect("A", "out", "B", "in") is True
+    
+    # Second connection (creating cycle A -> B -> A) should be rejected
+    assert graph.connect("B", "out", "A", "in") is False
+    
+    # Graph should still have 2 nodes and valid execution order
     assert len(graph.nodes) == 2
-    assert len(graph.execution_order) == 0  # Cyclic nodes are omitted from valid execution order
+    assert len(graph.execution_order) == 2  # Both nodes in valid DAG order
+    
+    # Test self-loop rejection
+    nodeC = MockNode("C")
+    graph.add_node(nodeC)
+    assert graph.connect("C", "out", "C", "in") is False
 
 
 def test_clock_switching():
@@ -541,8 +548,8 @@ def test_delete_node_command_with_restore():
             {"src_id": "another-node", "src_port": "out", "dst_id": "test-node-for-delete", "dst_port": "in"},
         ]
 
-        # Create DeleteNodeCommand with snapshot data
-        delete_cmd = DeleteNodeCommand(controller, "test-node-for-delete", node_data)
+        # Create DeleteNodeCommand (now captures state from engine graph)
+        delete_cmd = DeleteNodeCommand(controller, "test-node-for-delete")
 
         # Execute delete
         delete_cmd.execute()
@@ -564,7 +571,7 @@ def test_delete_node_command_with_restore():
 
 
 def test_delete_node_command_with_missing_snapshot_data():
-    """Test DeleteNodeCommand handles missing snapshot data gracefully"""
+    """Test DeleteNodeCommand handles missing node gracefully"""
     from commands import DeleteNodeCommand
 
     # Mock controller
@@ -578,8 +585,8 @@ def test_delete_node_command_with_missing_snapshot_data():
 
     controller = MockController()
 
-    # Create DeleteNodeCommand with None snapshot data
-    delete_cmd = DeleteNodeCommand(controller, "nonexistent-node", None)
+    # Create DeleteNodeCommand for non-existent node
+    delete_cmd = DeleteNodeCommand(controller, "nonexistent-node")
 
     # Execute delete (should not crash)
     delete_cmd.execute()
@@ -632,8 +639,8 @@ def test_delete_node_command_connection_restoration():
             {"src_id": "input-node", "src_port": "out", "dst_id": "test-node", "dst_port": "in"},
         ]
 
-        # Create and execute delete command
-        delete_cmd = DeleteNodeCommand(controller, "test-node", node_data)
+        # Create and execute delete command (now captures state from engine graph)
+        delete_cmd = DeleteNodeCommand(controller, "test-node")
         delete_cmd.execute()
 
         # Verify node was deleted

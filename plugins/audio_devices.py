@@ -269,6 +269,8 @@ class AudioDeviceInput(BaseAudioDeviceNode):
     def __init__(self, name=""):
         super().__init__(name)
         self.out = self.add_output("out")
+        # Pre-allocated numpy scratch buffer for zero-allocation process()
+        self._numpy_scratch = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
 
     def start(self):
         self._start_stream(sd.InputStream, self._callback)
@@ -287,9 +289,8 @@ class AudioDeviceInput(BaseAudioDeviceNode):
             self.ring_buffer.write(temp)
 
     def process(self):
-        temp = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
-        if self.ring_buffer.read(temp):
-            self.out.buffer.copy_(torch.from_numpy(temp.T))
+        if self.ring_buffer.read(self._numpy_scratch):
+            self.out.buffer.copy_(torch.from_numpy(self._numpy_scratch.T))
         else:
             self.out.buffer.zero_()
 

@@ -24,49 +24,7 @@ CUTOFF_MIN = 20.0
 CUTOFF_MAX = 20000.0
 
 
-class _CppParamMixin:
-    """Pushes parameter changes into the native processor.
-
-    Plain mixin (does NOT subclass Node, so plugin_system never registers it).
-    Params are synced lazily in process() by comparing a value tuple against
-    the last-pushed state. This covers every path uniformly: UI edits
-    (on_ui_param_change), save/load restore (load_state), and direct
-    Parameter.set()+sync() from scripts/tests."""
-
-    PARAM_MAP = {}
-    _cpp_param_state = None
-
-    def _bind_reset(self):
-        if self.lib and hasattr(self.lib, "reset"):
-            self.lib.reset.restype = None
-            self.lib.reset.argtypes = [ctypes.c_void_p]
-
-    def _call_reset(self):
-        if self.lib and self.dsp_handle and hasattr(self.lib, "reset"):
-            try:
-                self.lib.reset(self.dsp_handle)
-            except Exception as e:
-                logger.error(f"[{self.name}] reset failed: {e}")
-
-    def _sync_params_to_cpp(self):
-        if not (self.lib and self.dsp_handle):
-            return
-        state = tuple(float(self.params[name].value) for name in self.PARAM_MAP)
-        if state != self._cpp_param_state:
-            for (name, pid), val in zip(self.PARAM_MAP.items(), state):
-                self.lib.set_param(self.dsp_handle, pid, val)
-            self._cpp_param_state = state
-
-    def start(self):
-        self._call_reset()
-        self._cpp_param_state = None  # force re-push on next block
-
-    def load_state(self, data: dict):
-        super().load_state(data)
-        self._sync_params_to_cpp()
-
-
-class BiquadFilter(_CppParamMixin, FFINode):
+class BiquadFilter(FFINode):
     category = "Effects"
     label = "Biquad Filter (IIR)"
 
@@ -89,11 +47,9 @@ class BiquadFilter(_CppParamMixin, FFINode):
         self.in_mod = self.add_input("mod_cutoff")
         self.out = self.add_output("out", channels=CHANNELS)
 
-        self._bind_reset()
-
     def process(self):
-        self._sync_params_to_cpp()
-
+        # Base class _sync_params_to_cpp() called first in FFINode.process()
+        # Audio-rate modulation: if mod_cutoff connected, push directly after sync
         if self.in_mod.connected_outputs and self.lib and self.dsp_handle:
             # Block mean of the modulation signal; the C++ side clamps to its
             # stable range before designing coefficients.
@@ -104,7 +60,7 @@ class BiquadFilter(_CppParamMixin, FFINode):
         super().process()
 
 
-class LinearPhaseEQ(_CppParamMixin, FFINode):
+class LinearPhaseEQ(FFINode):
     category = "Effects"
     label = "Linear Phase EQ (FIR)"
 
@@ -124,10 +80,7 @@ class LinearPhaseEQ(_CppParamMixin, FFINode):
         self.inp = self.add_input("in")
         self.out = self.add_output("out", channels=CHANNELS)
 
-        self._bind_reset()
-
     def process(self):
-        self._sync_params_to_cpp()
         super().process()
 
     def get_telemetry(self) -> dict:

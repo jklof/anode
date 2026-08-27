@@ -11,14 +11,13 @@ Audio-thread notes:
   ~0 dBFS (defaults: [-70, +6] dB).
 - The rfft output is the single documented per-block transient (no out=
   variant); everything else runs through pre-allocated buffers with out=.
+- Lock-free SPSC ring buffer for telemetry transport (never blocks audio thread).
 """
-
-import queue
 
 import numpy as np
 import torch
 
-from base import Node, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE
+from base import Node, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE, TelemetryRingBuffer
 
 try:
     from PySide6.QtWidgets import QWidget, QVBoxLayout
@@ -53,8 +52,8 @@ class SpectrumDisplay(Node):
         self.add_float_param("max_db", 6.0, -10.0, 24.0)
         self.add_float_param("smoothing", 0.65, 0.0, 0.95)
 
-        # Thread-safe IPC to the UI widget (frames may be dropped freely)
-        self.monitor_queue = queue.Queue(maxsize=2)
+        # Pre-allocated SPSC telemetry buffer for instantaneous spectra (capacity 4 frames)
+        self.monitor_queue = TelemetryRingBuffer(capacity=4, shape=(CHANNELS, DISPLAY_BINS), dtype=np.float32)
 
         self._fft_bins = FFT_SIZE // 2 + 1
 
@@ -122,11 +121,8 @@ class SpectrumDisplay(Node):
         db_range = max(1.0, max_db - min_db)
         self._display_points.sub_(min_db).div_(db_range).clamp_(0.0, 1.0)
 
-        # 7. Dispatch to UI (checked before copying: overflow is free)
-        if not self.monitor_queue.full():
-            self.monitor_queue.put_nowait(
-                self._display_points.numpy().copy()  # shape (CHANNELS, DISPLAY_BINS)
-            )
+        # 7. Dispatch to UI via lock-free SPSC ring buffer (overflow is free)
+        self.monitor_queue.push(self._display_points.numpy())
 
 
 # ==============================================================================
@@ -185,17 +181,11 @@ if GUI_AVAILABLE:
             return default
 
         def poll_queue(self):
-            q = getattr(self.proxy, "monitor_queue", None)
-            if not q or q.empty():
+            queue = getattr(self.proxy, "monitor_queue", None)
+            if not queue:
                 return
 
-            latest = None
-            while not q.empty():
-                try:
-                    latest = q.get_nowait()
-                except queue.Empty:
-                    break
-
+            latest = queue.pop_latest()
             if not (isinstance(latest, np.ndarray) and latest.shape == (CHANNELS, DISPLAY_BINS)):
                 return
 

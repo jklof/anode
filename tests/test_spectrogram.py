@@ -21,10 +21,20 @@ def make_node(class_name="SpectrogramDisplay"):
     return cls()
 
 
+def drop_pending(node):
+    """Emulate the UI consuming frames (ring buffer holds maxsize=4; overflow
+    frames are dropped by design)."""
+    queue = getattr(node, "monitor_queue", None)
+    if queue:
+        # Consume all available frames (pop_all returns list, last frame is newest)
+        frames = queue.pop_all()
+        # Return nothing - the frames are consumed
+
+
 def stream(node, tensor, blocks):
-    """Feed a tensor through node.process(), consuming the monitor queue every
+    """Feed a tensor through node.process(), consuming the SPSC buffer every
     block exactly like the live widget. Clears any pre-phase backlog first
-    (queue holds maxsize=2; overflow frames are dropped by design). Returns
+    (ring buffer holds maxsize=4; overflow frames are dropped by design). Returns
     the newest frame produced by the final block, or None."""
     slot = node.inputs["in"]
     drop_pending(node)
@@ -32,8 +42,11 @@ def stream(node, tensor, blocks):
     for _ in range(blocks):
         slot.get_tensor = lambda t=tensor: t
         node.process()
-        while not node.monitor_queue.empty():
-            last = node.monitor_queue.get_nowait()
+        queue = getattr(node, "monitor_queue", None)
+        if queue:
+            latest = queue.pop_latest()
+            if latest is not None:
+                last = latest
     return last
 
 
@@ -41,13 +54,6 @@ def sine_block(freq, amp=0.5, phase=0.0):
     n = np.arange(BLOCK_SIZE)
     tone = amp * np.sin(2 * np.pi * freq * n / SAMPLE_RATE + phase)
     return torch.from_numpy(np.tile(tone.astype(np.float32), (CHANNELS, 1)))
-
-
-def drop_pending(node):
-    """Emulate the UI consuming frames (queue holds maxsize=2; overflow
-    frames are dropped by design)."""
-    while not node.monitor_queue.empty():
-        node.monitor_queue.get_nowait()
 
 
 # ==============================================================================

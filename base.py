@@ -2,13 +2,146 @@ import torch
 import numpy as np
 import uuid
 import abc
-from typing import Dict, List, Any
+import threading
+from typing import Dict, List, Any, Optional
 
 # --- Configuration ---
 BLOCK_SIZE = 512
 SAMPLE_RATE = 48000
 CHANNELS = 2
 DTYPE = torch.float32
+
+
+class TelemetryRingBuffer:
+    """
+    Lock-free Single-Producer Single-Consumer (SPSC) pre-allocated ring buffer
+    for passing telemetry arrays from the audio thread to UI widgets.
+
+    Zero steady-state heap allocation:
+    - Pre-allocates a fixed array of slots (capacity, *shape).
+    - Audio thread writes into storage[head] via np.copyto (no allocations).
+    - Producer never contends with consumer.
+    """
+    __slots__ = ("capacity", "shape", "dtype", "storage", "head", "tail")
+
+    def __init__(self, capacity: int, shape: tuple, dtype=np.float32):
+        self.capacity = max(2, capacity)
+        self.shape = shape
+        self.dtype = dtype
+        self.storage = np.zeros((self.capacity, *shape), dtype=dtype)
+        self.head = 0  # Written only by audio thread
+        self.tail = 0  # Written only by UI thread
+
+    def push(self, data: np.ndarray) -> bool:
+        """Audio thread: copies data into head slot. Never blocks, zero allocation."""
+        next_head = (self.head + 1) % self.capacity
+        if next_head == self.tail:
+            return False  # Overflow -> drop frame cleanly
+        np.copyto(self.storage[self.head], data)
+        self.head = next_head
+        return True
+
+    def pop_latest(self) -> Optional[np.ndarray]:
+        """UI thread: returns the latest available frame as an isolated array snapshot."""
+        h = self.head
+        t = self.tail
+        if h == t:
+            return None
+        latest_idx = (h - 1) % self.capacity
+        result = self.storage[latest_idx].copy()
+        self.tail = h
+        return result
+
+    def pop_all(self) -> List[np.ndarray]:
+        """UI thread: returns all frames in chronological order since last pop."""
+        h = self.head
+        t = self.tail
+        if h == t:
+            return []
+        items = []
+        curr = t
+        while curr != h:
+            items.append(self.storage[curr].copy())
+            curr = (curr + 1) % self.capacity
+        self.tail = h
+        return items
+
+
+class TelemetryDictRingBuffer:
+    """Pre-allocated ring of dictionaries for DataDisplayNode HUD statistics."""
+    __slots__ = ("capacity", "slots", "head", "tail")
+
+    def __init__(self, capacity: int = 4):
+        self.capacity = max(2, capacity)
+        self.slots = [{} for _ in range(self.capacity)]
+        self.head = 0
+        self.tail = 0
+
+    def push(self, data_dict: dict) -> bool:
+        next_head = (self.head + 1) % self.capacity
+        if next_head == self.tail:
+            return False
+        self.slots[self.head].update(data_dict)
+        self.head = next_head
+        return True
+
+    def pop_latest(self) -> Optional[dict]:
+        h = self.head
+        t = self.tail
+        if h == t:
+            return None
+        latest_idx = (h - 1) % self.capacity
+        self.tail = h
+        return dict(self.slots[latest_idx])
+
+    def try_pop(self):
+        """Consumer thread: attempt to pop. Returns (item, True) or (None, False)."""
+        h = self.head
+        t = self.tail
+        if h == t:
+            return None, False
+        latest_idx = (h - 1) % self.capacity
+        self.tail = h
+        return dict(self.slots[latest_idx]), True
+
+
+class SPSCRingBuffer:
+    """
+    Generic lock-free Single-Producer Single-Consumer ring buffer for
+    passing arbitrary Python objects between threads.
+    Used by FileRecorder for block indices (not NumPy arrays).
+    """
+    __slots__ = ("_buf", "_cap", "_head", "_tail", "_head_lock", "_tail_lock")
+
+    def __init__(self, capacity: int = 2):
+        if capacity < 2:
+            raise ValueError("SPSCRingBuffer capacity must be >= 2")
+        self._cap = capacity
+        self._buf = [None] * capacity
+        self._head = 0
+        self._tail = 0
+        self._head_lock = threading.Lock()
+        self._tail_lock = threading.Lock()
+
+    def try_push(self, item) -> bool:
+        """Audio thread: attempt to push. Returns False if full (item dropped)."""
+        next_head = (self._head + 1) % self._cap
+        if next_head == self._tail:
+            return False
+        self._buf[self._head] = item
+        with self._head_lock:
+            self._head = next_head
+        return True
+
+    def try_pop(self):
+        """UI/writer thread: attempt to pop. Returns (item, True) or (None, False)."""
+        if self._head == self._tail:
+            return None, False
+        item = self._buf[self._tail]
+        self._buf[self._tail] = None
+        with self._tail_lock:
+            self._tail = (self._tail + 1) % self._cap
+        return item, True
 
 
 # --- Interfaces ---

@@ -66,6 +66,9 @@ class Compressor(FFINode):
         if not self.lib or not self.dsp_handle:
             return
 
+        # MANDATORY: Sync parameters before native processing
+        self._sync_params_to_cpp()
+
         # 1. Main Input
         in_tensor = self.inputs["in"].get_tensor()
 
@@ -386,6 +389,8 @@ class AutoGain(Node):
         self._prev_gain_lin = 1.0
         self._ramp = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
         self._mono = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+        # Pre-allocated scratch buffer for power computation
+        self._pow_scratch = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
 
     def start(self):
         self._rms_history.zero_()
@@ -403,7 +408,9 @@ class AutoGain(Node):
 
         out = self.outputs["out"].buffer
 
-        torch.mean(torch.pow(sig, 2.0), dim=0, out=self._mono)
+        # Use pre-allocated scratch buffer for power computation
+        torch.pow(sig, 2.0, out=self._pow_scratch)
+        torch.mean(self._pow_scratch, dim=0, out=self._mono)
         rms = float(torch.sqrt(torch.mean(self._mono)).item())
         rms_db = 20.0 * math.log10(max(rms, 1e-9))
 

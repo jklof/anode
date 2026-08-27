@@ -12,6 +12,19 @@ class FFINode(Node):
     """
     A generic base class for C++ nodes.
     Assumes the C++ library implements the Standard ANode C-ABI.
+
+    Parameter Synchronization (Canonical Path):
+    - UI/Script writes to Parameter._staging
+    - Engine thread calls Parameter.sync() -> Parameter.value
+    - FFINode._sync_params_to_cpp() called ONCE before native process()
+    - Native set_param() updates DSP state
+    - Native process() executes with synchronized parameters
+
+    Audio-Rate Modulation Exception:
+    - If an input slot explicitly modulates a parameter per block
+      (e.g., BiquadFilter.in_mod modulating cutoff), process() may
+      calculate modulation and call lib.set_param() directly AFTER
+      staged parameters have synced.
     """
 
     # Subclasses define these
@@ -24,6 +37,8 @@ class FFINode(Node):
         self.dsp_handle = None
         # Pre-allocate persistent scratch buffer for zero-allocation copying
         self._ffi_in_buffer = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
+        # Parameter sync state (cached tuple of parameter values)
+        self._cpp_param_state = None
         self._load_library()
 
         # Initialize C++ object
@@ -93,25 +108,54 @@ class FFINode(Node):
             self.lib.set_samplerate.restype = None
             self.lib.set_samplerate.argtypes = [ctypes.c_void_p, ctypes.c_float]
 
+        # void reset(void* handle) — optional
+        if hasattr(self.lib, "reset"):
+            self.lib.reset.restype = None
+            self.lib.reset.argtypes = [ctypes.c_void_p]
+
+    def _call_reset(self):
+        """Call native reset() if available. Called on engine thread in start()."""
+        if self.lib and self.dsp_handle and hasattr(self.lib, "reset"):
+            try:
+                self.lib.reset(self.dsp_handle)
+            except Exception as e:
+                logger.error(f"[{self.name}] reset failed: {e}")
+
+    def _sync_params_to_cpp(self):
+        """
+        Synchronize staged parameters to native DSP.
+        Called ONCE per block, BEFORE native process().
+        Uses cached tuple comparison to avoid redundant native calls.
+        """
+        if not (self.lib and self.dsp_handle):
+            return
+        if not self.PARAM_MAP:
+            return
+
+        state = tuple(float(self.params[name].value) for name in self.PARAM_MAP)
+        if state != self._cpp_param_state:
+            for (name, pid), val in zip(self.PARAM_MAP.items(), state):
+                self.lib.set_param(self.dsp_handle, pid, val)
+            self._cpp_param_state = state
+
     def _preprocess_input(self, in_tensor: torch.Tensor, scratch_buffer: torch.Tensor) -> torch.Tensor:
         """Hook for subclasses to modify input tensor before C++ processing. Default pass-through."""
         return in_tensor
 
     def on_ui_param_change(self, param_name: str):
-        """Automatically pushes UI changes to C++."""
+        """UI parameter change - stages value only. Native sync happens on engine thread."""
         super().on_ui_param_change(param_name)
-        if self.dsp_handle and param_name in self.PARAM_MAP:
-            # Don't call sync() here - let audio thread handle it
-            param_id = self.PARAM_MAP[param_name]
-            val = self.params[param_name].get_staging_safe()
-            # Convert bool/int to float for simplicity
-            self.lib.set_param(self.dsp_handle, param_id, float(val))
+        # REMOVED: Direct native set_param() call.
+        # Parameter sync now happens canonically in process() via _sync_params_to_cpp()
 
     def process(self):
         if not self.lib or not self.dsp_handle:
             return
 
-        # 1. Get Raw Tensor from Input Slot
+        # 1. Synchronize staged parameters to native DSP (CANONICAL PATH)
+        self._sync_params_to_cpp()
+
+        # 2. Get Raw Tensor from Input Slot
         if "in" in self.inputs:
             raw_tensor = self.inputs["in"].get_tensor()
         else:
@@ -122,7 +166,7 @@ class FFINode(Node):
         # Allow subclasses to preprocess (e.g., apply gain)
         processed_tensor = self._preprocess_input(raw_tensor, self._ffi_in_buffer)
 
-        # 2. Determine Actual Dimensions
+        # 3. Determine Actual Dimensions
         in_channels = processed_tensor.shape[0]
 
         out_slot = self.outputs.get("out")
@@ -135,7 +179,7 @@ class FFINode(Node):
         if not out_tensor.is_contiguous():
             raise RuntimeError(f"Output tensor is not contiguous. Node: {self.name}")
 
-        # 3. Ensure Contiguity & Safety (Critical for C pointers)
+        # 4. Ensure Contiguity & Safety (Critical for C pointers)
         # Verify device is CPU
         if processed_tensor.device.type != "cpu":
             processed_tensor = processed_tensor.cpu()
@@ -147,22 +191,32 @@ class FFINode(Node):
             self._ffi_in_buffer.copy_(processed_tensor)
             processing_tensor = self._ffi_in_buffer
 
-        # 4. Calculate Safe Processable Channels
+        # 5. Calculate Safe Processable Channels
         # We process whichever is smaller: input available or output capacity.
         process_channels = min(in_channels, out_channels)
 
-        # 5. Anti-Ghosting: Zero out unused output channels
+        # 6. Anti-Ghosting: Zero out unused output channels
         # If input is Mono (1) and Output is Stereo (2), C++ only writes channel 0.
         # We must zero channel 1 to remove stale data from previous frames.
         if process_channels < out_channels:
             out_tensor[process_channels:].zero_()
 
-        # 6. Get Pointers
+        # 7. Get Pointers
         in_ptr = ctypes.cast(processing_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
         out_ptr = ctypes.cast(out_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
 
-        # 7. Call C++ with ACTUAL channel count
+        # 8. Call C++ with ACTUAL channel count
         self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
+
+    def start(self):
+        # Reset native DSP state and force parameter re-sync on next block
+        self._call_reset()
+        self._cpp_param_state = None  # Force re-push on next process()
+
+    def load_state(self, data: dict):
+        super().load_state(data)
+        # Invalidate cached param state to force native sync on next block
+        self._cpp_param_state = None
 
     def stop(self):
         # CHANGED: Do NOT destroy C++ object on transport stop.

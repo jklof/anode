@@ -2,10 +2,11 @@ import logging
 import queue
 import threading
 import wave
+import ctypes
 
 import torch
 import numpy as np
-from base import Node, IClockProvider, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
+from base import Node, IClockProvider, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS, SPSCRingBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -80,26 +81,44 @@ class FileRecorder(Node):
         # All disk I/O and the wave handle live on the writer thread.
         self._file = None                # writer thread only
         self._frames_written = 0         # writer thread only
-        self._write_queue = queue.Queue(maxsize=self.QUEUE_CAPACITY)
-        self._writer_thread = None
 
-        # Pre-allocated per-block conversion buffers (RT-safe, no allocs)
-        self._block_f32 = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)  # interleaved
-        self._block_i16 = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.int16)
+        # Lock-free SPSC ring buffer for block indices (audio thread -> writer thread)
+        self._index_queue = SPSCRingBuffer(capacity=self.QUEUE_CAPACITY)
+
+        # Pre-allocated block pool: [QUEUE_CAPACITY, BLOCK_SIZE, CHANNELS] int16
+        self._block_pool = np.zeros((self.QUEUE_CAPACITY, BLOCK_SIZE, CHANNELS), dtype=np.int16)
+        self._write_index = 0  # audio thread writes to this pool index
+
+        # Pre-allocated float32 temp buffer for clipping (RT-safe, no allocs)
+        self._temp_f32 = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+
+        # Writer thread management
+        self._writer_thread = None
+        self._shutdown_event = threading.Event()
 
     # ------------------------------------------------------------------
     # Writer thread — owns the wave file handle
     # ------------------------------------------------------------------
 
     def _writer_loop(self):
-        while True:
-            kind, payload = self._write_queue.get()
+        while not self._shutdown_event.is_set():
+            # Non-blocking pop with small sleep to avoid busy-wait
+            index, ok = self._index_queue.try_pop()
+            if not ok:
+                # Queue empty, brief sleep
+                self._shutdown_event.wait(timeout=0.001)
+                continue
+
+            kind = index[0] if isinstance(index, tuple) else index
             if kind == "open":
-                self._writer_open(payload)
+                filename = index[1]
+                self._writer_open(filename)
             elif kind == "frames":
+                block_idx = index[1]
                 if self._file is not None:
                     try:
-                        self._file.writeframes(payload)
+                        # Write pre-converted int16 block directly from pool
+                        self._file.writeframes(self._block_pool[block_idx].tobytes())
                         self._frames_written += BLOCK_SIZE
                     except Exception as e:
                         logger.error(f"Recorder write failed: {e}")
@@ -147,8 +166,18 @@ class FileRecorder(Node):
         if not filename:
             logger.warning("Recorder: no filename set, ignoring record start")
             return
-        # Queue first so the thread finds the open command immediately.
-        self._write_queue.put(("open", filename))
+
+        # Reset writer thread state
+        self._shutdown_event.clear()
+        self._write_index = 0
+        # Clear index queue
+        while self._index_queue.try_pop()[1]:
+            pass
+
+        # Queue open command
+        self._index_queue.try_push(("open", filename))
+
+        # Start writer thread (created off RT path via NRT or here if stopped)
         self._writer_thread = threading.Thread(
             target=self._writer_loop, daemon=True, name=f"anode-recorder-{self.id[:8]}"
         )
@@ -160,11 +189,15 @@ class FileRecorder(Node):
         self._recording = False
         if not was_recording:
             return
-        self._write_queue.put(("close", None))
+
+        # Signal writer thread to close
+        self._shutdown_event.set()
+        self._index_queue.try_push(("close", None))
+
         writer = self._writer_thread
         self._writer_thread = None
-        # Deterministic flush only when no real-time loop depends on us;
-        # while the engine runs we never block here.
+
+        # Deterministic flush only when no real-time loop depends on us
         if writer is not None and not self._engine_running():
             writer.join(timeout=2.0)
 
@@ -179,17 +212,34 @@ class FileRecorder(Node):
     def process(self):
         tensor = self.inp.get_tensor()
         if self._recording:
-            # Convert into pre-allocated buffers; only the final byte string
-            # (handed to the writer thread) is newly allocated.
-            np.copyto(self._block_f32[:, 0], tensor[0])
-            np.copyto(self._block_f32[:, 1], tensor[1] if tensor.shape[0] > 1 else tensor[0])
-            np.clip(self._block_f32, -1.0, 1.0, out=self._block_f32)
-            np.multiply(self._block_f32, 32767, out=self._block_i16, casting="unsafe")
-            payload = self._block_i16.tobytes()
-            try:
-                self._write_queue.put_nowait(("frames", payload))
-            except queue.Full:
-                pass  # drop this block rather than stall the audio thread
+            # Convert into pre-allocated pool slot; NO .tobytes() on audio thread
+            block_idx = self._write_index
+            pool_slot = self._block_pool[block_idx]
+
+            # Convert float32 [-1, 1] -> int16 directly into pool slot
+            # Use float32 temp buffer for clipping, then convert to int16 in pool
+            # Channel 0
+            np.copyto(self._temp_f32[:, 0], tensor[0].cpu().numpy())
+            np.clip(self._temp_f32[:, 0], -1.0, 1.0, out=self._temp_f32[:, 0])
+            np.multiply(self._temp_f32[:, 0], 32767, out=self._temp_f32[:, 0], casting="unsafe")
+            pool_slot[:, 0] = self._temp_f32[:, 0].astype(np.int16, copy=False)
+
+            # Channel 1 (or duplicate channel 0 if mono)
+            if tensor.shape[0] > 1:
+                np.copyto(self._temp_f32[:, 1], tensor[1].cpu().numpy())
+                np.clip(self._temp_f32[:, 1], -1.0, 1.0, out=self._temp_f32[:, 1])
+                np.multiply(self._temp_f32[:, 1], 32767, out=self._temp_f32[:, 1], casting="unsafe")
+                pool_slot[:, 1] = self._temp_f32[:, 1].astype(np.int16, copy=False)
+            else:
+                pool_slot[:, 1] = pool_slot[:, 0]
+
+            # Try to push block index to writer thread
+            if not self._index_queue.try_push(("frames", block_idx)):
+                # Pool exhausted - drop frame (per spec)
+                pass
+            else:
+                # Advance to next pool slot (ring)
+                self._write_index = (self._write_index + 1) % self.QUEUE_CAPACITY
 
     def stop(self):
         self._stop_recording()

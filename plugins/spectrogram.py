@@ -11,14 +11,13 @@ Native-analysis notes (audio thread):
 - The only deliberate per-block transient is the rfft output (no out= variant,
   same exception as convolution_reverb/filters). Queue dispatch is non-blocking
   and checked BEFORE copying the payload, so overflow costs nothing.
+- Lock-free SPSC ring buffer for telemetry transport (never blocks audio thread).
 """
-
-import queue
 
 import numpy as np
 import torch
 
-from base import Node, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE
+from base import Node, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE, TelemetryRingBuffer
 
 try:
     from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QComboBox
@@ -99,8 +98,8 @@ class SpectrogramDisplay(Node):
         self.add_float_param("min_db", -80.0, -120.0, -20.0)
         self.add_float_param("max_db", 0.0, -20.0, 20.0)
 
-        # Thread-safe IPC to the UI widget (frames may be dropped freely)
-        self.monitor_queue = queue.Queue(maxsize=2)
+        # Pre-allocated SPSC telemetry buffer for waterfall frames (~170 ms cushion at 93.75 blocks/sec)
+        self.monitor_queue = TelemetryRingBuffer(capacity=16, shape=(CHANNELS, DISPLAY_BINS), dtype=np.float32)
 
         self._fft_bins = FFT_SIZE // 2 + 1
 
@@ -174,11 +173,8 @@ class SpectrogramDisplay(Node):
         db_range = max(1.0, max_db - min_db)
         self._column.sub_(min_db).div_(db_range).clamp_(0.0, 1.0)
 
-        # 7. Dispatch to UI (checked before copying: overflow is free)
-        if not self.monitor_queue.full():
-            self.monitor_queue.put_nowait(
-                self._column.numpy().copy()  # shape (CHANNELS, DISPLAY_BINS)
-            )
+        # 7. Dispatch to UI via lock-free SPSC ring buffer (overflow is free)
+        self.monitor_queue.push(self._column.numpy())
 
 
 # ==============================================================================
@@ -265,23 +261,21 @@ if GUI_AVAILABLE:
                     img.setPixel(x, y, int(colors[y]))
 
         def poll_queue(self):
-            q = getattr(self.proxy, "monitor_queue", None)
-            if not q or q.empty():
+            queue = getattr(self.proxy, "monitor_queue", None)
+            if not queue:
                 return
 
-            frames = []
-            while not q.empty():
-                try:
-                    frames.append(q.get_nowait())
-                except queue.Empty:
-                    break
-
-            valid = [f for f in frames if isinstance(f, np.ndarray) and f.shape == (2, DISPLAY_BINS)]
-            if not valid:
+            # pop_all() gives every frame since last poll so the waterfall
+            # scrolls smoothly without dropping columns.
+            frames = queue.pop_all()
+            if not frames:
                 return
 
-            self._shift_and_paint(self._wf[0], [f[0] for f in valid])
-            self._shift_and_paint(self._wf[1], [f[1] for f in valid])
+            for latest in frames:
+                if not (isinstance(latest, np.ndarray) and latest.shape == (CHANNELS, DISPLAY_BINS)):
+                    continue
+                self._shift_and_paint(self._wf[0], [latest[0]])
+                self._shift_and_paint(self._wf[1], [latest[1]])
             self.update()
 
         def update_from_params(self, params):

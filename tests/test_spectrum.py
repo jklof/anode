@@ -21,18 +21,32 @@ def make_node(class_name="SpectrumDisplay"):
     return cls()
 
 
+def drop_pending(node):
+    """Emulate the UI consuming frames (ring buffer holds maxsize=4; overflow
+    frames are dropped by design)."""
+    queue = getattr(node, "monitor_queue", None)
+    if queue:
+        # Consume all available frames (pop_all returns list, last frame is newest)
+        frames = queue.pop_all()
+        # Return nothing - the frames are consumed
+        return len(frames)
+    return 0
+
+
 def stream(node, tensor, blocks):
-    """Feed a tensor through node.process(), consuming the monitor queue every
+    """Feed a tensor through node.process(), consuming the SPSC buffer every
     block exactly like the live widget. Returns the newest frame."""
     slot = node.inputs["in"]
-    while not node.monitor_queue.empty():
-        node.monitor_queue.get_nowait()
+    drop_pending(node)
     last = None
     for _ in range(blocks):
         slot.get_tensor = lambda t=tensor: t
         node.process()
-        while not node.monitor_queue.empty():
-            last = node.monitor_queue.get_nowait()
+        queue = getattr(node, "monitor_queue", None)
+        if queue:
+            latest = queue.pop_latest()
+            if latest is not None:
+                last = latest
     return last
 
 

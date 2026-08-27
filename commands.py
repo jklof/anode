@@ -74,24 +74,46 @@ class AddNodeCommand(ICommand):
 class DeleteNodeCommand(ICommand):
     """
     Command to delete a node.
-    Captures full state immediately upon creation to prevent race conditions.
+    Captures full authoritative state from the engine graph at creation time.
+    Does NOT rely on the asynchronous UI snapshot cache (_latest_snapshot).
     """
 
-    def __init__(self, controller, node_id, snapshot_data):
+    def __init__(self, controller, node_id):
         self.controller = controller
         self.node_id = node_id
-        # We pass the data in via constructor so it is captured
-        # AT THE MOMENT of user action, not 30ms later in execute()
-        self.node_data = snapshot_data
+        self.node_data = None
         self.connections = []
 
-        # Find connections associated with this node in the snapshot
-        # This handles the "Implicit Disconnect" restoration
-        if self.node_data:
-            snapshot_conns = self.controller.get_connections_from_snapshot()
-            for c in snapshot_conns:
-                if c["src_id"] == node_id or c["dst_id"] == node_id:
-                    self.connections.append(c)
+        # Capture authoritative state directly from engine graph (synchronous)
+        # This works whether engine is running or stopped since we're on the UI thread
+        # and the engine graph is only mutated on the engine thread via commands.
+        # When engine is running, we read from the graph which reflects all applied commands.
+        engine = controller.engine
+        graph = engine.graph
+        node = graph.node_map.get(node_id)
+        if node:
+            # Capture complete node state including params, connections
+            self.node_data = node.to_dict()
+            # Also capture full param snapshot (type, meta) for exact restoration
+            for k, p in node.params.items():
+                if k in self.node_data.get("params", {}):
+                    self.node_data["params"][k] = {
+                        "value": p.get_staging_safe(),
+                        "type": p.type,
+                        "meta": p.meta
+                    }
+
+            # Capture connections from authoritative graph
+            for dst in graph.nodes:
+                for d_port, inp in dst.inputs.items():
+                    for out in inp.connected_outputs:
+                        if out.parent.id == node_id or dst.id == node_id:
+                            self.connections.append({
+                                "src_id": out.parent.id,
+                                "src_port": out.name,
+                                "dst_id": dst.id,
+                                "dst_port": d_port
+                            })
 
     def execute(self):
         self.controller.engine.push_command(("del", self.node_id))

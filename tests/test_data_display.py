@@ -22,14 +22,17 @@ def make_node(class_name="DataDisplayNode"):
 
 
 def drop_pending(node):
-    """Emulate the UI consuming frames (queue holds maxsize=1; overflow
+    """Emulate the UI consuming frames (ring buffer holds maxsize=4; overflow
     frames are dropped by design)."""
-    while not node.monitor_queue.empty():
-        node.monitor_queue.get_nowait()
+    queue = getattr(node, "monitor_queue", None)
+    if queue:
+        # Consume all available frames using try_pop
+        while queue.try_pop()[1]:
+            pass
 
 
 def stream(node, tensor, blocks):
-    """Feed a tensor through node.process(), consuming the monitor queue every
+    """Feed a tensor through node.process(), consuming the SPSC buffer every
     block exactly like the live widget. Clears any pre-phase backlog first.
     Returns the newest frame produced by the final block, or None."""
     drop_pending(node)
@@ -37,8 +40,11 @@ def stream(node, tensor, blocks):
     for _ in range(blocks):
         node.inp.get_tensor = lambda t=tensor: t
         node.process()
-        while not node.monitor_queue.empty():
-            last = node.monitor_queue.get_nowait()
+        queue = getattr(node, "monitor_queue", None)
+        if queue:
+            latest = queue.pop_latest()
+            if latest is not None:
+                last = latest
     return last
 
 
@@ -216,7 +222,8 @@ def test_data_display_start_resets_state():
     drop_pending(node)
     node.inp.get_tensor = lambda: sine_block(500.0)
     node.process()
-    assert node.monitor_queue.empty(), "analysis must not fire before UPDATE_INTERVAL_BLOCKS"
+    telemetry = getattr(node, "monitor_queue", None)
+    assert telemetry and telemetry.try_pop()[1] is False, "analysis must not fire before UPDATE_INTERVAL_BLOCKS"
 
 
 def test_data_display_rate_limits_analysis():
@@ -227,10 +234,12 @@ def test_data_display_rate_limits_analysis():
     for i in range(1, node.UPDATE_INTERVAL_BLOCKS):
         node.inp.get_tensor = lambda b=blk: b
         node.process()
-        assert node.monitor_queue.empty(), f"frame dispatched early at block {i}"
+        telemetry = getattr(node, "monitor_queue", None)
+        assert telemetry and telemetry.try_pop()[1] is False, f"frame dispatched early at block {i}"
 
     node.process()  # Nth block triggers analysis
-    assert not node.monitor_queue.empty()
+    telemetry = getattr(node, "monitor_queue", None)
+    assert telemetry and telemetry.try_pop()[1] is True
 
 
 def test_data_display_queue_dispatch_drain():
@@ -239,7 +248,14 @@ def test_data_display_queue_dispatch_drain():
     frame = stream(node, blk, 12)
 
     assert isinstance(frame, dict)
-    assert frame is node.get_telemetry(), "queue payload must be the live telemetry snapshot"
+    # Frame must match the live snapshot content (not necessarily the same object,
+    # since TelemetryDictRingBuffer copies on pop_latest for UI thread safety)
+    live = node.get_telemetry()
+    assert frame["type"] == live["type"]
+    assert frame["peak"] == live["peak"]
+    assert frame["rms"] == live["rms"]
+    assert frame["peak_db"] == live["peak_db"]
+    assert frame["rms_db"] == live["rms_db"]
 
 
 # ==============================================================================

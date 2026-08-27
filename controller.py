@@ -261,13 +261,12 @@ class AppController(QObject):
         return cmd.node_id
 
     def delete_node(self, node_id):
-        # 1. Capture state NOW from our local cache
-        node_data = self.get_node_data(node_id)
-        if not node_data:
+        # DeleteNodeCommand now captures authoritative state directly from engine graph
+        cmd = DeleteNodeCommand(self, node_id)
+        if not cmd.node_data:
             logging.warning(f"Attempted to delete unknown node {node_id}")
             return
 
-        cmd = DeleteNodeCommand(self, node_id, node_data)
         cmd.execute()
         self.history.push(cmd)
 
@@ -315,11 +314,9 @@ class AppController(QObject):
             if sid not in nodes_set and did not in nodes_set:
                 macro.add(DisconnectCommand(self, *c_data))
 
-        # Capture all snapshots BEFORE starting the command loop (Issue 2)
-        node_snapshots = {nid: self.get_node_data(nid) for nid in node_ids}
+        # DeleteNodeCommand now captures authoritative state directly
         for nid in node_ids:
-            if node_snapshots[nid]:
-                macro.add(DeleteNodeCommand(self, nid, node_snapshots[nid]))
+            macro.add(DeleteNodeCommand(self, nid))
 
         # Perform optimistic snapshot updates AFTER building all commands
         for nid in node_ids:

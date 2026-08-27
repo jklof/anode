@@ -138,8 +138,23 @@ if GUI_AVAILABLE:
 # 3. Node Logic Class
 # ==============================================================================
 class ScriptNode(Node):
+    """
+    ScriptNode — Non-Real-Time (Non-RT) / Prototyping Node.
+
+    ARCHITECTURAL CONTRACT:
+    This node executes arbitrary Python code via `exec()` on the audio thread.
+    Python bytecode execution is NOT real-time safe:
+    - May allocate heap memory (GC pressure)
+    - May invoke arbitrary libraries (unbounded execution time)
+    - May trigger GIL contention
+    - May perform I/O or raise unhandled exceptions
+    - May cause audio dropouts under tight latencies
+
+    USE ONLY FOR PROTOTYPING AND OFFLINE PROCESSING.
+    Do not use in production real-time audio pipelines.
+    """
     category = "Utilities"
-    label = "Script Node"
+    label = "Script Node (Non-RT)"
 
     def __init__(self, name=""):
         super().__init__(name)

@@ -13,14 +13,14 @@ Native-analysis notes (audio thread):
 - Pre-allocated scratch buffer for the squared-signal reduction; telemetry
   dict is mutated in place (never swapped) so UI readers holding a reference
   via get_telemetry() always see a consistent snapshot.
+- Lock-free SPSC ring buffer for telemetry transport (never blocks audio thread).
 """
 
-import queue
 import math
 
 import torch
 
-from base import Node, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE
+from base import Node, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE, TelemetryDictRingBuffer
 
 try:
     from PySide6.QtWidgets import QWidget
@@ -51,8 +51,8 @@ class DataDisplayNode(Node):
         self.inp = self.add_input("in")
         self.out = self.add_output("out", channels=CHANNELS)
 
-        # Thread-safe IPC Queue to UI (frames may be dropped freely)
-        self.monitor_queue = queue.Queue(maxsize=1)
+        # Pre-allocated SPSC telemetry buffer for dict statistics
+        self.monitor_queue = TelemetryDictRingBuffer(capacity=4)
 
         # Scratch for the RMS reduction (avoids sig.pow(2) temp allocation)
         self._squared = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
@@ -162,8 +162,8 @@ class DataDisplayNode(Node):
         t["crest_factor"] = crest
         t["crest_db"] = crest_db
 
-        if not self.monitor_queue.full():
-            self.monitor_queue.put_nowait(t)
+        # Dispatch to UI via lock-free SPSC ring buffer
+        self.monitor_queue.push(t)
 
     def get_telemetry(self) -> dict:
         return self._cached_telemetry
@@ -206,17 +206,11 @@ if GUI_AVAILABLE:
             self.timer.start()
 
         def poll_queue(self):
-            q = getattr(self.proxy, "monitor_queue", None)
-            if not q or q.empty():
+            telemetry = getattr(self.proxy, "monitor_queue", None)
+            if not telemetry:
                 return
 
-            latest = None
-            while not q.empty():
-                try:
-                    latest = q.get_nowait()
-                except queue.Empty:
-                    break
-
+            latest = telemetry.pop_latest()
             if latest:
                 self._data = latest
                 self.update()

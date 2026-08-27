@@ -63,6 +63,16 @@ class NodeProxy:
     def node_item(self):
         return self._node_item_ref()
 
+    @property
+    def _telemetry(self):
+        """Access the engine-side node's telemetry buffer (for visual nodes)."""
+        engine = getattr(self.controller, "engine", None)
+        if engine and engine.graph:
+            node = engine.graph.node_map.get(self.node_id)
+            if node:
+                return getattr(node, "monitor_queue", None)
+        return None
+
     def set_parameter(self, name, value):
         self.controller.set_parameter(self.node_id, name, value)
 
