@@ -1,427 +1,247 @@
-# AGENTS.md --- ANode Developer Guide & Architectural Invariants
+# AGENTS.md — ANode Development Guide
 
-## 1. Project Overview
+## 1. Project Model
 
-ANode is a modular, low-latency, node-based audio workstation combining Python/PyTorch audio processing, native C++ DSP through a C ABI/ctypes FFI, and a PySide6/Qt UI.
+ANode is a Python/PyTorch node-based audio application with:
 
-This file is the authoritative architectural contract for AI coding agents and developers.
+* a graph/model layer,
+* a Qt UI,
+* background workers for loading and other slow operations,
+* optional native C++ DSP through ctypes,
+* a block-based audio processing loop.
 
-**When implementation, tests, and this document disagree, do not silently choose one. Investigate the discrepancy. Preserve explicit architectural invariants unless the task intentionally and explicitly changes the architecture.**
+The priority order is:
 
----
+1. Correct audio and application behavior.
+2. No unsafe cross-thread access to shared mutable state.
+3. No blocking disk/network/UI work in audio processing.
+4. Small, understandable changes.
+5. Performance optimizations only where measurements justify them.
 
-## 2. Immutable Audio Format
+This document describes important invariants. It is not a requirement to turn ANode into a hard-real-time audio framework.
 
-Project-wide constants defined in `base.py`:
-
-- `BLOCK_SIZE = 512`
-- `SAMPLE_RATE = 48000`
-- `CHANNELS = 2` by default
-- `DTYPE = torch.float32`
-- Audio tensors are CPU-resident and planar: `(channels, BLOCK_SIZE)`
-
-Do not introduce per-node block sizes or silently change these constants.
-
-A node's output channel count is an immutable part of its port contract and must not dynamically change during `process()`.
+When code, tests, and documentation disagree, investigate the discrepancy rather than blindly following any one source.
 
 ---
 
-## 3. Thread Ownership Model & 2-Tier Architecture
+## 2. Audio Format
 
-ANode operates on a strict **2-Tier KISS Architecture**:
+The default engine format is:
 
-```text
-CONTROL DOMAIN (UI / Engine Command Dispatch / NRT Workers)
-  - Topology mutations (add, del, conn, disconn, restore, clear, load, reload)
-  - Undo/redo command history & state capture
-  - Patch serialization (to_json) & disk I/O
-  - NRT task execution & completion draining (_drain_nrt_all)
-  - Compiles authoritative Graph into immutable ExecutionPlan
-        |
-        | atomic ExecutionPlan reference swap (_active_plan)
-        v
-REAL-TIME (RT) DOMAIN (Engine._worker)
-  - Consumes immutable ExecutionPlan (nodes, clock_source)
-  - Syncs pre-allocated parameter tensor caches
-  - Executes node.process() under torch.no_grad()
-  - Zero heap allocations, zero mutex locks, non-blocking telemetry
+* `BLOCK_SIZE = 512`
+* `SAMPLE_RATE = 48000`
+* `CHANNELS = 2`
+* `DTYPE = torch.float32`
+* CPU tensors, normally shaped `(channels, frames)`
+
+Do not introduce per-node block sizes or silently change the global format.
+
+Node port channel counts are part of the port contract. Channel adaptation must be explicit and deterministic.
+
+Every audio output must be fully written for every processed block. Never leave stale samples in an output buffer.
+
+---
+
+## 3. Threading and Ownership
+
+ANode has several execution contexts:
+
+* UI/control thread
+* engine audio-processing thread
+* NRT worker threads
+* audio-device callback threads
+* optional native/library threads
+
+The important rule is **single ownership of shared mutable state**.
+
+A worker or callback may freely mutate state that it exclusively owns. It must not concurrently modify graph topology or DSP state that is also being processed by another thread.
+
+Use message passing, staging, queues, or prepared-state handoff when ownership crosses a thread boundary.
+
+It is acceptable for some control operations to run synchronously while the engine is stopped.
+
+---
+
+## 4. Audio Processing Rules
+
+Audio processing must not perform:
+
+* disk I/O
+* network I/O
+* UI operations
+* blocking waits
+* arbitrary long-running user code
+* model/file loading
+
+Avoid unnecessary allocations in steady-state processing.
+
+Pre-allocate buffers when this is simple and materially useful, but do not treat every PyTorch/backend allocation as a correctness violation.
+
+Do not use logging or expensive diagnostic formatting as normal audio-path behavior.
+
+If a node fails during processing, fail it safely and defer detailed reporting/logging to the control/UI side.
+
+---
+
+## 5. Parameters
+
+Parameters use staging:
+
+```
+UI/script
+   -> staging value
+   -> engine/control synchronization
+   -> active DSP value
 ```
 
-**No thread other than the engine thread may directly mutate live graph topology, node instances, engine parameter values, or native C++ DSP handles.**
+UI code should not directly modify engine-owned DSP state.
 
-UI and NRT threads may request changes, stage parameter values, or consume immutable results/snapshots.
+Parameter callbacks should request lifecycle changes rather than directly manipulating hardware streams, native DSP objects, or other shared resources.
 
-NRT workers must return results through the NRT completion mechanism rather than mutating live nodes directly.
+Audio-rate modulation is allowed where a node explicitly defines such an input.
 
 ---
 
-## 4. Development Environment & Build
+## 6. NRT Work
 
-- Conda environment: `anode-dev`
-- Python version: 3.11
-- Preferred shell: Git Bash on Windows, Bash/Zsh on Linux/macOS.
-- Use `/` (forward slashes) in file paths.
+Use NRT workers for operations that may block or take substantial time:
 
-Run tests with:
+* file loading
+* decoding
+* resampling
+* model loading
+* IR preparation
+* device enumeration
+* stream setup/teardown
 
-```bash
-conda run -n anode-dev python -m pytest tests/ -v
+NRT work should preferably produce a result that can be installed by the owning control/engine side.
+
+Workers may own their own resources and worker-local state. They must not concurrently manipulate shared DSP state that the audio thread is processing.
+
+For replaceable DSP resources, prefer:
+
+```
+prepare new resource
+    -> install new resource
+    -> retire old resource safely
 ```
 
-For C++ extension builds, fully activate the environment (do not use bare `conda run` on Windows to avoid compiler toolchain stripping):
+Avoid loading or destroying large native DSP objects inside the audio processing function.
 
-```bash
-conda activate anode-dev
-pip install -e . -v
-```
-
-Do not manually modify or commit generated `.dll`, `.so`, or `.dylib` binaries.
-
-The canonical project build uses CMake / scikit-build-core. Do not bypass it with ad-hoc compilation when building project plugins. Keep `cpp/CMakeLists.txt` synchronized with all native targets.
+Epoch/version checks may be used to discard stale asynchronous results.
 
 ---
 
-## 5. Real-Time Audio Rules
+## 7. Native C++ DSP
 
-`Engine._worker()` is the real-time (RT) audio execution loop. `process()` runs under `torch.no_grad()`.
+All ctypes bindings must explicitly define `restype` and `argtypes`.
 
-`process()` must **NOT**:
+Native DSP handles must have clear ownership. Do not simultaneously reconfigure a native handle from a worker while the audio thread is using it.
 
-- Perform disk, network, or pipe I/O.
-- Acquire blocking mutexes or locks.
-- Wait on futures, promises, semaphores, or condition variables (clock synchronization semaphore waiting occurs strictly at block boundaries in the engine worker loop, not inside node DSP `process()`).
-- Start, join, or terminate OS threads.
-- Perform model loading, IR file decoding, or heavy buffer initialization.
-- Intentionally raise exceptions as normal control flow.
-- Log, print, format strings, or construct diagnostic payloads.
-- Allocate, resize, or replace fixed audio/scratch buffers.
-- Create avoidable per-block Python objects (dictionaries, lists, string formatting).
-- Call `.tobytes()` or perform per-sample Python loops. (Calling `.item()` on CPU-resident tensors is permitted once at block rate for scalar state carry, such as oscillator phase or block modulation, but strictly forbidden inside per-sample loops).
-- Call arbitrary user or un-bounded library code.
+Prefer constructing replacement native state off the audio thread and swapping ownership at a safe boundary.
 
-### Memory Allocation
-The architectural requirement is **zero avoidable steady-state heap allocation** on the audio thread. Pre-allocate all scratch buffers, index arrays, boolean masks, and analysis buffers during node `__init__`.
-
-Library operations (such as PyTorch FFT or C++ convolution) may internally utilize pre-allocated workspace memory.
-
-`tracemalloc` tests are regression detectors for retained/unexpected allocations; passing a net-growth test does not prove that no transient allocations occurred.
-
-Automatic Python garbage collection is disabled during active playback (`gc.disable()`). Write code that avoids per-block temporary objects entirely rather than relying on GC.
-
-### Output Buffer Contract
-Every `process()` implementation must completely write every output channel for every frame:
-- Never leave stale samples in an output buffer.
-- When processing mono input to stereo output, explicitly duplicate or zero unused channels to prevent audio ghosting.
-- Do not use `out=` tensor operations in a way that shrinks or resizes the destination tensor.
-- Do not use `torch.nan_to_num`, `torch.clamp`, normalization, or other sanitization on the main audio path unless that transformation is explicitly the node's DSP function (e.g., a clipper or saturator).
+Native `process()` functions must receive correctly sized CPU-resident contiguous buffers.
 
 ---
 
-## 6. Visual / Monitoring Nodes
+## 8. Graph
 
-Visualization nodes (`WaveformDisplay`, `DataDisplayNode`, `SpectrogramDisplay`, `SpectrumDisplay`) are **strict bit-exact pass-through nodes**.
+The graph is a DAG.
 
-```text
-input -----------------> exact output copy (untouched)
-  |
-  +--------------------> private analysis buffer -> UI telemetry
-```
+`Graph.connect()` must reject:
 
-A visual node must never clip, sanitize, normalize, denoise, or otherwise modify the audio continuing through the graph.
+* self-loops
+* connections that would introduce a cycle
+* invalid node/port references
 
-Analysis routines may sanitize, downsample, or transform their private copy.
+Invalid topology should be rejected at connection time rather than merely detected during execution-order generation.
 
-### Telemetry Transport
-Do not use synchronized `queue.Queue` as an audio-thread queue. `queue.Queue` relies on mutex locks and can block the real-time thread during UI polling.
+Graph mutations should go through the command/control mechanism.
 
-Visual nodes must use a bounded, non-blocking Single-Producer Single-Consumer (SPSC) ring buffer or lock-free array queue:
-- If the telemetry queue is full, **drop the visual frame immediately**. Never block the audio thread.
-- Pre-allocate all analysis, downsampling, and telemetry storage during initialization.
-- Do not construct heap dictionaries or format strings per block to package visual frames.
+Undo state must come from authoritative command state, not an asynchronous UI rendering cache.
 
-*(For streaming audio I/O nodes such as media players, refer to §12).*
+Commands that execute asynchronously should have an identifiable request/result so history does not depend on guessing which command was accepted.
 
 ---
 
-## 7. Parameters
+## 9. Save/Load
 
-Parameters use a decoupled staging model:
+Saving must serialize one coherent authoritative graph state.
 
-```text
-UI / Script / Undo -> Parameter._staging -> Parameter.sync()
-                   -> engine-owned Parameter.value -> native DSP state
-```
+Before serialization, pending UI changes that are part of the saved state must be committed to the authoritative state.
 
-- UI changes and external scripts write exclusively to `Parameter._staging`.
-- `Parameter.sync()` crosses the thread boundary on the engine thread.
-- UI code must never directly mutate engine-owned `Parameter.value`.
-- Native mutable DSP state is updated strictly by the engine thread.
-- `Parameter.set()` must never perform blocking work or file I/O.
+File I/O may run outside the audio thread.
 
-Use `Parameter.get_staging_safe()` for UI rendering and `AppController.set_parameter()` for UI dispatch.
+Loading and reload operations must invalidate stale asynchronous work associated with replaced nodes.
+
+Malformed or incompatible connections should not be silently converted into a different graph without an explicit policy.
 
 ---
 
-## 8. NRT (Non-Real-Time) Work
+## 10. Visual / Monitoring Nodes
 
-Heavy tasks must use `node.submit_nrt(...)`, including file loading, audio file decoding, resampling, neural network model loading, FIR/IR convolution partitioning, and device probing.
+Visual nodes must not alter audio passing through the graph except for the explicitly documented channel-adaptation behavior.
 
-NRT workers must **never directly mutate live nodes, graphs, parameters, or active native DSP handles**.
+Analysis may use a private copy and may sanitize/downsample/transform that copy.
 
-They return immutable/prepared results through `on_nrt_complete(tag, ok, result)`.
+Telemetry queues must be bounded and non-blocking from the audio side.
 
-The engine thread installs prepared results during `sync()` or between process cycles, but must not perform expensive preparation itself.
-
-### Prepared State Pattern
-For complex DSP state (e.g., convolution reverb):
-
-```text
-NRT worker
-  -> Load file / data
-  -> Partition / compute FFTs / pre-allocate runtime buffers
-  -> Validate complete PreparedState object
-  -> Return to engine thread
-  -> Engine thread atomically swaps/installs PreparedState
-  -> process() executes with zero allocation
-```
-
-`process()` must never lazily construct missing DSP state. If prepared state is absent, the node must pass through dry audio or output silence according to its documented contract.
-
-### Epoch Invalidation
-NRT tasks must be invalidated via the node's epoch mechanism:
-- When a node is deleted, call `nrt.discard(node)`.
-- When global graph resets occur (`clear`, `load`, `reload`), `Engine` must invoke `nrt.discard(node)` for all displaced nodes before destroying or replacing them.
+Dropping visual telemetry is preferable to delaying audio processing.
 
 ---
 
-## 9. Native C++ FFI
+## 11. File and Streaming I/O
 
-Required C ABI exports:
+File creation, opening, decoding, and writing belong outside the audio processing function.
 
-```text
-void* create()
-void  destroy(void* handle)
-void  process(void* handle, float* in, float* out, int channels, int frames)
-void  set_param(void* handle, int param_id, float value)
-```
+Streaming producers may own their own worker thread and queue.
 
-Optional standard exports:
-
-```text
-void set_samplerate(void* handle, float samplerate)
-void reset(void* handle)
-```
-
-### ctypes Signatures
-**Every bound native function must explicitly declare both `restype` and `argtypes`.**
-
-In particular:
-- `create.restype` must be `ctypes.c_void_p`.
-- Handle arguments must be `ctypes.c_void_p`.
-- Pointer arguments must use explicit pointer types (e.g., `ctypes.POINTER(ctypes.c_float)`).
-
-Never rely on ctypes defaults (which default to 32-bit `c_int` and silently truncate 64-bit pointers on 64-bit platforms).
-
-### Parameter Synchronization
-Parameter synchronization follows a single canonical path owned by `FFINode`:
-
-```text
-Parameter staging
- -> engine-thread Parameter.sync()
- -> FFINode._sync_params_to_cpp() (cached tuple comparison)
- -> native set_param()
- -> native process()
-```
-
-- `FFINode.on_ui_param_change()` must **never** call native `set_param()` directly.
-- `FFINode` synchronizes staged parameters exactly once **before** native `process()` executes.
-- `start()` and `load_state()` invalidate the cached parameter state (`_cpp_param_state = None`) to guarantee native parameter synchronization prior to audio processing.
-- If a native library exports `reset()`, bind it and invoke it during `FFINode.start()` on the engine thread.
-
-#### Audio-Rate Modulation Exception
-When an input slot is explicitly designed to modulate a parameter per block (e.g., `BiquadFilter.in_mod` modulating cutoff frequency), `process()` on the engine thread may calculate the modulation value and push it directly via `lib.set_param()` after staged parameters have synced.
-
-#### Model & Resource Deallocation
-When native C++ models or buffers are updated (e.g., in Neural Amp Modeler), old DSP models must not be deallocated inside the audio thread's `process()` call. Stage outgoing models for deferred deallocation on an NRT/worker thread.
-
-### Buffer Contract
-FFI audio buffers are CPU-resident, contiguous, planar float buffers:
-
-```text
-[Ch0_0 ... Ch0_N, Ch1_0 ... Ch1_N]
-```
-
-Before casting pointers:
-- Verify CPU residency (`device.type == "cpu"`).
-- Verify contiguity (`is_contiguous()`); if non-contiguous, copy into a pre-allocated contiguous scratch buffer.
-- Pass actual channel and frame counts.
-- For multiple buffers (e.g. sidechains), every buffer must receive its own explicit channel count. Never index a secondary buffer using the main signal's channel count.
+The audio side must consume streaming data without blocking. On underrun, use the node's documented fallback behavior, normally silence or a safe fallback.
 
 ---
 
-## 10. Graph Topology & DAG Invariants
+## 12. Script / Experimental Nodes
 
-ANode's graph is a Directed Acyclic Graph (DAG).
+Nodes executing arbitrary Python code are not guaranteed to be glitch-free under load.
 
-All UI-originated topology mutations must be dispatched as `AppController` commands:
-- `add`
-- `del`
-- `move`
-- `conn`
-- `disconn`
-- `restore`
-
-Purely visual operations (selection, zooming, panning) are scene-level operations and not graph commands.
-
-### Connection-Time Cycle Rejection
-**A connection that would introduce a feedback cycle or self-loop must be rejected at connection time.**
-
-- `Graph.connect()` must perform a reachability / DFS check: if `dst_id` can reach `src_id` (or if `src_id == dst_id`), reject the connection immediately and return `False`.
-- Do not permit an invalid cyclic graph and merely discover it later during topological sorting.
-
-### Commands & Undo/Redo State Ownership
-Commands own the authoritative state required to undo and redo themselves:
-- Destructive commands (such as `DeleteNodeCommand`) must capture the exact serialized node state and attached connection data from the authoritative graph model at command creation or execution time.
-- **Do not use `_latest_snapshot` as an authoritative undo source.** `_latest_snapshot` is an asynchronous UI rendering cache and may be stale when rapid actions occur.
-- `CompoundCommand` executes children forward and undoes them in reverse order.
+Such nodes may be used for prototyping, but this limitation must remain explicit in their documentation.
 
 ---
 
-## 11. Graph Serialization / Save
+## 13. Testing
 
-Graph serialization must be completely thread-safe:
+Tests should prioritize:
 
-1. When a `save` command is processed by the engine on the engine thread, ensure all preceding queued commands have been applied.
-2. Serialize the authoritative graph state there (`self.graph.to_json()`).
-3. Produce an immutable snapshot string/bytes.
-4. Pass only that immutable snapshot to the background writer thread.
-5. Perform file I/O outside the engine critical path.
+* graph cycle rejection
+* save/load round trips
+* undo/redo correctness
+* parameter synchronization
+* node lifecycle/reset behavior
+* stale NRT result rejection
+* audio output buffer correctness
+* important DSP numerical behavior
+* non-blocking I/O behavior
 
-**Never permit a background thread to traverse the live mutable graph.**
+Real-time allocation tests are regression indicators, not proofs of zero allocation.
 
----
-
-## 12. Audio I/O & File Streaming Nodes
-
-### FileRecorder
-Recording audio to disk must not introduce audio-thread latency:
-- File creation, directory checks, and `wave.open()` / `wave.close()` must run on a persistent background writer thread.
-- Never spawn, join, or control OS threads from audio-thread parameter callbacks (`on_ui_param_change`).
-- Use a recorder-owned bounded pool/ring of pre-allocated audio blocks.
-- In `process()`, copy engine audio into an available pool slot and pass slot indices over a lock-free queue.
-- Never call `.tobytes()` on the audio thread.
-- If the recorder pool is exhausted, drop or defer frames according to an explicit policy rather than blocking the audio loop.
-
-### Streaming Audio Producers (e.g., MediaPlayerNode)
-For long-running decoders streaming audio into the graph:
-- Decoding, demuxing, URL resolution, and resampling run strictly on dedicated worker threads.
-- The worker pushes pre-allocated blocks into a bounded queue.
-- The engine thread's `process()` consumes blocks strictly via non-blocking `get_nowait()`.
-- On queue underrun, `process()` writes exact zeros and sets status telemetry without blocking.
+For visual nodes, test pass-through correctness and telemetry behavior. Add GUI rendering/concurrency tests where those behaviors are important enough to justify the maintenance cost.
 
 ---
 
-## 13. ScriptNode Contract
+## 14. Coding Style for Agents
 
-Arbitrary Python `exec()` is **not real-time safe**. Python bytecode execution may allocate heap memory, invoke arbitrary libraries, trigger GIL contention, perform I/O, or raise unhandled exceptions.
+Inspect before modifying.
 
-`ScriptNode` is explicitly contracted as a **Non-Real-Time (Non-RT) / Prototyping Node**:
-- Document clearly that arbitrary scripts may cause latency jitter and dropouts during playback.
-- If script compilation fails or runtime exceptions occur in `process()`, zero output buffers safely and report error telemetry without printing or logging inside `process()`.
+Prefer small, local changes.
 
----
+Preserve existing public node names, port names, parameter keys, and saved-patch compatibility unless the task explicitly changes them.
 
-## 14. DSP Node Contracts
+Do not refactor an architecture merely to satisfy this document.
 
-All nodes must:
-- Respect the project constants (`BLOCK_SIZE = 512`, `SAMPLE_RATE = 48000`, `CHANNELS = 2`, `torch.float32`).
-- Fully write all output channel buffers on every block.
-- Preserve pass-through bit-exactness where specified.
-- Keep persistent DSP state in node-owned instance variables.
-- Reset internal state (phases, delay lines, filter history, envelopes) on `start()`.
+Fix real correctness, ownership, lifecycle, and regression problems first.
 
-### InputSlot Contract
-- For a connected input, `InputSlot.get_tensor()` copies connected buffers into its pre-allocated scratch buffer.
-- For an unconnected input bound to a parameter (`param_name`), `InputSlot.get_tensor()` returns the parameter's cached constant tensor.
-- For an unbound, unconnected input, `InputSlot.get_tensor()` clears `_scratch` to zero and returns it.
-- Never treat `_scratch` as persistent audio state across blocks.
-- Tests should mock `slot.get_tensor` when injecting explicit test signals rather than writing test data into `_scratch`.
+Run the smallest relevant tests after each logical change, then the full suite when practical.
 
----
+Do not claim tests passed or builds succeeded unless they were actually run.
 
-## 15. Plugin Imports & Dependency Management
-
-Plugin discovery must degrade gracefully when optional or heavy dependencies (e.g. `sounddevice`, `soundfile`, `resampy`, `av`, `yt-dlp`) are unavailable.
-
-- Guard optional imports inside plugin modules or execution paths.
-- Keep the core engine environment minimal.
-- Do not add external dependencies for simple DSP algorithms that can be implemented cleanly with existing PyTorch/C++ facilities.
-
----
-
-## 16. Testing Requirements
-
-Testing workflow:
-1. Run targeted node/unit tests first.
-2. Run subsystem regression suites.
-3. Run the complete test suite.
-
-Architectural regression tests must cover:
-- Visual bit-exact pass-through with out-of-bounds input amplitudes.
-- Isolation of visual sanitization to private analysis buffers.
-- Lock-free, non-blocking telemetry queues in visual nodes.
-- Zero heap allocations in steady-state real-time processing (`tracemalloc`).
-- Thread safety and pre-allocated buffer ownership in `FileRecorder` and `AudioDeviceInput`.
-- Canonical FFI parameter synchronization order (before native `process()`).
-- Native state reset on `start()` lifecycle calls.
-- Connection-time cycle rejection in `Graph.connect()`.
-- Immediate add/delete/undo topology integrity.
-- Thread-safe serialization snapshots during active playback.
-- NRT worker epoch invalidation on node deletion and global graph resets.
-
-Node tests must verify `category`, `label`, and registration metadata.
-
-FFT and spectral assertions should be used where frequency-domain behavior is part of the DSP contract.
-
-### Visual Node Testing Invariant
-Unit tests for visual nodes must exercise the multi-threaded GUI pipeline, not just DSP in isolation:
-
-1. **Concurrent Producer-Consumer Fuzzing:** Run an audio-thread-simulator parallel to UI-thread polling to catch memory tearing, GIL races, and shared mutable array views.
-2. **Headless Widget & paintEvent Execution:** Use `QT_QPA_PLATFORM=offscreen` to render `QWidget` to `QPixmap` and verify coordinate transforms, layout strings, and `QPainter` execute without exceptions.
-3. **Pixel Energy Assertions:** Assert that silent signal renders the background color and active signal produces measurable pixel energy - proving the display actually shows sound.
-4. **Temporal Frame Accounting:** Verify waterfall frames are never dropped between audio blocks and UI polling (no 66% frame starvation).
-
-Example guard test:
-```python
-def test_waveform_display_thread_safety():
-    # Dual-thread producer (audio sim) + consumer (UI poll)
-    # Fail if torn frames detected via non-uniform channel values
-```
-
----
-
-## 17. AI Coding Agent Working Rules
-
-1. **Inspect before modifying.** Read relevant code and understand data flows before editing.
-2. **Search accurately.** Locate exact symbol definitions rather than guessing filenames.
-3. **Preserve public behavior.** Do not alter port names, parameter keys, or node labels unless explicitly requested.
-4. **Prefer small, precise patches.** Avoid mass refactoring when targeted changes suffice.
-5. **Never weaken an architectural invariant.** If current code violates an invariant, fix the implementation to satisfy the invariant; never weaken the rule to accommodate a shortcut.
-6. **Fix contradictory tests.** If an existing test asserts an anti-pattern or broken behavior (e.g. asserting that cycles are permitted), correct the test to assert the architectural rule.
-7. **Verify native builds.** If modifying C++ source files (`cpp/*.cpp`) or `CMakeLists.txt`, ensure the native extension compiles cleanly.
-8. **Run tests after every logical step.** Execute the relevant pytest suite and confirm passing status before marking work complete.
-9. **Never claim edits succeeded or tests passed unless verified.**
-10. **Do not commit or push unless explicitly requested.**
-
----
-
-## 18. Project Layout
-
-- `core.py`, `base.py`, `commands.py`, `controller.py`: Core engine, graph DAG, thread dispatch, parameter staging.
-- `ffi_base.py`: Base ctypes / C-ABI bridging layer for native DSP nodes.
-- `cpp/`: Native C++ DSP source code and `CMakeLists.txt`.
-- `plugins/`: Node implementations (I/O, sources, effects, spatial, utilities, visual).
-- `tests/`: Automated pytest regression suite.
-- `docs/`: Technical specifications and DSP design notes.
-
-*Use filesystem search/tools rather than assuming a static list of node or test files.*
+Do not commit or push unless explicitly requested.

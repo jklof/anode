@@ -90,6 +90,9 @@ class NamNode(FFINode):
         self._status = "Idle"
         self._current_filename = "No Model"
 
+        # Epoch for NRT model loads: stale (superseded) results are rejected.
+        self._load_epoch = 0
+
         # Bind Custom Function
         if self.lib:
             try:
@@ -109,22 +112,63 @@ class NamNode(FFINode):
         if param_name == "model_path":
             self.params[param_name].sync()
             path = self.params["model_path"].value
-            if self.lib and self.dsp_handle and path:
+            if self.lib and path:
                 self._status = "Loading..."
-                self.submit_nrt(self._load_blocking, path)
+                self._load_epoch += 1
+                self.submit_nrt(self._load_blocking, path, self._load_epoch, tag="load_model")
 
-    def _load_blocking(self, path):
-        res = self.lib.load_model_sync(self.dsp_handle, path.encode("utf-8"),
-                                       float(SAMPLE_RATE), int(BLOCK_SIZE))
+    def _load_blocking(self, path, epoch):
+        """NRT thread: builds a NEW, independently owned native DSP state and
+        loads the model into it. The live handle being processed by the audio
+        path is never touched here."""
+        new_handle = self.lib.create()
+        if not new_handle:
+            raise RuntimeError("Failed to create NAM DSP instance for model load")
+        try:
+            if hasattr(self.lib, "set_samplerate"):
+                self.lib.set_samplerate(new_handle, float(SAMPLE_RATE))
+            res = self.lib.load_model_sync(new_handle, path.encode("utf-8"),
+                                           float(SAMPLE_RATE), int(BLOCK_SIZE))
+        except Exception:
+            self.lib.destroy(new_handle)
+            raise
         if not res:
+            self.lib.destroy(new_handle)
             raise RuntimeError(f"Failed to load NAM model from {path}")
-        return os.path.basename(path)
+        return (new_handle, os.path.basename(path), epoch)
 
     def on_nrt_complete(self, tag, ok, result):
+        if tag != "load_model":
+            return
         if ok:
-            self._status, self._current_filename = "Active", result
+            new_handle, filename, epoch = result
+            if new_handle is None:
+                self._status = "Error"
+                return
+            if epoch != self._load_epoch:
+                # Superseded by a newer load request: retire the prepared state
+                # safely here (engine/control thread, audio path not running).
+                try:
+                    self.lib.destroy(new_handle)
+                except Exception:
+                    pass
+                self._status = "Idle"
+                return
+            # Install replacement state and retire the old one outside of
+            # audio processing (this runs from sync(), between blocks on the
+            # engine thread — never concurrently with process()).
+            old_handle = self.dsp_handle
+            self.dsp_handle = new_handle
+            self._native_params_dirty = True
+            if old_handle:
+                try:
+                    self.lib.destroy(old_handle)
+                except Exception:
+                    pass
+            self._status, self._current_filename = "Active", filename
         else:
             self._status = "Error"
+            self._current_filename = "Load Failed"
 
     def get_telemetry(self) -> dict:
         return {"status": self._status, "filename": self._current_filename}

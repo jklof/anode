@@ -37,8 +37,9 @@ class FFINode(Node):
         self.dsp_handle = None
         # Pre-allocate persistent scratch buffer for zero-allocation copying
         self._ffi_in_buffer = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
-        # Parameter sync state (cached tuple of parameter values)
-        self._cpp_param_state = None
+        # Parameter sync state: dirty flag — set when a parameter value changes,
+        # consumed (and cleared) by _sync_params_to_cpp() on the engine thread.
+        self._native_params_dirty = True
         self._load_library()
 
         # Initialize C++ object
@@ -125,18 +126,19 @@ class FFINode(Node):
         """
         Synchronize staged parameters to native DSP.
         Called ONCE per block, BEFORE native process().
-        Uses cached tuple comparison to avoid redundant native calls.
+        Dirty-flag based: parameters are only pushed when something changed,
+        so unchanged parameters cause no repeated set_param() calls.
         """
         if not (self.lib and self.dsp_handle):
             return
         if not self.PARAM_MAP:
             return
+        if not self._native_params_dirty:
+            return
 
-        state = tuple(float(self.params[name].value) for name in self.PARAM_MAP)
-        if state != self._cpp_param_state:
-            for (name, pid), val in zip(self.PARAM_MAP.items(), state):
-                self.lib.set_param(self.dsp_handle, pid, val)
-            self._cpp_param_state = state
+        for name, pid in self.PARAM_MAP.items():
+            self.lib.set_param(self.dsp_handle, pid, float(self.params[name].value))
+        self._native_params_dirty = False
 
     def _preprocess_input(self, in_tensor: torch.Tensor, scratch_buffer: torch.Tensor) -> torch.Tensor:
         """Hook for subclasses to modify input tensor before C++ processing. Default pass-through."""
@@ -145,8 +147,11 @@ class FFINode(Node):
     def on_ui_param_change(self, param_name: str):
         """UI parameter change - stages value only. Native sync happens on engine thread."""
         super().on_ui_param_change(param_name)
-        # REMOVED: Direct native set_param() call.
-        # Parameter sync now happens canonically in process() via _sync_params_to_cpp()
+
+    def _mark_param_dirty(self):
+        # Any committed parameter change (set()+sync(), engine 'param'
+        # command, load_state) marks native params dirty for the next block.
+        self._native_params_dirty = True
 
     def process(self):
         if not self.lib or not self.dsp_handle:
@@ -209,14 +214,14 @@ class FFINode(Node):
         self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
 
     def start(self):
-        # Reset native DSP state and force parameter re-sync on next block
+        # Reset native DSP state and force parameter re-push on next block
         self._call_reset()
-        self._cpp_param_state = None  # Force re-push on next process()
+        self._native_params_dirty = True
 
     def load_state(self, data: dict):
         super().load_state(data)
-        # Invalidate cached param state to force native sync on next block
-        self._cpp_param_state = None
+        # Force native parameter sync on next block
+        self._native_params_dirty = True
 
     def stop(self):
         # CHANGED: Do NOT destroy C++ object on transport stop.

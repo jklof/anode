@@ -357,6 +357,13 @@ class MediaPlayerNode(Node):
         self._event_queue = queue.SimpleQueue()
         self.worker = None
 
+        # Worker restart machinery. The NRT restart path owns worker lifecycle
+        # (serialized by _restart_lock); completed bundles are installed on
+        # the engine thread in on_nrt_complete so the audio path never sees a
+        # half-configured worker/queue pair.
+        self._restart_lock = threading.Lock()
+        self._pending_bundle = None
+
         self.current_path = ""
         self.playback_frames = 0
         self.total_duration = 0.0
@@ -375,7 +382,7 @@ class MediaPlayerNode(Node):
                 break
 
     def _request_restart(self, path, start_time=0.0):
-        self.submit_nrt(self._do_restart_worker, path, start_time)
+        self.submit_nrt(self._do_restart_worker, path, start_time, tag="restart")
 
     def load_state(self, data: dict):
         """
@@ -431,34 +438,67 @@ class MediaPlayerNode(Node):
                 self.params["seek_ratio"].sync()
 
     def _do_restart_worker(self, path, start_time=0.0):
-        # This is where the actual heavy work happens (NRT pool thread)
-        if self.worker:
-            self.worker.stop()
-            self.worker.join(timeout=2.0)
-            if self.worker.is_alive():
-                logging.warning(f"MediaPlayerNode {self.id}: previous worker did not "
-                                 f"exit in time; abandoning it.")
-            self.worker = None
+        """NRT thread. Owns the full worker lifecycle: retires the currently
+        installed worker and any superseded pending worker, then builds a
+        complete replacement bundle. The bundle is installed on the engine
+        thread (on_nrt_complete), so shared node state is only mutated at a
+        safe boundary — never concurrently with audio processing."""
+        with self._restart_lock:
+            prev = self._pending_bundle
+            if prev is not None and prev.get("worker") is not None:
+                prev["worker"].stop()
+                prev["worker"].join(timeout=2.0)
 
-        # Create NEW queue object instead of clearing
-        self.queue = queue.Queue(maxsize=500)
-        self._event_queue = queue.SimpleQueue()
+            installed = self.worker
+            if installed is not None and (prev is None or installed is not prev.get("worker")):
+                installed.stop()
+                installed.join(timeout=2.0)
+                if installed.is_alive():
+                    logging.warning(
+                        f"MediaPlayerNode {self.id}: previous worker did not "
+                        f"exit in time; abandoning it."
+                    )
 
-        self.playback_frames = int(start_time * SAMPLE_RATE)
+            bundle = {
+                "worker": None,
+                "queue": None,
+                "event_queue": None,
+                "start_frames": int(start_time * SAMPLE_RATE),
+                "deps_missing": False,
+            }
+            if MEDIA_DEPS_AVAILABLE:
+                q = queue.Queue(maxsize=500)
+                ev = queue.SimpleQueue()
+                w = MediaStreamWorker(
+                    path,
+                    q,
+                    ev,
+                    looping=bool(self.params["looping"].value),
+                    start_time=start_time,
+                )
+                w.start()
+                bundle.update(worker=w, queue=q, event_queue=ev)
+            else:
+                bundle["deps_missing"] = True
+            self._pending_bundle = bundle
+            return bundle
+
+    def on_nrt_complete(self, tag, ok, result):
+        if tag != "restart":
+            return
+        if not ok:
+            self.status_msg = "Playback Error"
+            return
+        # Install the prepared bundle atomically on the engine thread.
+        with self._restart_lock:
+            self._pending_bundle = None
+        self.queue = result["queue"] if result["queue"] is not None else queue.Queue(maxsize=500)
+        self._event_queue = result["event_queue"] if result["event_queue"] is not None else queue.SimpleQueue()
+        self.worker = result["worker"]
+        self.playback_frames = result["start_frames"]
         self.total_duration = 0.0
         self.eof = False
-
-        if MEDIA_DEPS_AVAILABLE:
-            looping_val = bool(self.params["looping"].value)
-            self.worker = MediaStreamWorker(
-                path,
-                self.queue,
-                self._event_queue,
-                looping=looping_val,
-                start_time=start_time,
-            )
-            self.worker.start()
-        else:
+        if result["deps_missing"]:
             self.status_msg = "Dependencies Missing"
 
     def _handle_worker_event(self, type, data):
@@ -521,6 +561,10 @@ class MediaPlayerNode(Node):
         """Called when node is deleted. Non-blocking via NRT executor."""
         if self.worker:
             self.graph.engine.nrt.stop_stream(self, self.worker.stop, self.worker)
+        pending = self._pending_bundle
+        if pending is not None and pending.get("worker") is not None and pending["worker"] is not self.worker:
+            self.graph.engine.nrt.stop_stream(self, pending["worker"].stop, pending["worker"])
+        self._pending_bundle = None
 
     def to_dict(self):
         self._drain_events()

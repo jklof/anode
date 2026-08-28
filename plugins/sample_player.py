@@ -22,10 +22,17 @@ from base import Node, SAMPLE_RATE, CHANNELS, BLOCK_SIZE, DTYPE
 
 try:
     import soundfile as sf
-    import resampy
-    _DEPS_AVAILABLE = True
+    _SF_AVAILABLE = True
 except ImportError:
-    _DEPS_AVAILABLE = False
+    sf = None
+    _SF_AVAILABLE = False
+
+try:
+    import resampy
+    _RESAMPY_AVAILABLE = True
+except ImportError:
+    resampy = None
+    _RESAMPY_AVAILABLE = False
 
 
 class SamplePlayer(Node):
@@ -72,7 +79,7 @@ class SamplePlayer(Node):
     # NRT load path
     # ------------------------------------------------------------------
     def on_ui_param_change(self, param_name):
-        if param_name != "sample_path" or not _DEPS_AVAILABLE:
+        if param_name != "sample_path" or not _SF_AVAILABLE:
             return
         path = self.params["sample_path"].get_staging_safe()
         if path and path != self._current_path:
@@ -80,11 +87,20 @@ class SamplePlayer(Node):
             self.submit_nrt(self._load_file_nrt, path, tag="load")
 
     def _load_file_nrt(self, path):
+        if sf is None:
+            raise RuntimeError(
+                "SamplePlayer: 'soundfile' is required to load samples but is not installed"
+            )
         data, sr = sf.read(path, dtype="float32", always_2d=True)
         data = data.T[:CHANNELS].copy()
         if data.shape[0] == 1:
             data = np.vstack([data[0], data[0]])          # mono -> stereo dup
         if sr != SAMPLE_RATE:
+            if resampy is None:
+                raise RuntimeError(
+                    "SamplePlayer: 'resampy' is required to resample "
+                    f"{sr} Hz audio to {SAMPLE_RATE} Hz but is not installed"
+                )
             data = resampy.resample(data, sr, SAMPLE_RATE, axis=-1)
         return torch.from_numpy(np.ascontiguousarray(data))
 

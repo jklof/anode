@@ -26,6 +26,18 @@ class CommandHistory:
         self.redo_stack.clear()
         self.undo_stack.append(cmd)
 
+    def remove_by_cmd_id(self, cmd_id):
+        """Remove the command whose engine-assigned identity matches cmd_id.
+        Used when the engine reports a rejection/failed result so history does
+        not depend on 'the last command happens to be this one'."""
+        if cmd_id is None:
+            return False
+        for i in range(len(self.undo_stack) - 1, -1, -1):
+            if getattr(self.undo_stack[i], "cmd_id", None) == cmd_id:
+                del self.undo_stack[i]
+                return True
+        return False
+
     def undo(self):
         """Undo the last command."""
         if not self.undo_stack:
@@ -149,15 +161,9 @@ class AppController(QObject):
                     )
                     graph_changed = True
                 elif m_type == "connect_rejected":
-                    if self.history.undo_stack:
-                        last_cmd = self.history.undo_stack[-1]
-                        if isinstance(last_cmd, ConnectCommand) and (
-                            last_cmd.src_id == msg["src_id"]
-                            and last_cmd.src_port == msg["src_port"]
-                            and last_cmd.dst_id == msg["dst_id"]
-                            and last_cmd.dst_port == msg["dst_port"]
-                        ):
-                            self.history.undo_stack.pop()
+                    # Associate the rejection with the exact originating
+                    # command via its engine-assigned id.
+                    self.history.remove_by_cmd_id(msg.get("cmd_id"))
                 elif m_type == "disconnected":
                     if "connections" in ws:
                         c_list = ws["connections"]
@@ -392,6 +398,15 @@ class AppController(QObject):
         """Save the graph to a file."""
         if not filename:
             return
+        # Make Save a coherent synchronization point: commit any pending UI
+        # parameter changes to the authoritative state BEFORE the save command
+        # is queued. Commands run in FIFO order, so serialization (which
+        # happens on the engine thread inside the save handler) sees the
+        # latest values. The background writer then only receives the
+        # immutable serialized JSON string.
+        for (nid, pname), val in self._pending_params.items():
+            self.engine.push_command(("param", nid, pname, val))
+        self._pending_params.clear()
         self.engine.push_command(("save", filename))
 
     def load(self, filename):

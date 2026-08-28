@@ -154,12 +154,26 @@ class BaseAudioDeviceNode(Node):
         self.ring_buffer = AudioRingBuffer(capacity_blocks=32)
         self.stream: Optional[sd.Stream] = None
         self._device_state = {"active": False, "status": "Inactive", "latency": 0.0, "idx": -1}
+        # Request identity for stream lifecycle operations. Each start/stop
+        # request bumps the counter; an NRT task carrying an older id is a
+        # superseded request and skips its stream work. Combined with the
+        # global _sounddevice_lock this guarantees only one owner manipulates
+        # the PortAudio stream at a time, in request order.
+        self._stream_request_id = 0
+
+    def _next_stream_request_id(self):
+        # Control thread only (on_ui_param_change / start / stop callbacks).
+        self._stream_request_id += 1
+        return self._stream_request_id
 
     def _start_stream(self, StreamClass, callback, channels=None):
-        self.submit_nrt(self._start_stream_sync, StreamClass, callback, channels)
+        self.submit_nrt(self._start_stream_sync, StreamClass, callback, channels,
+                        self._next_stream_request_id())
 
-    def _start_stream_sync(self, StreamClass, callback, channels=None):
+    def _start_stream_sync(self, StreamClass, callback, channels=None, req_id=None):
         with _sounddevice_lock:
+            if req_id is not None and req_id != self._stream_request_id:
+                return  # superseded by a newer start/stop request
             self._stop_stream_sync_internal()
 
             # KEY CHANGE: Ensure we are reading the synced value
@@ -221,10 +235,12 @@ class BaseAudioDeviceNode(Node):
                 self._device_state = {"active": False, "status": f"Error: {str(e)[:20]}...", "latency": 0.0, "idx": -2}
 
     def _stop_stream(self):
-        self.submit_nrt(self._stop_stream_sync)
+        self.submit_nrt(self._stop_stream_sync, self._next_stream_request_id())
 
-    def _stop_stream_sync(self):
+    def _stop_stream_sync(self, req_id=None):
         with _sounddevice_lock:
+            if req_id is not None and req_id != self._stream_request_id:
+                return  # superseded by a newer start/stop request
             self._stop_stream_sync_internal()
 
     def _stop_stream_sync_internal(self):
@@ -259,7 +275,11 @@ class BaseAudioDeviceNode(Node):
             # so that _start_stream() sees the NEW selection, not the old one.
             self.params["device_index"].sync()
 
-            # Restart immediately (safe even if engine is running)
+            # Device change is an explicit control operation: request a stream
+            # restart on the NRT path (stop old stream -> open new stream ->
+            # publish state). It never blocks and never touches the stream
+            # directly from this callback; the request-id check discards any
+            # superseded restart still queued on the pool.
             self.start()
 
 

@@ -77,6 +77,10 @@ class FileRecorder(Node):
 
         # RT-side gate only; flipped on engine/UI threads, read in process().
         self._recording = False
+        # Set when a start was requested; the writer clears it once the file
+        # is open (or failed). While set, process() keeps enqueueing blocks so
+        # the very beginning of the recording is not lost during startup.
+        self._start_pending = False
 
         # All disk I/O and the wave handle live on the writer thread.
         self._file = None                # writer thread only
@@ -95,12 +99,25 @@ class FileRecorder(Node):
         # Writer thread management
         self._writer_thread = None
         self._shutdown_event = threading.Event()
+        self._writer_error = None  # set by writer thread if open fails
 
     # ------------------------------------------------------------------
     # Writer thread — owns the wave file handle
     # ------------------------------------------------------------------
 
-    def _writer_loop(self):
+    def _writer_loop(self, filename):
+        # The file handle belongs entirely to the writer side: the file is
+        # opened HERE on the writer thread, never on the control/audio path.
+        self._writer_open(filename)
+        if self._file is None:
+            self._writer_error = f"Failed to open {filename}"
+            self._recording = False
+            self._start_pending = False
+            return
+        self._frames_written = 0
+        # Writer is ready: enable the steady-state enqueue path
+        self._recording = True
+        self._start_pending = False
         while True:
             item, ok = self._index_queue.try_pop()
             if ok:
@@ -149,7 +166,6 @@ class FileRecorder(Node):
             logger.error(f"Recorder open failed: {e}")
             self._file = None
             self._recording = False
-
     def _writer_close(self):
         if self._file is not None:
             try:
@@ -173,6 +189,11 @@ class FileRecorder(Node):
             logger.warning("Recorder: no filename set, ignoring record start")
             return
 
+        # Single writer at a time
+        if self._writer_thread is not None and self._writer_thread.is_alive():
+            logger.warning("Recorder: writer already active, ignoring record start")
+            return
+
         # Reset writer thread state
         self._shutdown_event.clear()
         self._write_index = 0
@@ -180,29 +201,31 @@ class FileRecorder(Node):
         while self._index_queue.try_pop()[1]:
             pass
 
-        self._writer_open(filename)
-        if self._file is None:
-            return
+        self._writer_error = None
+        # Recording stays False until the writer thread has successfully
+        # opened the file — the open happens on the writer thread, never here.
+        self._recording = False
+        self._start_pending = True
 
         # Start writer thread (created off RT path via NRT or here if stopped)
         graph = getattr(self, "graph", None)
         engine = getattr(graph, "engine", None)
         if engine and engine.nrt:
-            self._writer_thread = engine.nrt.spawn_stream(self._writer_loop)
+            self._writer_thread = engine.nrt.spawn_stream(self._writer_loop, filename)
         else:
             self._writer_thread = threading.Thread(
-                target=self._writer_loop, daemon=True, name=f"anode-recorder-{self.id[:8]}"
+                target=self._writer_loop, args=(filename,), daemon=True, name=f"anode-recorder-{self.id[:8]}"
             )
             self._writer_thread.start()
-        self._recording = True
 
     def _stop_recording(self):
         was_recording = self._recording
         self._recording = False
+        self._start_pending = False
         if not was_recording and self._writer_thread is None:
             return
 
-        # Signal writer thread to close
+        # Signal writer thread to close; it drains queued blocks first.
         self._shutdown_event.set()
         self._index_queue.try_push(-1)
 
@@ -212,6 +235,10 @@ class FileRecorder(Node):
         # Deterministic flush only when no real-time loop depends on us
         if writer is not None and not self._engine_running():
             writer.join(timeout=2.0)
+
+        # Surface writer-side open failures (reported off the audio path)
+        if self._writer_error:
+            self.error_msg = self._writer_error
 
     def on_ui_param_change(self, param_name):
         if param_name == "record":
@@ -223,7 +250,7 @@ class FileRecorder(Node):
 
     def process(self):
         tensor = self.inp.get_tensor()
-        if self._recording:
+        if self._recording or self._start_pending:
             # Convert into pre-allocated pool slot; NO .tobytes() on audio thread
             block_idx = self._write_index
             pool_slot = self._block_pool[block_idx]

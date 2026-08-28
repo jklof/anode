@@ -169,6 +169,13 @@ class IClockProvider(abc.ABC):
 
 class OutputSlot:
     def __init__(self, name: str, parent: "Node", channels: int = CHANNELS):
+        if channels < 1:
+            # Impossible channel configuration: an output must produce at
+            # least one channel. Reject at creation (and therefore at
+            # connection time downstream) instead of silently misbehaving.
+            raise ValueError(
+                f"OutputSlot '{name}' requires at least 1 channel (got {channels})"
+            )
         self.name = name
         self.parent = parent
         self.buffer = torch.zeros((channels, BLOCK_SIZE), dtype=DTYPE)
@@ -234,9 +241,13 @@ class InputSlot:
 
 
 class Parameter:
-    def __init__(self, value: Any, param_type: str, **kwargs):
+    def __init__(self, value: Any, param_type: str, owner: "Node" = None, **kwargs):
         self.value = value
         self._staging = value
+        # Optional owner node; notified on set() so owner-side dirty flags
+        # (e.g. native parameter sync) update no matter which thread/path
+        # changed the value.
+        self.owner = owner
         self.type = param_type
         self.meta = kwargs
         self._tensor_cache = torch.tensor([0.0], dtype=DTYPE).expand(CHANNELS, BLOCK_SIZE).clone()
@@ -267,6 +278,8 @@ class Parameter:
         if changed:
             self.value = self._staging
             self._update_cache()
+            if self.owner is not None:
+                self.owner._mark_param_dirty()
 
     def _update_cache(self):
         if self.type in ["float", "int", "bool"]:
@@ -308,23 +321,29 @@ class Node:
         self.outputs[name] = slot
         return slot
 
+    def _mark_param_dirty(self):
+        """Called by owned Parameter.sync() when a value changed. Nodes with
+        externally synchronized state (e.g. FFINode native params) override
+        this to flag the change for their next processing boundary."""
+        pass
+
     def add_float_param(self, name: str, val: float, min_v=0.0, max_v=1.0):
-        self.params[name] = Parameter(val, "float", min=min_v, max=max_v)
+        self.params[name] = Parameter(val, "float", owner=self, min=min_v, max=max_v)
 
     def add_int_param(self, name: str, val: int, min_v=0, max_v=100):
-        self.params[name] = Parameter(val, "int", min=min_v, max=max_v)
+        self.params[name] = Parameter(val, "int", owner=self, min=min_v, max=max_v)
 
     def add_bool_param(self, name: str, val: bool):
-        self.params[name] = Parameter(val, "bool")
+        self.params[name] = Parameter(val, "bool", owner=self)
 
     def add_string_param(self, name: str, val: str):
-        self.params[name] = Parameter(val, "string")
+        self.params[name] = Parameter(val, "string", owner=self)
 
     def add_menu_param(self, name: str, items: List[str], initial_idx=0):
-        self.params[name] = Parameter(initial_idx, "menu", items=items)
+        self.params[name] = Parameter(initial_idx, "menu", owner=self, items=items)
 
     def add_file_param(self, name: str, val: str, filter: str = "All Files (*.*)", mode: str = "open"):
-        self.params[name] = Parameter(val, "file", filter=filter, mode=mode)
+        self.params[name] = Parameter(val, "file", owner=self, filter=filter, mode=mode)
 
     def submit_nrt(self, fn, *args, tag=None):
         """Schedule fn(*args) on the engine's background pool. Never blocks.

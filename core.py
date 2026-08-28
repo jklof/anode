@@ -96,10 +96,48 @@ class Graph:
                     break
         self.recalculate_order()
 
+    def capture_node_state(self, node_id):
+        """Capture a complete, authoritative memento of a node and all of its
+        connections. Called by the command executor (engine/control thread) at
+        the moment the delete is actually processed, so undo restores state as
+        of that point rather than as of when the delete was requested."""
+        node = self.node_map.get(node_id)
+        if node is None:
+            return None
+        node_data = node.to_dict()
+        # Full param snapshot (type + meta) for exact restoration
+        for k, p in node.params.items():
+            if k in node_data.get("params", {}):
+                node_data["params"][k] = {
+                    "value": p.get_staging_safe(),
+                    "type": p.type,
+                    "meta": p.meta,
+                }
+        connections = []
+        for dst in self.nodes:
+            for d_port, inp in dst.inputs.items():
+                for out in inp.connected_outputs:
+                    if out.parent.id == node_id or dst.id == node_id:
+                        connections.append({
+                            "src_id": out.parent.id,
+                            "src_port": out.name,
+                            "dst_id": dst.id,
+                            "dst_port": d_port,
+                        })
+        return {"node": node_data, "connections": connections}
+
     def connect(self, src_id, src_port, dst_id, dst_port):
-        """Connect two nodes, rejecting cycles at connection time.
-        
-        Returns True if connection was made, False if rejected (would create cycle).
+        """Connect two nodes, rejecting cycles and impossible channel
+        configurations at connection time.
+
+        Channel policy: an output declares a fixed, positive channel count;
+        inputs adapt dynamically (mono -> stereo duplication is the supported
+        case, handled by InputSlot.get_tensor / node adapters). Any output
+        channel count >= 1 is connectable; a non-positive count is invalid and
+        rejected here so the problem surfaces immediately rather than at
+        runtime.
+
+        Returns True if connection was made, False if rejected.
         """
         src = self.node_map.get(src_id)
         dst = self.node_map.get(dst_id)
@@ -108,6 +146,13 @@ class Graph:
 
         # Reject self-loops
         if src_id == dst_id:
+            return False
+
+        # Reject impossible channel configurations. Only outputs that carry a
+        # real buffer declare a channel count; if present it must be >= 1.
+        src_slot = src.outputs[src_port]
+        buf = getattr(src_slot, "buffer", None)
+        if buf is not None and buf.shape[0] < 1:
             return False
 
         # Check if adding this connection would create a cycle:
@@ -354,6 +399,10 @@ class Engine:
         # entries can be pruned when nodes are deleted.
         self._stats_buffer = {}
         self._active_plan = self.graph.compile_execution_plan()
+        # Monotonic command identity: every pushed command gets a unique id so
+        # results (e.g. connect_rejected) can be associated with the exact
+        # originating request.
+        self._next_cmd_id = 0
 
     def _drain_nrt_all(self):
         if self.nrt:
@@ -375,17 +424,20 @@ class Engine:
 
         Exception: "save" - serialization happens on engine thread, file I/O on background thread.
         """
+        self._next_cmd_id += 1
+        cmd_id = self._next_cmd_id
         if self.running:
             if cmd[0] == "save":
                 # Queue save command for engine thread to serialize, then background write
-                self.command_queue.put(cmd)
-                return
-            self.command_queue.put(cmd)
+                self.command_queue.put((cmd_id, cmd))
+                return cmd_id
+            self.command_queue.put((cmd_id, cmd))
         else:
-            self._apply_command(cmd)
+            self._apply_command(cmd, cmd_id)
             if cmd[0] in _STRUCTURAL_OPS or self.graph.structure_dirty:
                 self.graph.structure_dirty = False
                 self._emit_snapshot()
+        return cmd_id
 
     def _save_graph(self, filename):
         """Serialize and write the patch to disk.
@@ -440,7 +492,7 @@ class Engine:
         if not self.output_queue.full():
             self.output_queue.put({"type": "telemetry", "cpu_load": cpu_load, "node_data": node_data})
 
-    def _apply_command(self, cmd):
+    def _apply_command(self, cmd, cmd_id=None):
         try:
             op = cmd[0]
             if op == "add":
@@ -490,7 +542,15 @@ class Engine:
                     except Exception:
                         pass
             elif op == "del":
-                _, nid = cmd
+                nid = cmd[1]
+                # Optional memento holder: filled by the authoritative command
+                # executor right here, at the point the delete is actually
+                # processed. Guarantees undo state is never stale.
+                holder = cmd[2] if len(cmd) > 2 else None
+                if holder is not None:
+                    memento = self.graph.capture_node_state(nid)
+                    if memento is not None:
+                        holder.update(memento)
                 n = self.graph.node_map.get(nid)
                 if n:
                     if self.nrt:
@@ -521,7 +581,8 @@ class Engine:
                 else:
                     try:
                         self.output_queue.put_nowait(
-                            {"type": "connect_rejected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp}
+                            {"type": "connect_rejected", "src_id": sid, "src_port": sp,
+                             "dst_id": did, "dst_port": dp, "cmd_id": cmd_id}
                         )
                     except Exception:
                         pass
@@ -764,7 +825,12 @@ class Engine:
 
             while self.running:
                 while not self.command_queue.empty():
-                    cmd = self.command_queue.get_nowait()
+                    entry = self.command_queue.get_nowait()
+                    if isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[0], int):
+                        _, cmd = entry
+                    else:
+                        # Backwards compatibility with raw commands
+                        cmd = entry
                     self._apply_command(cmd)
 
                 plan = self._active_plan

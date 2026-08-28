@@ -56,7 +56,7 @@ class AddNodeCommand(ICommand):
         self.params = params
 
     def execute(self):
-        self.controller.engine.push_command(("add", self.node_type, self.node_id, self.pos, self.params))
+        self.cmd_id = self.controller.engine.push_command(("add", self.node_type, self.node_id, self.pos, self.params))
 
     def undo(self):
         self.controller.engine.push_command(("del", self.node_id))
@@ -65,49 +65,32 @@ class AddNodeCommand(ICommand):
 class DeleteNodeCommand(ICommand):
     """
     Command to delete a node.
-    Captures full authoritative state from the engine graph at creation time.
+
+    The undo memento is NOT captured at construction time (which would read
+    the live graph from the UI thread and can race with queued commands).
+    Instead, execute() passes a holder dict with the command; the authoritative
+    command executor (engine/control side) fills it at the exact moment the
+    delete is processed, so undo restores state as of that point.
     Does NOT rely on the asynchronous UI snapshot cache (_latest_snapshot).
     """
 
     def __init__(self, controller, node_id):
         self.controller = controller
         self.node_id = node_id
-        self.node_data = None
-        self.connections = []
+        self.cmd_id = None
+        self._holder = {}
 
-        # Capture authoritative state directly from engine graph (synchronous)
-        # This works whether engine is running or stopped since we're on the UI thread
-        # and the engine graph is only mutated on the engine thread via commands.
-        # When engine is running, we read from the graph which reflects all applied commands.
-        engine = controller.engine
-        graph = engine.graph
-        node = graph.node_map.get(node_id)
-        if node:
-            # Capture complete node state including params, connections
-            self.node_data = node.to_dict()
-            # Also capture full param snapshot (type, meta) for exact restoration
-            for k, p in node.params.items():
-                if k in self.node_data.get("params", {}):
-                    self.node_data["params"][k] = {
-                        "value": p.get_staging_safe(),
-                        "type": p.type,
-                        "meta": p.meta
-                    }
+    @property
+    def node_data(self):
+        """Authoritative node memento (filled by the engine at delete time)."""
+        return self._holder.get("node")
 
-            # Capture connections from authoritative graph
-            for dst in graph.nodes:
-                for d_port, inp in dst.inputs.items():
-                    for out in inp.connected_outputs:
-                        if out.parent.id == node_id or dst.id == node_id:
-                            self.connections.append({
-                                "src_id": out.parent.id,
-                                "src_port": out.name,
-                                "dst_id": dst.id,
-                                "dst_port": d_port
-                            })
+    @property
+    def connections(self):
+        return self._holder.get("connections", [])
 
     def execute(self):
-        self.controller.engine.push_command(("del", self.node_id))
+        self.cmd_id = self.controller.engine.push_command(("del", self.node_id, self._holder))
 
     def undo(self):
         if not self.node_data:
@@ -156,9 +139,12 @@ class ConnectCommand(ICommand):
         self.src_port = src_port
         self.dst_id = dst_id
         self.dst_port = dst_port
+        self.cmd_id = None
 
     def execute(self):
-        self.controller.engine.push_command(("conn", self.src_id, self.src_port, self.dst_id, self.dst_port))
+        self.cmd_id = self.controller.engine.push_command(
+            ("conn", self.src_id, self.src_port, self.dst_id, self.dst_port)
+        )
 
     def undo(self):
         self.controller.engine.push_command(("disconn", self.src_id, self.src_port, self.dst_id, self.dst_port))
@@ -173,9 +159,12 @@ class DisconnectCommand(ICommand):
         self.src_port = src_port
         self.dst_id = dst_id
         self.dst_port = dst_port
+        self.cmd_id = None
 
     def execute(self):
-        self.controller.engine.push_command(("disconn", self.src_id, self.src_port, self.dst_id, self.dst_port))
+        self.cmd_id = self.controller.engine.push_command(
+            ("disconn", self.src_id, self.src_port, self.dst_id, self.dst_port)
+        )
 
     def undo(self):
         self.controller.engine.push_command(("conn", self.src_id, self.src_port, self.dst_id, self.dst_port))
