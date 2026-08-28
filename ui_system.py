@@ -111,15 +111,19 @@ class NodeProxy:
 
 
 class SocketItem(QGraphicsItem):
-    def __init__(self, parent, name, is_input, node_id):
+    def __init__(self, parent, name, is_input, node_id, slot_type="audio"):
         super().__init__(parent)
         self.name = name
         self.is_input = is_input
         self.node_id = node_id
+        self.slot_type = slot_type
         self.setAcceptHoverEvents(True)
         self.setZValue(Theme.Z_LAYERS["socket"])
         self.setCursor(QCursor(Qt.CrossCursor))
-        self._base_color = Theme.COLORS["socket_input"] if is_input else Theme.COLORS["socket_output"]
+        if self.slot_type == "midi":
+            self._base_color = Theme.COLORS["socket_midi"]
+        else:
+            self._base_color = Theme.COLORS["socket_input"] if is_input else Theme.COLORS["socket_output"]
         self._hovered = False
 
     def boundingRect(self):
@@ -254,13 +258,18 @@ class ConnectionItem(QGraphicsPathItem):
         elif self.hovered:
             pen = QPen(Theme.COLORS["wire_hovered"], 4)
         else:
-            # Use gradient for normal wires to visualize signal flow
-            gradient = QLinearGradient(self.p1, self.p2)
-            gradient.setColorAt(0, Theme.COLORS["socket_output"])  # Output color at start
-            gradient.setColorAt(1, Theme.COLORS["socket_input"])  # Input color at end
-            pen = QPen()
-            pen.setBrush(gradient)
-            pen.setWidth(2)
+            start_is_midi = getattr(self.start_item, "slot_type", "audio") == "midi"
+            if start_is_midi:
+                # MIDI wires: solid dedicated color (no signal-gradient).
+                pen = QPen(Theme.COLORS["wire_midi"], 2)
+            else:
+                # Use gradient for normal wires to visualize signal flow
+                gradient = QLinearGradient(self.p1, self.p2)
+                gradient.setColorAt(0, Theme.COLORS["socket_output"])  # Output color at start
+                gradient.setColorAt(1, Theme.COLORS["socket_input"])  # Input color at end
+                pen = QPen()
+                pen.setBrush(gradient)
+                pen.setWidth(2)
         p.setPen(pen)
         p.drawPath(self.path())
 
@@ -728,16 +737,18 @@ class NodeItem(QGraphicsObject):
         self.output_items = {}
 
         # 1. Create Sockets Immediately
+        inp_types = node_data.get("input_types", {})
+        out_types = node_data.get("output_types", {})
         y = Theme.DIMENSIONS["header_height"] + 10
         for name in node_data["inputs"]:
-            item = SocketItem(self, name, True, self.nid)
+            item = SocketItem(self, name, True, self.nid, slot_type=inp_types.get(name, "audio"))
             item.setPos(0, y)
             self.input_items[name] = item
             y += 20
 
         y_out = Theme.DIMENSIONS["header_height"] + 10
         for name in node_data["outputs"]:
-            item = SocketItem(self, name, False, self.nid)
+            item = SocketItem(self, name, False, self.nid, slot_type=out_types.get(name, "audio"))
             item.setPos(self.width, y_out)
             self.output_items[name] = item
             y_out += 20
@@ -833,7 +844,9 @@ class NodeItem(QGraphicsObject):
             for item in self.output_items.values():
                 item.setX(self.width)
 
-    def reconcile_sockets(self, inputs_list, outputs_list):
+    def reconcile_sockets(self, inputs_list, outputs_list, input_types=None, output_types=None):
+        input_types = input_types or {}
+        output_types = output_types or {}
         # 1. Remove visual sockets that are no longer present
         for name in list(self.input_items.keys()):
             if name not in inputs_list:
@@ -861,10 +874,12 @@ class NodeItem(QGraphicsObject):
 
         # 2. Add new sockets and align layout
         doc = plugin_system.get_node_documentation(self.node_type)
+        inp_types = input_types
+        out_types = output_types
         y = Theme.DIMENSIONS["header_height"] + 10
         for name in inputs_list:
             if name not in self.input_items:
-                item = SocketItem(self, name, True, self.nid)
+                item = SocketItem(self, name, True, self.nid, slot_type=inp_types.get(name, "audio"))
                 self.input_items[name] = item
             else:
                 item = self.input_items[name]
@@ -885,7 +900,7 @@ class NodeItem(QGraphicsObject):
         y_out = Theme.DIMENSIONS["header_height"] + 10
         for name in outputs_list:
             if name not in self.output_items:
-                item = SocketItem(self, name, False, self.nid)
+                item = SocketItem(self, name, False, self.nid, slot_type=out_types.get(name, "audio"))
                 self.output_items[name] = item
             else:
                 item = self.output_items[name]
@@ -910,7 +925,12 @@ class NodeItem(QGraphicsObject):
         self.update()
 
     def update_from_snapshot(self, node_data):
-        self.reconcile_sockets(node_data.get("inputs", []), node_data.get("outputs", []))
+        self.reconcile_sockets(
+            node_data.get("inputs", []),
+            node_data.get("outputs", []),
+            node_data.get("input_types", {}),
+            node_data.get("output_types", {}),
+        )
 
         # While the user is dragging, don't fight the pointer: snapshot
         # positions arriving mid-drag would rubber-band the node back and
@@ -1238,7 +1258,10 @@ class NodeHelpWidget(QWidget):
         if doc["outputs"]:
             html += "<h3 style='color: #00ccff; margin-bottom: 4px;'>Outputs</h3><table width='100%' style='border-collapse: collapse; margin-bottom: 12px;'>"
             for name, info in doc["outputs"].items():
-                ch_str = "Stereo" if info.get("channels", 2) == 2 else "Mono"
+                if info.get("slot_type") == "midi":
+                    ch_str = "MIDI"
+                else:
+                    ch_str = "Stereo" if info.get("channels", 2) == 2 else "Mono"
                 html += f"<tr style='border-bottom: 1px solid #2a2a2a;'><td width='30%' style='padding: 4px; font-weight: bold; color: #fff;'>{name} <span style='font-size: 10px; color: #888;'>({ch_str})</span></td><td style='padding: 4px; color: #ccc;'>{info['help']}</td></tr>"
             html += "</table>"
 

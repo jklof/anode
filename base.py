@@ -3,7 +3,8 @@ import numpy as np
 import uuid
 import abc
 import threading
-from typing import Dict, List, Any, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Any, Optional, Tuple
 
 # --- Configuration ---
 BLOCK_SIZE = 512
@@ -142,6 +143,22 @@ class SPSCRingBuffer:
         return item, True
 
 
+# --- MIDI ---
+
+
+@dataclass
+class MIDIPacket:
+    """
+    Container for MIDI events occurring within a single processing block.
+
+    ``messages``: List of tuples ``(sample_offset, mido.Message)`` sorted
+    ascending by ``sample_offset``. ``sample_offset`` is relative to the start
+    of the current block (0 .. BLOCK_SIZE-1).
+    """
+
+    messages: List[Tuple[int, Any]] = field(default_factory=list)
+
+
 # --- Interfaces ---
 class IClockProvider(abc.ABC):
     def __init__(self):
@@ -168,29 +185,42 @@ class IClockProvider(abc.ABC):
 
 
 class OutputSlot:
-    def __init__(self, name: str, parent: "Node", channels: int = CHANNELS, help: str = ""):
-        if channels < 1:
-            # Impossible channel configuration: an output must produce at
-            # least one channel. Reject at creation (and therefore at
-            # connection time downstream) instead of silently misbehaving.
-            raise ValueError(
-                f"OutputSlot '{name}' requires at least 1 channel (got {channels})"
-            )
+    def __init__(self, name: str, parent: "Node", channels: int = CHANNELS, help: str = "", slot_type: str = "audio"):
         self.name = name
         self.parent = parent
         self.help = help  # Documentation only; never touched by the audio path
-        self.buffer = torch.zeros((channels, BLOCK_SIZE), dtype=DTYPE)
+        self.slot_type = slot_type
+        if self.slot_type == "audio":
+            if channels < 1:
+                # Impossible channel configuration: an output must produce at
+                # least one channel. Reject at creation (and therefore at
+                # connection time downstream) instead of silently misbehaving.
+                raise ValueError(
+                    f"OutputSlot '{name}' requires at least 1 channel (got {channels})"
+                )
+            self.buffer = torch.zeros((channels, BLOCK_SIZE), dtype=DTYPE)
+        elif self.slot_type == "midi":
+            self.packet = MIDIPacket()
+
+    def clear_packet(self):
+        """For MIDI outputs: reset the output packet at the top of process()."""
+        if self.slot_type == "midi":
+            self.packet.messages.clear()
 
 
 class InputSlot:
-    def __init__(self, name: str, parent: "Node", param_name: str = None, help: str = ""):
+    def __init__(self, name: str, parent: "Node", param_name: str = None, help: str = "", slot_type: str = "audio"):
         self.name = name
         self.parent = parent
         self.param_name = param_name
         self.help = help  # Documentation only; never touched by the audio path
+        self.slot_type = slot_type
         self.connected_outputs: List[OutputSlot] = []
-        # Allocate max channels (Stereo) but we will slice it dynamically
-        self._scratch = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
+        if self.slot_type == "audio":
+            # Allocate max channels (Stereo) but we will slice it dynamically
+            self._scratch = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
+        elif self.slot_type == "midi":
+            self._scratch_packet = MIDIPacket()
 
     def connect(self, target: OutputSlot):
         if target not in self.connected_outputs:
@@ -240,6 +270,15 @@ class InputSlot:
 
         self._scratch.zero_()
         return self._scratch
+
+    def get_packet(self) -> MIDIPacket:
+        """Aggregates MIDI packets from all connected MIDI outputs. For MIDI
+        input slots only; returns an empty packet otherwise."""
+        self._scratch_packet.messages.clear()
+        for out in self.connected_outputs:
+            if getattr(out, "slot_type", "audio") == "midi":
+                self._scratch_packet.messages.extend(out.packet.messages)
+        return self._scratch_packet
 
 
 class Parameter:
@@ -322,7 +361,17 @@ class Node:
         return slot
 
     def add_output(self, name: str, channels: int = CHANNELS, help: str = "") -> OutputSlot:
-        slot = OutputSlot(name, self, channels, help=help)
+        slot = OutputSlot(name, self, channels, help=help, slot_type="audio")
+        self.outputs[name] = slot
+        return slot
+
+    def add_midi_input(self, name: str, help: str = "") -> InputSlot:
+        slot = InputSlot(name, self, help=help, slot_type="midi")
+        self.inputs[name] = slot
+        return slot
+
+    def add_midi_output(self, name: str, help: str = "") -> OutputSlot:
+        slot = OutputSlot(name, self, help=help, slot_type="midi")
         self.outputs[name] = slot
         return slot
 

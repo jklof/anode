@@ -14,9 +14,11 @@ class Theme:
         # Socket colors
         "socket_input": QColor("#ff9900"),
         "socket_output": QColor("#00ccff"),
+        "socket_midi": QColor("#E17C05"),
         # Wire colors
         "wire_selected": QColor("yellow"),
         "wire_hovered": QColor("#00ccff"),
+        "wire_midi": QColor("#E17C05"),
         "wire_temp_white": QColor("white"),
         "wire_temp_red": QColor("red"),
         "wire_temp_green": QColor("green"),

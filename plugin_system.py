@@ -126,18 +126,28 @@ def get_node_documentation(node_type: str) -> dict:
             k: {
                 "help": getattr(v, "help", ""),
                 "param_name": getattr(v, "param_name", None),
+                "slot_type": getattr(v, "slot_type", "audio"),
             }
             for k, v in instance.inputs.items()
         }
-        outputs = {
-            k: {
-                "help": getattr(v, "help", ""),
-                "channels": getattr(
-                    v, "channels", getattr(v.buffer, "shape", (CHANNELS,))[0]
-                ),
-            }
-            for k, v in instance.outputs.items()
-        }
+        outputs = {}
+        for k, v in instance.outputs.items():
+            slot_type = getattr(v, "slot_type", "audio")
+            if slot_type == "midi":
+                outputs[k] = {
+                    "help": getattr(v, "help", ""),
+                    "slot_type": "midi",
+                    "channels": 0,
+                }
+            else:
+                channels = getattr(
+                    v, "channels", getattr(getattr(v, "buffer", None), "shape", (CHANNELS,))[0]
+                )
+                outputs[k] = {
+                    "help": getattr(v, "help", ""),
+                    "slot_type": "audio",
+                    "channels": channels,
+                }
         params = {
             k: {
                 "type": v.type,

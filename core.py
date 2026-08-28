@@ -152,6 +152,20 @@ class Graph:
         # real buffer declare a channel count; if present it must be >= 1.
         src_slot = src.outputs[src_port]
         buf = getattr(src_slot, "buffer", None)
+
+        # Enforce slot type compatibility (audio to audio, midi to midi). A
+        # MIDI stream must never be wired into an audio input or vice versa.
+        src_type = getattr(src_slot, "slot_type", "audio")
+        dst_type = getattr(dst.inputs[dst_port], "slot_type", "audio")
+        if src_type != dst_type:
+            logging.warning(
+                f"Connection rejected: Type mismatch between {src.name}.{src_port} "
+                f"({src_type}) and {dst.name}.{dst_port} ({dst_type})"
+            )
+            return False
+
+        # Reject impossible channel configurations. Only outputs that carry a
+        # real buffer declare a channel count; if present it must be >= 1.
         if buf is not None and buf.shape[0] < 1:
             return False
 
@@ -258,6 +272,8 @@ class Graph:
             "error": n.error_msg,
             "inputs": list(n.inputs.keys()),
             "outputs": list(n.outputs.keys()),
+            "input_types": {k: getattr(v, "slot_type", "audio") for k, v in n.inputs.items()},
+            "output_types": {k: getattr(v, "slot_type", "audio") for k, v in n.outputs.items()},
             "params": p_data,
             "monitor_queue": mon_q,
             "can_be_master": is_clock_provider,
@@ -790,6 +806,18 @@ class Engine:
         except Exception:
             logging.exception("Cmd Error")
 
+    def _reset_audio_buffers(self):
+        """Zero all audio output buffers and input scratch buffers to prevent
+        stuck notes / stale audio on transport start. MIDI slots carry a packet
+        (not a tensor buffer) and are skipped."""
+        for node in self.graph.nodes:
+            for out_slot in node.outputs.values():
+                if getattr(out_slot, "slot_type", "audio") == "audio":
+                    out_slot.buffer.zero_()
+            for inp_slot in node.inputs.values():
+                if getattr(inp_slot, "slot_type", "audio") == "audio":
+                    inp_slot._scratch.zero_()
+
     def _worker(self):
         logging.info("Engine: Started")
         gc.disable()
@@ -797,11 +825,7 @@ class Engine:
 
             # --- STARTUP CLEANUP ---
             # 1. Zero out all buffers to prevent "stuck notes" or stale audio glitches
-            for node in self.graph.nodes:
-                for out_slot in node.outputs.values():
-                    out_slot.buffer.zero_()
-                for inp_slot in node.inputs.values():
-                    inp_slot._scratch.zero_()
+            self._reset_audio_buffers()
 
             # 2. Start nodes safely
             for node in self.graph.nodes:
