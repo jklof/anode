@@ -38,6 +38,8 @@ Do not introduce per-node block sizes or silently change the global format.
 
 Node port channel counts are part of the port contract. Channel adaptation must be explicit and deterministic.
 
+Ports are additionally typed: `slot_type` is `audio` or `midi`. Audio ports carry a `(channels, BLOCK_SIZE)` tensor buffer; MIDI ports carry a `MIDIPacket` (a list of `(sample_offset, mido.Message)` sorted ascending by sample offset) instead of a numeric buffer. Never wire an audio output into a MIDI input (or vice versa); `Graph.connect()` rejects mismatched types.
+
 Channel adaptation policy (mono source into a wider input):
 
 * A mono (`channels=1`) source is broadcast/duplicated to fill a stereo input.
@@ -47,6 +49,8 @@ Channel adaptation policy (mono source into a wider input):
 PyTorch `out=` buffer-shrinkage hazard: functional ops with `out=buf` (e.g. `torch.mul(a, b, out=buf)`) silently RESIZE `buf` to the broadcast shape. Feeding a potentially mono input into a `(CHANNELS, BLOCK_SIZE)` output buffer this way shrinks it to `(1, BLOCK_SIZE)` and downgrades the port. Never use functional `out=` with inputs that may be mono; use `buf.copy_(sig)` followed by in-place ops instead (`Tensor.copy_` broadcasts without resizing).
 
 Every audio output must be fully written for every processed block. Never leave stale samples in an output buffer.
+
+The same anti-ghosting rule applies to MIDI: every MIDI output packet must be cleared at the top of `process()` and refilled for the current block. A stale message carried across a block boundary duplicates events just like a stale audio sample. `InputSlot.get_packet()` aggregates packets from all connected MIDI outputs.
 
 ---
 
@@ -185,8 +189,11 @@ The graph is a DAG.
 * self-loops
 * connections that would introduce a cycle
 * invalid node/port references
+* connections between mismatched port types (audio vs midi)
 
 Invalid topology should be rejected at connection time rather than merely detected during execution-order generation.
+
+When code iterates all ports generically (e.g. the engine's startup buffer reset), it must respect `slot_type`: only audio slots have `.buffer` / `._scratch`; MIDI slots have `.packet` / `._scratch_packet`. Blindly touching `.buffer` on every output slot raises `AttributeError` on MIDI nodes.
 
 Graph mutations should go through the command/control mechanism.
 

@@ -70,3 +70,4 @@ conda run -n anode-dev pip install pytest && conda run -n anode-dev python -m py
 5. ❌ Don't assume dependencies are installed - check first
 6. ❌ Don't use `py` command - it's not available
 7. ❌ Don't use `conda run` to build the workspace (`pip install -e .`). Use `conda activate` first.
+8. ❌ When adding a plugin that uses optional third-party deps (e.g. `mido`, `python-rtmidi`), add them under `pip:` in `environment.yml`, install them (`conda run -n anode-dev pip install <pkg>`), and guard the import (`try: import ...; except ImportError`) so an unguarded dependency doesn't abort the whole plugin scan in `load_plugins()`.
