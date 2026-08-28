@@ -6,6 +6,7 @@ Before running ANY commands, read these files to understand the project environm
 - `environment.yml` - Contains conda environment name and dependencies
 - `pyproject.toml` - Contains Python project configuration and dependencies
 - `README.md` - Contains setup instructions
+- `AGENTS.md` - Contains guidance for coding agents
 
 ## Shell Detection
 
