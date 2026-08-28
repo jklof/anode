@@ -56,7 +56,16 @@ class AddNodeCommand(ICommand):
         self.params = params
 
     def execute(self):
-        self.cmd_id = self.controller.engine.push_command(("add", self.node_type, self.node_id, self.pos, self.params))
+        # Instantiate the node OFF the real-time thread. When the engine is
+        # running, commands are queued to the audio thread; passing a type
+        # name would make the audio thread run cls() (ctypes.CDLL loads,
+        # FIR design, etc.). Pre-instantiating here (UI/control thread) keeps
+        # engine-side graph insertion O(1).
+        import plugin_system
+
+        cls = plugin_system.NODE_REGISTRY.get(self.node_type)
+        node = cls() if cls else None
+        self.cmd_id = self.controller.engine.push_command(("add", node, self.node_id, self.pos, self.params))
 
     def undo(self):
         self.controller.engine.push_command(("del", self.node_id))
@@ -96,14 +105,17 @@ class DeleteNodeCommand(ICommand):
         if not self.node_data:
             return
 
-        # 1. Restore the Node using the robust 'restore' opcode
+        # 1. Restore the Node using the robust 'restore' opcode.
+        # The pre-instantiated (bare) node is handed to the engine so that
+        # core.py can attach node.graph BEFORE load_state() runs — nodes that
+        # submit background (NRT) tasks from load_state() (ConvolutionReverb,
+        # SamplePlayer, NamNode, ...) need a valid graph reference.
         import plugin_system
 
         cls = plugin_system.NODE_REGISTRY.get(self.node_data["type"])
         if cls:
             node = cls(self.node_data["name"])
             node.id = self.node_data.get("id", str(uuid.uuid4()))
-            node.load_state(self.node_data)
             self.controller.engine.push_command(("restore", (self.node_data, node)))
 
         # 2. Restore the connections that were implicitly removed

@@ -337,6 +337,11 @@ class TransientShaper(Node):
 
     def process(self):
         sig = self.inputs["in"].get_tensor()
+        # Anti-shrink: expand mono input before any out= op. Functional ops
+        # with out= would otherwise resize the (CHANNELS, BLOCK_SIZE) output
+        # buffer down to (1, BLOCK_SIZE) for mono inputs.
+        if sig.shape[0] == 1 and CHANNELS == 2:
+            sig = sig.expand(CHANNELS, BLOCK_SIZE)
         attack_val = float(self.inputs["attack_mod"].get_tensor()[0, 0].item())
         sustain_val = float(self.inputs["sustain_mod"].get_tensor()[0, 0].item())
         out_gain = 10.0 ** (self.params["output_gain_db"].value / 20.0)
@@ -401,6 +406,9 @@ class AutoGain(Node):
 
     def process(self):
         sig = self.inputs["in"].get_tensor()
+        # Anti-shrink: expand mono input before any out= op (see TransientShaper).
+        if sig.shape[0] == 1 and CHANNELS == 2:
+            sig = sig.expand(CHANNELS, BLOCK_SIZE)
         target_db = self.params["target_db"].value
         window_s = self.params["window_s"].value
         max_gain_db = self.params["max_gain_db"].value

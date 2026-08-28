@@ -87,7 +87,12 @@ class Gain(Node):
     def process(self):
         t = self.inp.get_tensor()
         mod = self.gain_mod.get_tensor()
-        torch.mul(t, mod, out=self.out.buffer)
+        # In-place ops only: functional torch.mul(..., out=buf) would RESIZE
+        # buf to the broadcast shape (e.g. (1, BLOCK) for mono inputs),
+        # shrinking the pre-allocated stereo output buffer. copy_ broadcasts
+        # without resizing, and mul_ broadcasts its operand in place.
+        self.out.buffer.copy_(t)
+        self.out.buffer.mul_(mod)
 
 
 class ChannelSplitter(Node):

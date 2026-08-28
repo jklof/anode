@@ -277,12 +277,16 @@ class AppController(QObject):
         return cmd.node_id
 
     def delete_node(self, node_id):
-        # DeleteNodeCommand now captures authoritative state directly from engine graph
-        cmd = DeleteNodeCommand(self, node_id)
-        if not cmd.node_data:
-            logging.warning(f"Attempted to delete unknown node {node_id}")
-            return
+        # DeleteNodeCommand captures its authoritative memento inside
+        # execute() (the engine fills it when the delete is processed), so we
+        # must validate node existence against the latest snapshot instead of
+        # cmd.node_data, which is always None before execute() runs.
+        if "nodes" in self._latest_snapshot:
+            if not any(n["id"] == node_id for n in self._latest_snapshot["nodes"]):
+                logging.warning(f"Attempted to delete unknown node {node_id}")
+                return
 
+        cmd = DeleteNodeCommand(self, node_id)
         cmd.execute()
         self.history.push(cmd)
 

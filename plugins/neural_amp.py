@@ -117,6 +117,15 @@ class NamNode(FFINode):
                 self._load_epoch += 1
                 self.submit_nrt(self._load_blocking, path, self._load_epoch, tag="load_model")
 
+    def _destroy_handle_blocking(self, handle):
+        """NRT thread: deallocate a native DSP handle. Destroying large
+        neural-network weight structures can stall, so it must never run on
+        the engine/audio thread."""
+        try:
+            self.lib.destroy(handle)
+        except Exception as e:
+            logger.error(f"NAM handle destroy failed: {e}")
+
     def _load_blocking(self, path, epoch):
         """NRT thread: builds a NEW, independently owned native DSP state and
         loads the model into it. The live handle being processed by the audio
@@ -161,10 +170,10 @@ class NamNode(FFINode):
             self.dsp_handle = new_handle
             self._native_params_dirty = True
             if old_handle:
-                try:
-                    self.lib.destroy(old_handle)
-                except Exception:
-                    pass
+                # Deallocate large native weight structures on the NRT pool,
+                # not on the engine/audio thread (destroy() of big models can
+                # stall long enough to cause dropouts).
+                self.submit_nrt(self._destroy_handle_blocking, old_handle, tag="cleanup_old_handle")
             self._status, self._current_filename = "Active", filename
         else:
             self._status = "Error"

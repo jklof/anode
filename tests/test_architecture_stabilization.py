@@ -132,6 +132,7 @@ def test_ffi_reset_and_load_state_force_resync():
 
 
 def make_nam_node(load_ok=True):
+    from types import SimpleNamespace
     from plugins.neural_amp import NamNode
 
     class _TestNam(NamNode):
@@ -141,6 +142,20 @@ def make_nam_node(load_ok=True):
     node.lib = FakeLib(load_ok=load_ok)
     node.dsp_handle = node.lib.create()
     node._load_epoch = 0
+
+    # Capture NRT submissions so tests can verify work is deferred to the
+    # background pool instead of running on the calling (engine/audio) thread.
+    submitted = []
+
+    class FakeNRT:
+        def submit(self, n, fn, args, tag):
+            submitted.append((fn, args, tag))
+
+        def spawn_stream(self, target, *args):
+            return None
+
+    node.graph = SimpleNamespace(engine=SimpleNamespace(nrt=FakeNRT()))
+    node._submitted_nrt = submitted
     return node
 
 
@@ -158,7 +173,14 @@ def test_nam_load_builds_new_handle_and_retires_old_off_audio_path():
 
     node.on_nrt_complete("load_model", True, result)
     assert node.dsp_handle == new_handle
-    assert old in node.lib.destroyed  # retired outside audio processing
+    # Old handle retirement is DEFERRED to the NRT pool: it must not be
+    # destroyed synchronously on the calling (engine/audio) thread...
+    assert old not in node.lib.destroyed
+    deferred = [s for s in node._submitted_nrt if s[2] == "cleanup_old_handle"]
+    assert deferred and deferred[0][1] == (old,)
+    # ...and executing the deferred job on the NRT thread retires it.
+    deferred[0][0](*deferred[0][1])
+    assert old in node.lib.destroyed
     assert node._status == "Active"
 
 

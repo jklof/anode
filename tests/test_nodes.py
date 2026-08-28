@@ -224,3 +224,23 @@ def test_dial_node():
     # Assert all channels of out.buffer contain 0.75
     expected = torch.full_like(dial.out.buffer, 0.75)
     assert torch.allclose(dial.out.buffer, expected)
+
+
+def test_gain_mono_input_does_not_shrink_output_buffer():
+    """Regression: functional torch.mul(t, mod, out=buf) with a mono input
+    resized the pre-allocated (CHANNELS, BLOCK_SIZE) output buffer down to
+    (1, BLOCK_SIZE). In-place copy_/mul_ must preserve the stereo buffer."""
+    plugin_system.load_plugins("plugins")
+    gain_cls = plugin_system.NODE_REGISTRY.get("Gain")
+    gain = gain_cls()
+
+    mono = torch.ones(1, 512, dtype=torch.float32)
+    gain.inp.get_tensor = lambda: mono
+
+    gain.params["vol"].set(0.5)
+    gain.sync()
+    gain.process()
+
+    assert gain.out.buffer.shape == (2, 512)
+    expected = torch.full_like(gain.out.buffer, 0.5)
+    assert torch.allclose(gain.out.buffer, expected)

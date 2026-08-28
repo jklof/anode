@@ -113,6 +113,11 @@ public:
         _write_head = (_write_head + frames) % _buffer_size;
     }
 
+    void reset() {
+        std::fill(_delay_buffer.begin(), _delay_buffer.end(), 0.0f);
+        _write_head = 0;
+    }
+
 private:
     void update_delay_samples() {
         // Convert ms to samples
@@ -155,5 +160,11 @@ EXPORT void set_param(void* handle, int param_id, float value) {
 EXPORT void set_samplerate(void* handle, float samplerate) {
     if (handle) {
         static_cast<DelayProcessor*>(handle)->set_samplerate(samplerate);
+    }
+}
+
+EXPORT void reset(void* handle) {
+    if (handle) {
+        static_cast<DelayProcessor*>(handle)->reset();
     }
 }

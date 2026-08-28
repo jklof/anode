@@ -7,6 +7,12 @@
 
 #include <cmath>
 
+#if defined(_WIN32)
+    #define EXPORT extern "C" __declspec(dllexport)
+#else
+    #define EXPORT extern "C"
+#endif
+
 class EnvelopeProcessor {
 public:
     EnvelopeProcessor()
@@ -75,28 +81,28 @@ private:
 
 extern "C" {
 
-void* create() {
+EXPORT void* create() {
     return new EnvelopeProcessor();
 }
 
-void destroy(void* h) {
+EXPORT void destroy(void* h) {
     delete static_cast<EnvelopeProcessor*>(h);
 }
 
-void set_samplerate(void* h, float sr) {
+EXPORT void set_samplerate(void* h, float sr) {
     static_cast<EnvelopeProcessor*>(h)->set_samplerate(sr);
 }
 
-void set_param(void* h, int id, float v) {
+EXPORT void set_param(void* h, int id, float v) {
     static_cast<EnvelopeProcessor*>(h)->set_param(id, v);
 }
 
-void reset(void* h) {
+EXPORT void reset(void* h) {
     static_cast<EnvelopeProcessor*>(h)->reset();
 }
 
 // Extended export — Python side MUST annotate restype/argtypes explicitly.
-void process(void* h, const float* in, float* cv, float* gate,
+EXPORT void process(void* h, const float* in, float* cv, float* gate,
              int channels, int frames) {
     static_cast<EnvelopeProcessor*>(h)->process(in, cv, gate, channels, frames);
 }

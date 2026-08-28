@@ -38,6 +38,14 @@ Do not introduce per-node block sizes or silently change the global format.
 
 Node port channel counts are part of the port contract. Channel adaptation must be explicit and deterministic.
 
+Channel adaptation policy (mono source into a wider input):
+
+* A mono (`channels=1`) source is broadcast/duplicated to fill a stereo input.
+* Pure-Python nodes do this with `buffer.copy_(sig)` followed by in-place ops (`mul_`, `add_`).
+* `FFINode` duplicates 1-channel inputs into both channels of its scratch buffer before calling native C++ (`ffi_base.FFINode.process()`, mirrored by `BiquadFilter.process()`). Native code is called with the full output channel count so both channels are written.
+
+PyTorch `out=` buffer-shrinkage hazard: functional ops with `out=buf` (e.g. `torch.mul(a, b, out=buf)`) silently RESIZE `buf` to the broadcast shape. Feeding a potentially mono input into a `(CHANNELS, BLOCK_SIZE)` output buffer this way shrinks it to `(1, BLOCK_SIZE)` and downgrades the port. Never use functional `out=` with inputs that may be mono; use `buf.copy_(sig)` followed by in-place ops instead (`Tensor.copy_` broadcasts without resizing).
+
 Every audio output must be fully written for every processed block. Never leave stale samples in an output buffer.
 
 ---
@@ -57,6 +65,14 @@ The important rule is **single ownership of shared mutable state**.
 A worker or callback may freely mutate state that it exclusively owns. It must not concurrently modify graph topology or DSP state that is also being processed by another thread.
 
 Use message passing, staging, queues, or prepared-state handoff when ownership crosses a thread boundary.
+
+Node construction must occur off the real-time audio thread. When queuing structural commands to a running engine (`("add", ...)`), pass a pre-instantiated node object, not a type name string: `cls()` may load native libraries (`ctypes.CDLL`), design FIR filters, or allocate large structures. Graph insertion and execution-plan recompilation are the only engine-thread work for an add.
+
+Restore/undo flows hand a bare node instance to the engine so that `node.graph` is attached BEFORE `load_state()` runs — nodes that submit background tasks from `load_state()` (ConvolutionReverb, SamplePlayer, NamNode, ...) need a valid graph reference.
+
+Graph serialization (`to_json()`) and file I/O must run on control or NRT threads, never in the steady-state processing loop. Save serialization happens at the coherent command boundary (all queued commands already applied); the file write is delegated to a background stream.
+
+Exception logging on the audio path must be minimal: store the error string on `node.error_msg` and defer detailed logging/reporting to control/UI contexts.
 
 It is acceptable for some control operations to run synchronously while the engine is stopped.
 
@@ -98,6 +114,8 @@ UI code should not directly modify engine-owned DSP state.
 
 Parameter callbacks should request lifecycle changes rather than directly manipulating hardware streams, native DSP objects, or other shared resources.
 
+Lifecycle contract: `on_ui_param_change(name)` observes a synchronized parameter. The engine's `param`/`add` command handlers call `param.set(val)` followed by `param.sync()` BEFORE invoking `on_ui_param_change(name)`, so `param.value` is committed and caches are updated. Node callbacks may read the staged value via `param.get_staging_safe()` (equal to `value` after the sync) — but active DSP-side consumption always reads `param.value`, which is committed at the block boundary via `sync()` in the processing loop.
+
 Audio-rate modulation is allowed where a node explicitly defines such an input.
 
 ---
@@ -126,7 +144,9 @@ prepare new resource
     -> retire old resource safely
 ```
 
-Avoid loading or destroying large native DSP objects inside the audio processing function.
+Avoid loading or destroying large native DSP objects inside the audio processing function. This includes retirement of replaced resources: large native object destruction (e.g. NAM neural models) must be submitted back to NRT for background deallocation rather than run on the engine/audio thread.
+
+`on_nrt_complete()` is invoked by `Engine._drain_nrt_all()`, which runs at periodic telemetry intervals (~100 ms) and at command execution boundaries (and from the UI poll timer when the engine is stopped) — not inside `Node.sync()` per block. Treat it as an engine/control-thread callback between blocks.
 
 Epoch/version checks may be used to discard stale asynchronous results.
 
@@ -141,6 +161,18 @@ Native DSP handles must have clear ownership. Do not simultaneously reconfigure 
 Prefer constructing replacement native state off the audio thread and swapping ownership at a safe boundary.
 
 Native `process()` functions must receive correctly sized CPU-resident contiguous buffers.
+
+Every native DSP translation unit must define the standard export macro and prefix all C-ABI functions with it:
+
+```cpp
+#if defined(_WIN32)
+    #define EXPORT extern "C" __declspec(dllexport)
+#else
+    #define EXPORT extern "C"
+#endif
+```
+
+All native DSP classes must implement and export `reset(void* handle)` (clearing delay lines, envelopes, and internal state) so transport restarts cannot leak stale audio. `FFINode.start()` calls it via `lib.reset()` when available.
 
 ---
 
@@ -170,7 +202,7 @@ Saving must serialize one coherent authoritative graph state.
 
 Before serialization, pending UI changes that are part of the saved state must be committed to the authoritative state.
 
-File I/O may run outside the audio thread.
+Serialization runs at the engine's coherent command boundary (so queued commands are already applied); the file write itself is delegated to a background stream thread and never runs on the steady-state processing loop.
 
 Loading and reload operations must invalidate stale asynchronous work associated with replaced nodes.
 
@@ -206,6 +238,8 @@ Nodes executing arbitrary Python code are not guaranteed to be glitch-free under
 
 Such nodes may be used for prototyping, but this limitation must remain explicit in their documentation.
 
+`ScriptNode` dynamically alters its own port topology (inputs/outputs) in response to script changes. These topology changes bypass the command/undo history system: they are applied directly to the node and surfaced via graph-structure dirty marking, and are not individually undoable.
+
 ---
 
 ## 13. Testing
@@ -221,6 +255,9 @@ Tests should prioritize:
 * audio output buffer correctness
 * important DSP numerical behavior
 * non-blocking I/O behavior
+* mono-input channel adaptation: output buffers must keep their `(CHANNELS, BLOCK_SIZE)` shape (PyTorch `out=` shrinkage regression guard)
+* allocation-free steady-state RT paths (e.g. FileRecorder conversion into the pre-allocated pool)
+* undo/restore graph-attachment ordering for nodes that spawn NRT work in `load_state()`
 
 Real-time allocation tests are regression indicators, not proofs of zero allocation.
 

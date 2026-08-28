@@ -712,3 +712,40 @@ def test_parameter_sync_tensor_and_numpy_array():
     # Should sync successfully without ValueError
     np_param.sync()
     assert isinstance(np_param.value, np.ndarray)
+
+
+def test_app_controller_delete_node_single_unselected_node():
+    """Regression: AppController.delete_node() checked cmd.node_data BEFORE
+    execute(), but the memento holder is only filled by the engine when the
+    delete is processed — so single-node deletion silently failed."""
+    import plugin_system
+    from controller import AppController
+    from PySide6.QtCore import QCoreApplication
+
+    if QCoreApplication.instance() is None:
+        _app = QCoreApplication([])
+
+    plugin_system.load_plugins("plugins")
+    gain_cls = plugin_system.NODE_REGISTRY.get("Gain")
+
+    ctl = AppController()
+    try:
+        node = gain_cls()
+        node.id = "n1"
+        ctl.engine.push_command(("add", node, "n1", (0, 0), None))
+        ctl._latest_snapshot = {"nodes": [{"id": "n1"}]}
+
+        ctl.delete_node("n1")
+        assert "n1" not in ctl.engine.graph.node_map
+        assert ctl._latest_snapshot.get("nodes") == []
+        assert len(ctl.history.undo_stack) == 1
+
+        # Unknown node: no crash, no phantom history entry
+        ctl.delete_node("does-not-exist")
+        assert len(ctl.history.undo_stack) == 1
+
+        # Undo restores the node (with its authoritative memento)
+        ctl.undo()
+        assert "n1" in ctl.engine.graph.node_map
+    finally:
+        ctl.poll_timer.stop()

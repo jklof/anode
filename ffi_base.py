@@ -197,14 +197,20 @@ class FFINode(Node):
             processing_tensor = self._ffi_in_buffer
 
         # 5. Calculate Safe Processable Channels
-        # We process whichever is smaller: input available or output capacity.
-        process_channels = min(in_channels, out_channels)
-
-        # 6. Anti-Ghosting: Zero out unused output channels
-        # If input is Mono (1) and Output is Stereo (2), C++ only writes channel 0.
-        # We must zero channel 1 to remove stale data from previous frames.
-        if process_channels < out_channels:
-            out_tensor[process_channels:].zero_()
+        # Channel adaptation policy: a mono (1-channel) input into a stereo
+        # node is DUPLICATED to both channels before native processing — the
+        # C++ side only writes `channels` output channels, so processing with
+        # process_channels=1 would mute the right channel.
+        if in_channels == 1 and out_channels == 2:
+            self._ffi_in_buffer[0].copy_(processed_tensor[0])
+            self._ffi_in_buffer[1].copy_(processed_tensor[0])
+            processing_tensor = self._ffi_in_buffer
+            process_channels = 2
+        else:
+            process_channels = min(in_channels, out_channels)
+            # Anti-Ghosting: Zero out unused output channels
+            if process_channels < out_channels:
+                out_tensor[process_channels:].zero_()
 
         # 7. Get Pointers
         in_ptr = ctypes.cast(processing_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))

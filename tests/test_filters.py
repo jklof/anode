@@ -131,15 +131,18 @@ def test_biquad_shelf_gain():
 # ==============================================================================
 
 
-def test_biquad_mono_input_zeroes_second_channel():
+def test_biquad_mono_input_duplicated_to_second_channel():
     bq = make_node("BiquadFilter")
     set_params(bq, type=0, cutoff=1000.0)
 
     rms = feed_tone(bq, 200.0, channels=1)
     assert rms > 1e-3, "channel 0 should carry filtered audio"
 
+    # Channel adaptation: mono input is duplicated to both output channels,
+    # not muted on the right channel (see ffi_base.FFINode.process()).
     ch1 = bq.out.buffer[1]
-    assert torch.all(ch1 == 0.0), "channel 1 not zeroed on mono input"
+    assert torch.allclose(bq.out.buffer[0], ch1), "channel 1 not duplicated on mono input"
+    assert ch1.abs().max() > 1e-3
     assert torch.isfinite(bq.out.buffer).all()
 
 
@@ -231,8 +234,11 @@ def test_fir_mono_input_and_latency_telemetry():
 
     rms = feed_tone(eq, 200.0, channels=1, settle=8)
     assert rms > 1e-3
-    assert torch.all(eq.out.buffer[1] == 0.0)
+    # Channel adaptation: a mono input is DUPLICATED to both output channels,
+    # not muted on the right channel (see ffi_base.process()).
     assert torch.isfinite(eq.out.buffer).all()
+    assert torch.allclose(eq.out.buffer[0], eq.out.buffer[1])
+    assert eq.out.buffer[1].abs().max() > 1e-3
 
     tel = eq.get_telemetry()
     assert tel["latency_samples"] == (eq.NUM_TAPS - 1) // 2
@@ -301,3 +307,24 @@ def test_filters_serialize_params():
         fresh.load_state(d)
         for k in ("type", "cutoff", "q"):
             assert k in fresh.params
+
+
+def test_biquad_mono_input_duplicated_to_stereo():
+    """Regression: FFINode used to process min(in, out) channels and zero the
+    rest, muting the right channel for mono inputs. Mono inputs are now
+    duplicated to both output channels."""
+    node = make_node("BiquadFilter")
+    node.params["cutoff"].set(1000.0)
+    node.params["q"].set(0.7)
+    node.sync()
+    node._sync_params_to_cpp()
+
+    n = np.arange(BLOCK_SIZE)
+    tone = (0.5 * np.sin(2.0 * np.pi * 200.0 * n / SAMPLE_RATE)).astype(np.float32)
+    mono = torch.from_numpy(np.tile(tone, (1, 1)))
+    stream_blocks(node, mono, 8)
+
+    assert node.out.buffer.shape[0] == 2
+    assert torch.isfinite(node.out.buffer).all()
+    assert torch.allclose(node.out.buffer[0], node.out.buffer[1])
+    assert node.out.buffer[1].abs().max() > 1e-3

@@ -84,8 +84,17 @@ class BiquadFilter(FFINode):
             processing_tensor = self._ffi_in_buffer
 
         process_channels = min(in_channels, out_channels)
-        if process_channels < out_channels:
-            out_tensor[process_channels:].zero_()
+        # Channel adaptation: duplicate a mono input to both output channels
+        # (must mirror ffi_base.FFINode.process(); see the policy comment there).
+        if in_channels == 1 and out_channels == 2:
+            self._ffi_in_buffer[0].copy_(processed_tensor[0])
+            self._ffi_in_buffer[1].copy_(processed_tensor[0])
+            processing_tensor = self._ffi_in_buffer
+            process_channels = 2
+        else:
+            process_channels = min(in_channels, out_channels)
+            if process_channels < out_channels:
+                out_tensor[process_channels:].zero_()
 
         in_ptr = ctypes.cast(processing_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
         out_ptr = ctypes.cast(out_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))

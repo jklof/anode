@@ -60,3 +60,47 @@ def test_save_load():
     assert len(gain_node.inp.connected_outputs) == 1
     assert gain_node.inp.connected_outputs[0].parent.id == "sine1"
     assert gain_node.inp.connected_outputs[0].name == "signal"
+
+
+def test_delete_undo_attaches_graph_before_load_state():
+    """Regression: DeleteNodeCommand.undo() used to call node.load_state()
+    BEFORE the engine attached node.graph, so nodes that submit background
+    (NRT) work from load_state() dropped their tasks. The bare node is now
+    handed to the engine and load_state runs after graph attachment."""
+    import plugin_system
+    from core import Engine
+    from base import Node as BaseNode
+    from commands import DeleteNodeCommand
+
+    events = []
+    PROBE = "_GraphAttachProbe"
+
+    class _GraphAttachProbe(BaseNode):
+        def __init__(self, name=""):
+            super().__init__(name)
+            self.add_input("in")
+
+        def load_state(self, data):
+            events.append(getattr(self, "graph", None) is not None)
+
+    ProbeNode = _GraphAttachProbe
+    plugin_system.NODE_REGISTRY[PROBE] = ProbeNode
+    try:
+        eng = Engine()
+        node = ProbeNode("probe")
+        node.id = "p1"
+        eng.push_command(("add", node, "p1", (0, 0), None))
+
+        class Ctl:
+            engine = eng
+
+        cmd = DeleteNodeCommand(Ctl(), "p1")
+        cmd.execute()
+        assert "p1" not in eng.graph.node_map
+
+        cmd.undo()
+        assert "p1" in eng.graph.node_map
+    finally:
+        plugin_system.NODE_REGISTRY.pop(PROBE, None)
+
+    assert events == [True], "load_state must run with node.graph attached"

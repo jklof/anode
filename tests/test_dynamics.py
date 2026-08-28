@@ -328,3 +328,25 @@ def test_autogain_no_net_allocation():
     growth, _ = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert growth < 64 * 1024, f"net allocation {growth} bytes over 50 blocks"
+
+def _assert_mono_input_keeps_stereo_buffer(class_name):
+    node = make_node(class_name)
+    mono = torch.rand(1, BLOCK_SIZE, dtype=DTYPE) * 0.5 + 0.1
+    node.inputs["in"].get_tensor = lambda: mono
+    buf = node.outputs["out"].buffer
+    for _ in range(5):
+        node.process()
+        # The (CHANNELS, BLOCK_SIZE) output buffer must never be resized by
+        # an out= op fed with a mono tensor.
+        assert buf.shape == (CHANNELS, BLOCK_SIZE)
+    assert torch.isfinite(buf).all()
+    assert torch.allclose(buf[0], buf[1])
+    assert buf.abs().max() > 1e-4
+
+
+def test_transient_shaper_mono_input_keeps_stereo_output():
+    _assert_mono_input_keeps_stereo_buffer("TransientShaper")
+
+
+def test_auto_gain_mono_input_keeps_stereo_output():
+    _assert_mono_input_keeps_stereo_buffer("AutoGain")

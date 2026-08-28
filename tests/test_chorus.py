@@ -120,3 +120,29 @@ def test_chorus_no_net_allocation():
     growth, _ = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert growth < 64 * 1024, f"net allocation {growth} bytes over 50 blocks"
+
+
+def test_simple_delay_start_clears_stale_delay_tail():
+    """Regression: SimpleDelay's native library had no reset() export, so a
+    transport restart (engine start) retained stale delay-line audio."""
+    plugin_system.load_plugins("plugins")
+    cls = plugin_system.NODE_REGISTRY.get("SimpleDelay")
+    assert cls is not None, "SimpleDelay not registered (library build missing?)"
+    node = cls()
+    assert node.error_msg is None, f"native library failed to load: {node.error_msg}"
+
+    tone = 0.5 * torch.sin(torch.arange(BLOCK_SIZE, dtype=DTYPE) * 0.05)
+    blk = torch.zeros(2, BLOCK_SIZE, dtype=DTYPE)
+    blk[0] = tone
+    blk[1] = tone
+    silence = torch.zeros(2, BLOCK_SIZE, dtype=DTYPE)
+
+    node.inputs["in"].get_tensor = lambda b=blk: b
+    for _ in range(10):
+        node.process()
+
+    # Transport restart: start() must clear the native delay line
+    node.start()
+    node.inputs["in"].get_tensor = lambda: silence
+    node.process()
+    assert node.outputs["out"].buffer.abs().max() < 1e-6, "stale delay audio survived start()"

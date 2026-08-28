@@ -261,14 +261,16 @@ class FileRecorder(Node):
             np.copyto(self._temp_f32[:, 0], tensor[0].cpu().numpy())
             np.clip(self._temp_f32[:, 0], -1.0, 1.0, out=self._temp_f32[:, 0])
             np.multiply(self._temp_f32[:, 0], 32767, out=self._temp_f32[:, 0], casting="unsafe")
-            pool_slot[:, 0] = self._temp_f32[:, 0].astype(np.int16, copy=False)
+            # In-place cast into the pool slot: astype() would allocate a new
+            # array every block, np.copyto casts without allocating.
+            np.copyto(pool_slot[:, 0], self._temp_f32[:, 0], casting="unsafe")
 
             # Channel 1 (or duplicate channel 0 if mono)
             if tensor.shape[0] > 1:
                 np.copyto(self._temp_f32[:, 1], tensor[1].cpu().numpy())
                 np.clip(self._temp_f32[:, 1], -1.0, 1.0, out=self._temp_f32[:, 1])
                 np.multiply(self._temp_f32[:, 1], 32767, out=self._temp_f32[:, 1], casting="unsafe")
-                pool_slot[:, 1] = self._temp_f32[:, 1].astype(np.int16, copy=False)
+                np.copyto(pool_slot[:, 1], self._temp_f32[:, 1], casting="unsafe")
             else:
                 pool_slot[:, 1] = pool_slot[:, 0]
 

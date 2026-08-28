@@ -12,6 +12,12 @@
 #include <cmath>
 #include <vector>
 
+#if defined(_WIN32)
+    #define EXPORT extern "C" __declspec(dllexport)
+#else
+    #define EXPORT extern "C"
+#endif
+
 namespace {
 
 constexpr float kTwoPi = 6.28318530717958647692f;
@@ -123,27 +129,27 @@ private:
 
 extern "C" {
 
-void* create() {
+EXPORT void* create() {
     return new ChorusProcessor();
 }
 
-void destroy(void* h) {
+EXPORT void destroy(void* h) {
     delete static_cast<ChorusProcessor*>(h);
 }
 
-void set_samplerate(void* h, float sr) {
+EXPORT void set_samplerate(void* h, float sr) {
     static_cast<ChorusProcessor*>(h)->set_samplerate(sr);
 }
 
-void set_param(void* h, int id, float v) {
+EXPORT void set_param(void* h, int id, float v) {
     static_cast<ChorusProcessor*>(h)->set_param(id, v);
 }
 
-void reset(void* h) {
+EXPORT void reset(void* h) {
     static_cast<ChorusProcessor*>(h)->reset();
 }
 
-void process(void* h, const float* in, float* out, int channels, int frames) {
+EXPORT void process(void* h, const float* in, float* out, int channels, int frames) {
     static_cast<ChorusProcessor*>(h)->process(in, out, channels, frames);
 }
 

@@ -440,24 +440,15 @@ class Engine:
         return cmd_id
 
     def _save_graph(self, filename):
-        """Serialize and write the patch to disk.
-        
-        Thread-safe implementation:
-        - When engine is running: serialize on engine thread (inside _apply_command),
-          then pass immutable JSON string to background writer thread.
-        - When stopped: serialize and write synchronously on caller's thread.
-        """
-        if not filename:
-            return
+        """Deprecated: kept as a thin wrapper. Serialization happens in
+        _apply_command at the coherent command boundary (so all queued
+        parameter changes are already applied); the file write is delegated
+        to a background stream via _write_background()."""
+        self._write_background(self.graph.to_json(), filename)
 
-        # Serialize on engine thread (synchronous, before background write)
-        # This ensures all preceding queued commands have been applied
-        try:
-            json_str = self.graph.to_json()
-        except Exception as e:
-            logging.error(f"Save serialization error: {e}")
-            return
-
+    def _write_background(self, json_str, filename):
+        """Write an already-serialized patch to disk on a background stream
+        thread (never the audio/engine loop, never a raw ad-hoc thread)."""
         def _write_job(json_data: str, fname: str):
             try:
                 with open(fname, "w") as f:
@@ -466,9 +457,8 @@ class Engine:
             except Exception as e:
                 logging.error(f"Save write error: {e}")
 
-        if self.running:
-            # Pass immutable json_str to background thread for file I/O only
-            threading.Thread(target=_write_job, args=(json_str, filename), daemon=True, name="anode-save").start()
+        if self.running and self.nrt:
+            self.nrt.spawn_stream(_write_job, json_str, filename)
         else:
             _write_job(json_str, filename)
 
@@ -512,8 +502,9 @@ class Engine:
                     # Critical Fix: Set ID and POS for pre-instantiated nodes
                     # Note: if node's __init__ had any side effects using self.id,
                     # those would have run with a random UUID since this is assigned afterwards.
-                    node.id = nid
-                    node.pos = pos
+                    if node is not None:
+                        node.id = nid
+                        node.pos = pos
 
                 if node:
                     # Fix: Add node to graph first so node.graph is valid for parameter change callbacks
@@ -530,6 +521,9 @@ class Engine:
                                     # Handle raw values (e.g., from Node.to_dict() for Undo functionality)
                                     val = param_data
                                 node.params[param_name].set(val)
+                                # Commit staged value before notifying the node so
+                                # on_ui_param_change sees a synchronized parameter.
+                                node.params[param_name].sync()
                                 node.on_ui_param_change(param_name)
                     if self.running:
                         try:
@@ -600,6 +594,10 @@ class Engine:
                 node = self.graph.node_map.get(nid)
                 if node and p in node.params:
                     node.params[p].set(val)
+                    # Commit the staged value BEFORE notifying the node so
+                    # on_ui_param_change() observes a synchronized parameter
+                    # (param.value == staged value, caches updated).
+                    node.params[p].sync()
                     node.on_ui_param_change(p)
 
                     # If this parameter change triggered a structural update, we skip the side-channel
@@ -646,9 +644,11 @@ class Engine:
                     node.id = node_data["id"]
                     # Fix: Add node first so load_state has a valid graph reference to submit background tasks
                     self.graph.add_node(node)
-                    # This restores everything: pos, params, internal meta
-                    if not node_instance:
-                        node.load_state(node_data)
+                    # This restores everything: pos, params, internal meta.
+                    # Always call load_state here (AFTER graph attachment) —
+                    # pre-instantiated undo/restore nodes arrive bare and nodes
+                    # that spawn NRT work in load_state() need self.graph set.
+                    node.load_state(node_data)
                     if self.running:
                         try:
                             node.start()
@@ -673,22 +673,17 @@ class Engine:
                 self._emit_snapshot()
 
             elif op == "save":
-                # Serialization already done in push_command; here we just do the background write
+                # Serialize at the coherent command boundary (all queued
+                # commands before this one have been applied), then delegate
+                # the file I/O to a background stream — never on the audio loop.
                 filename = cmd[1]
-                json_str = self.graph.to_json()
-                
-                def _write_job(json_data: str, fname: str):
+                if filename:
                     try:
-                        with open(fname, "w") as f:
-                            f.write(json_data)
-                        logging.info(f"Saved patch to {fname}")
+                        json_str = self.graph.to_json()
                     except Exception as e:
-                        logging.error(f"Save write error: {e}")
-
-                if self.running:
-                    threading.Thread(target=_write_job, args=(json_str, filename), daemon=True, name="anode-save").start()
-                else:
-                    _write_job(json_str, filename)
+                        logging.error(f"Save serialization error: {e}")
+                    else:
+                        self._write_background(json_str, filename)
 
             elif op == "load":
                 _, json_str = cmd
