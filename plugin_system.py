@@ -5,7 +5,9 @@ import importlib.util
 import inspect
 import logging
 from typing import Dict, Type, Any, Optional
-from base import Node
+from base import Node, CHANNELS
+
+logger = logging.getLogger(__name__)
 
 NODE_REGISTRY: Dict[str, Type[Node]] = {}
 UI_REGISTRY: Dict[str, Type[Any]] = {}
@@ -28,6 +30,8 @@ def load_plugins(folder="plugins"):
     # Clear registries so we don't have stale references
     NODE_REGISTRY.clear()
     UI_REGISTRY.clear()
+    # Refresh documentation cache so hot-reloads pick up new help metadata
+    _DOC_CACHE.clear()
 
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -89,6 +93,79 @@ def load_plugins(folder="plugins"):
                 sys.path.remove(abs_folder)
             except ValueError:
                 pass
+
+
+# Lazy documentation cache: populated on first UI request per node type and
+# cleared on plugin (re)load. Never touched by the audio path.
+_DOC_CACHE: Dict[str, dict] = {}
+
+
+def get_node_documentation(node_type: str) -> dict:
+    """
+    Returns a structured documentation dictionary for a node type.
+    Constructs a lightweight instance once on first request, then caches.
+    """
+    if node_type in _DOC_CACHE:
+        return _DOC_CACHE[node_type]
+
+    cls = NODE_REGISTRY.get(node_type)
+    if cls is None:
+        return {}
+
+    is_native = False
+    try:
+        from ffi_base import FFINode
+        is_native = issubclass(cls, FFINode)
+    except ImportError:
+        is_native = False
+
+    inputs, outputs, params = {}, {}, {}
+    try:
+        instance = cls()
+        inputs = {
+            k: {
+                "help": getattr(v, "help", ""),
+                "param_name": getattr(v, "param_name", None),
+            }
+            for k, v in instance.inputs.items()
+        }
+        outputs = {
+            k: {
+                "help": getattr(v, "help", ""),
+                "channels": getattr(
+                    v, "channels", getattr(v.buffer, "shape", (CHANNELS,))[0]
+                ),
+            }
+            for k, v in instance.outputs.items()
+        }
+        params = {
+            k: {
+                "type": v.type,
+                "value": v.value,
+                "meta": v.meta,
+                "help": v.meta.get("help", ""),
+                "unit": v.meta.get("unit", ""),
+            }
+            for k, v in instance.params.items()
+        }
+    except Exception as e:
+        logger.warning(f"Failed to inspect documentation for {node_type}: {e}")
+
+    doc_text = (getattr(cls, "description", "") or "").strip() or (cls.__doc__ or "").strip()
+
+    doc_data = {
+        "type": node_type,
+        "label": getattr(cls, "label", node_type),
+        "category": getattr(cls, "category", "Uncategorized"),
+        "is_native": is_native,
+        "description": doc_text,
+        "inputs": inputs,
+        "outputs": outputs,
+        "params": params,
+    }
+
+    _DOC_CACHE[node_type] = doc_data
+    return doc_data
 
 
 def get_node_class(name):

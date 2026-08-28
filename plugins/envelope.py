@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 class EnvelopeFollower(FFINode):
     category = "Utilities"
     label = "Envelope Follower"
+    description = (
+        "Native C++ peak or RMS envelope extractor with hysteresis gate. All "
+        "per-sample ballistics run natively. The CV output range is [0, gain] "
+        "(unclamped); use MathOp 'Clamp' downstream for a strict [0, 1] CV. "
+        "Ideal as a modulation source for parameter-bound inputs."
+    )
 
     LIB_NAME = "envelope"
     # Matches cpp/envelope.cpp set_param switch-case
@@ -32,15 +38,20 @@ class EnvelopeFollower(FFINode):
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_input("in")
-        self.add_output("cv_out", channels=1)
-        self.add_output("gate_out", channels=1)
+        self.add_input("in", help="Signal to analyze; mono inputs are analyzed directly.")
+        self.add_output("cv_out", channels=1, help="Mono smoothed envelope in [0, gain].")
+        self.add_output("gate_out", channels=1, help="Mono binary gate (1 when above threshold, 0 below) with hysteresis.")
 
-        self.add_menu_param("mode", self.MODES, 0)
-        self.add_float_param("attack_ms", 10.0, 0.1, 500.0)
-        self.add_float_param("release_ms", 100.0, 1.0, 2000.0)
-        self.add_float_param("gain", 1.0, 0.1, 10.0)
-        self.add_float_param("gate_thresh", 0.1, 0.0, 1.0)
+        self.add_menu_param("mode", self.MODES, 0,
+                            help="Detector type: instantaneous Peak or windowed RMS.")
+        self.add_float_param("attack_ms", 10.0, 0.1, 500.0, unit="ms",
+                             help="Smoothing time constant for rising envelope.")
+        self.add_float_param("release_ms", 100.0, 1.0, 2000.0, unit="ms",
+                             help="Smoothing time constant for falling envelope.")
+        self.add_float_param("gain", 1.0, 0.1, 10.0, unit="x",
+                             help="Output multiplier for the CV envelope.")
+        self.add_float_param("gate_thresh", 0.1, 0.0, 1.0,
+                             help="Envelope threshold that toggles the gate output.")
 
     def _bind_functions(self):
         super()._bind_functions()

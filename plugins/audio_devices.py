@@ -147,10 +147,18 @@ class AudioDeviceManager:
 
 class BaseAudioDeviceNode(Node):
     category, label = "I/O", "Base Audio Device"
+    description = (
+        "Base class for hardware audio device nodes. Manages device selection, "
+        "a lock-free SPSC ring buffer between the engine and the PortAudio "
+        "callback thread, and NRT-based stream open/teardown with request-ID "
+        "epoch checks. Not instantiated directly; use AudioDeviceInput or "
+        "AudioDeviceOutput."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_int_param("device_index", -1, min_v=-1, max_v=999)
+        self.add_int_param("device_index", -1, min_v=-1, max_v=999,
+                           help="Hardware device index (-1 = system default). Changes restart the stream off the audio path.")
         self.ring_buffer = AudioRingBuffer(capacity_blocks=32)
         self.stream: Optional[sd.Stream] = None
         self._device_state = {"active": False, "status": "Inactive", "latency": 0.0, "idx": -1}
@@ -285,10 +293,16 @@ class BaseAudioDeviceNode(Node):
 
 class AudioDeviceInput(BaseAudioDeviceNode):
     category, label = "I/O", "Audio Device Input"
+    description = (
+        "Captures live audio from a hardware input device via PortAudio. The "
+        "hardware callback thread writes into a lock-free ring buffer that the "
+        "engine consumes per block; underruns produce silence. Mono hardware "
+        "inputs are duplicated to stereo."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.out = self.add_output("out")
+        self.out = self.add_output("out", help="Live hardware input as a stereo signal (silence on underrun).")
         # Pre-allocated numpy scratch buffer for zero-allocation process()
         self._numpy_scratch = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
 
@@ -317,11 +331,17 @@ class AudioDeviceInput(BaseAudioDeviceNode):
 
 class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
     category, label = "I/O", "Audio Device Output"
+    description = (
+        "Plays the graph's audio through a hardware output device and acts as "
+        "the engine's clock provider when set as master: the hardware callback "
+        "drives block processing. Uses a lock-free ring buffer; underruns "
+        "output silence. Device changes restart the stream off the audio path."
+    )
 
     def __init__(self, name=""):
         BaseAudioDeviceNode.__init__(self, name)
         IClockProvider.__init__(self)
-        self.inp = self.add_input("audio_in")
+        self.inp = self.add_input("audio_in", help="Signal to play through the selected output device.")
         self._tick_callback = None
 
         # PRE-ALLOCATION: Create a Numpy array in Interleaved format [Block, Channels]

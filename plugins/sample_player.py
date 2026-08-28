@@ -38,16 +38,29 @@ except ImportError:
 class SamplePlayer(Node):
     category = "Sources"
     label = "Sample Player"
+    description = (
+        "RAM-cached one-shot/looping sampler. Files are decoded and resampled to "
+        "48 kHz on a background NRT worker; playback uses a vectorized fractional-"
+        "read kernel with linear interpolation. Playback starts on the first rising "
+        "edge of the trigger input (block-granular detection). Loading does not "
+        "auto-play; load failures surface via node error status."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_input("trigger_in")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.add_input("trigger_in",
+                       help="Gate/trigger signal; a rising edge above 0 restarts playback from the start.")
+        self.out = self.add_output("out", channels=CHANNELS,
+                                   help="Stereo sample playback (silence while idle).")
 
-        self.add_file_param("sample_path", "", filter="Audio Files (*.wav *.flac *.mp3 *.ogg)")
-        self.add_float_param("pitch", 0.0, -24.0, 24.0)
-        self.add_float_param("gain", 1.0, 0.0, 2.0)
-        self.add_bool_param("loop", False)
+        self.add_file_param("sample_path", "", filter="Audio Files (*.wav *.flac *.mp3 *.ogg)",
+                            help="Audio file to load; decoding/resampling happens on a background worker.")
+        self.add_float_param("pitch", 0.0, -24.0, 24.0, unit="st",
+                             help="Playback pitch offset in semitones (speed = 2^(pitch/12)).")
+        self.add_float_param("gain", 1.0, 0.0, 2.0, unit="x",
+                             help="Output gain applied after interpolation.")
+        self.add_bool_param("loop", False,
+                            help="Loop the sample continuously instead of stopping at the end.")
 
         self._audio_data = None      # (2, N) contiguous float32, set off-thread
         self._read_pos = 0.0

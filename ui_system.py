@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QPushButton,
     QFileDialog,
+    QTextBrowser,
 )
 from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot, QCoreApplication
 from PySide6.QtGui import (
@@ -31,6 +32,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPixmap,
     QBrush,
+    QFont,
 )
 from PySide6.QtSvg import QSvgRenderer
 from ui_icons import create_colored_logo
@@ -327,6 +329,17 @@ class FloatParamWidget(QWidget):
         self.slider.valueChanged.connect(self._on_slider_changed)
         self.layout.addWidget(self.slider)
 
+        # --- Tooltip ---
+        help_text = metadata.get("help", "")
+        unit = metadata.get("unit", "")
+        unit_str = f" {unit}" if unit else ""
+        tip = (
+            f"<b>{param_name}</b>: {help_text}<br>"
+            f"Range: [{metadata.get('min', 0.0):g}{unit_str} to {metadata.get('max', 1.0):g}{unit_str}]<br>"
+            f"Default: {current_value:g}{unit_str}"
+        )
+        self.setToolTip(tip)
+
     def _update_slider_from_value(self, value):
         """Update slider position based on float value."""
         span = self.metadata["max"] - self.metadata["min"]
@@ -375,6 +388,11 @@ class BoolParamWidget(QWidget):
         self.checkbox.toggled.connect(self._on_checkbox_toggled)
         self.layout.addWidget(self.checkbox)
 
+        # --- Tooltip ---
+        help_text = metadata.get("help", "")
+        tip = f"<b>{param_name}</b>: {help_text}" if help_text else param_name
+        self.setToolTip(tip)
+
     def _on_checkbox_toggled(self, checked):
         """Handle checkbox state changes."""
         self.callback(checked)
@@ -416,6 +434,12 @@ class MenuParamWidget(QWidget):
         self.combo.setCurrentIndex(self.current_value)
         self.combo.currentIndexChanged.connect(self._on_combo_changed)
         self.layout.addWidget(self.combo)
+
+        # --- Tooltip ---
+        help_text = metadata.get("help", "")
+        items_str = ", ".join(metadata.get("items", []))
+        tip = f"<b>{param_name}</b>: {help_text}<br>Options: [{items_str}]"
+        self.setToolTip(tip)
 
     def _on_combo_changed(self, index):
         """Handle combo box index changes."""
@@ -477,6 +501,11 @@ class FileParamWidget(QWidget):
         self.hbox.addWidget(self.button)
 
         self.layout.addWidget(self.container)
+
+        # --- Tooltip ---
+        help_text = metadata.get("help", "")
+        tip = f"<b>{param_name}</b>: {help_text}" if help_text else param_name
+        self.setToolTip(tip)
 
     def _on_editing_finished(self):
         """Handle line edit text changes."""
@@ -542,6 +571,11 @@ class StringParamWidget(QWidget):
         self.line_edit.returnPressed.connect(self._on_return_pressed)
         self.layout.addWidget(self.line_edit)
 
+        # --- Tooltip ---
+        help_text = metadata.get("help", "")
+        tip = f"<b>{param_name}</b>: {help_text}" if help_text else param_name
+        self.setToolTip(tip)
+
     def _on_return_pressed(self):
         """Handle line edit return key press."""
         text = self.line_edit.text()
@@ -586,6 +620,16 @@ class IntParamWidget(QWidget):
         self.spin_box.setValue(self.current_value)
         self.spin_box.valueChanged.connect(self._on_value_changed)
         self.layout.addWidget(self.spin_box)
+
+        # --- Tooltip ---
+        help_text = metadata.get("help", "")
+        unit = metadata.get("unit", "")
+        unit_str = f" {unit}" if unit else ""
+        tip = (
+            f"<b>{param_name}</b>: {help_text}<br>"
+            f"Range: [{metadata.get('min', 0)}{unit_str} to {metadata.get('max', 100)}{unit_str}]"
+        )
+        self.setToolTip(tip)
 
     def _on_value_changed(self, value):
         """Handle spin box value changes."""
@@ -816,6 +860,7 @@ class NodeItem(QGraphicsObject):
                 item.setParentItem(None)
 
         # 2. Add new sockets and align layout
+        doc = plugin_system.get_node_documentation(self.node_type)
         y = Theme.DIMENSIONS["header_height"] + 10
         for name in inputs_list:
             if name not in self.input_items:
@@ -826,6 +871,17 @@ class NodeItem(QGraphicsObject):
             item.setPos(0, y)
             y += 20
 
+            # --- Input socket tooltip ---
+            port_info = (doc.get("inputs") or {}).get(name, {})
+            help_text = port_info.get("help", "")
+            param_bound = port_info.get("param_name")
+            tip = f"<b>{name}</b> (Input)"
+            if help_text:
+                tip += f"<br>{help_text}"
+            if param_bound:
+                tip += f"<br><i>Bound to parameter: {param_bound}</i>"
+            item.setToolTip(tip)
+
         y_out = Theme.DIMENSIONS["header_height"] + 10
         for name in outputs_list:
             if name not in self.output_items:
@@ -835,6 +891,14 @@ class NodeItem(QGraphicsObject):
                 item = self.output_items[name]
             item.setPos(self.width, y_out)
             y_out += 20
+
+            # --- Output socket tooltip ---
+            port_info = (doc.get("outputs") or {}).get(name, {})
+            help_text = port_info.get("help", "")
+            tip = f"<b>{name}</b> (Output)"
+            if help_text:
+                tip += f"<br>{help_text}"
+            item.setToolTip(tip)
 
         # Update height and position of custom widget proxy
         self.height = max(y, y_out) + 10
@@ -955,7 +1019,7 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(Qt.NoBrush)
 
             # Position: Top right, padding
-            cx = self.width - 15
+            cx = self.width - 14
             cy = Theme.DIMENSIONS["header_height"] / 2
             r = 6
 
@@ -964,6 +1028,16 @@ class NodeItem(QGraphicsObject):
             # Hands (3 o'clock and 12 o'clockish)
             painter.drawLine(QPointF(cx, cy), QPointF(cx, cy - 4))
             painter.drawLine(QPointF(cx, cy), QPointF(cx + 3, cy))
+
+        # --- DRAW HELP [?] BUTTON ---
+        cx_help = (self.width - 42) if self.can_be_master else (self.width - 14)
+        cy_help = Theme.DIMENSIONS["header_height"] / 2
+        painter.setPen(QPen(Theme.COLORS["help_button"], 1.5))
+        painter.setBrush(Qt.NoBrush)
+        painter.setFont(QFont("Monospace", 8, QFont.Bold))
+        painter.drawEllipse(QPointF(cx_help, cy_help), 7, 7)
+        painter.drawText(QRectF(cx_help - 7, cy_help - 7, 14, 14), Qt.AlignCenter, "?")
+        painter.setFont(QFont())
 
         if self.error_msg:
             painter.setPen(QPen(Theme.COLORS["error_border"], 3))
@@ -979,6 +1053,8 @@ class NodeItem(QGraphicsObject):
         menu = QMenu()
         if self.can_be_master:
             menu.addAction("Set Master Clock", lambda: self.controller.set_master_clock(self.nid))
+
+        menu.addAction("Node Reference & Help", lambda: self.scene().nodeHelpRequested.emit(self.node_type))
 
         def delete_action():
             if self.isSelected():
@@ -999,12 +1075,22 @@ class NodeItem(QGraphicsObject):
     def mousePressEvent(self, event):
         self._drag_active = event.button() == Qt.LeftButton
 
-        # Check if clicking the clock icon area (Top Right)
-        if self.can_be_master:
-            local_pos = event.pos()
-            # Hit box: Top 30px (header), Rightmost 30px
-            if local_pos.y() <= Theme.DIMENSIONS["header_height"] and local_pos.x() >= (self.width - 30):
+        local_pos = event.pos()
+        if local_pos.y() <= Theme.DIMENSIONS["header_height"] and event.button() == Qt.LeftButton:
+            # Check Clock hit
+            if self.can_be_master and local_pos.x() >= (self.width - 28):
                 self.controller.set_master_clock(self.nid)
+                self._drag_active = False
+                event.accept()
+                return
+
+            # Check Help [?] hit
+            help_min_x = (self.width - 56) if self.can_be_master else (self.width - 28)
+            help_max_x = (self.width - 28) if self.can_be_master else self.width
+            if help_min_x <= local_pos.x() < help_max_x:
+                scene = self.scene()
+                if scene and hasattr(scene, "nodeHelpRequested"):
+                    scene.nodeHelpRequested.emit(self.node_type)
                 self._drag_active = False
                 event.accept()
                 return
@@ -1070,7 +1156,129 @@ class NodeItem(QGraphicsObject):
             self.widget.update_from_params(update_dict)
 
 
+class NodeHelpWidget(QWidget):
+    """Right-dock panel that renders node documentation as Qt-compliant rich text."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(4, 4, 4, 4)
+
+        self.browser = QTextBrowser()
+        self.browser.setOpenExternalLinks(True)
+        self.browser.setStyleSheet("""
+            QTextBrowser {
+                background-color: #191919;
+                color: #e0e0e0;
+                border: 1px solid #333333;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                font-size: 12px;
+                padding: 8px;
+            }
+        """)
+        self.layout.addWidget(self.browser)
+        self.display_welcome()
+
+    def display_welcome(self):
+        html = """
+        <h2>ANode Reference Guide</h2>
+        <p>Select any node in the graph or click <b>[?]</b> to view its technical documentation, DSP formulation, port contracts, and parameter ranges.</p>
+        <hr style="border: 1px solid #333;">
+        <h3>Global Engine Format</h3>
+        <ul>
+            <li><b>Block Size:</b> 512 samples</li>
+            <li><b>Sample Rate:</b> 48,000 Hz</li>
+            <li><b>Channels:</b> 2 (Stereo float32)</li>
+        </ul>
+        <h3>Canvas Shortcuts</h3>
+        <ul>
+            <li><b>Left Click Drag:</b> Move nodes / create wire from socket</li>
+            <li><b>Middle Click / Alt+Left Drag:</b> Pan canvas</li>
+            <li><b>Ctrl + Mouse Wheel:</b> Zoom in/out</li>
+            <li><b>Ctrl + 0:</b> Zoom to fit</li>
+            <li><b>Delete / Backspace:</b> Remove selected nodes &amp; wires</li>
+            <li><b>Ctrl + C / Ctrl + V:</b> Copy &amp; paste selection</li>
+            <li><b>Ctrl + Z / Ctrl + Y:</b> Undo / Redo</li>
+        </ul>
+        """
+        self.browser.setHtml(html)
+
+
+
+    def display_node_type(self, node_type: str):
+        doc = plugin_system.get_node_documentation(node_type)
+        if not doc:
+            self.browser.setHtml(f"<h3>{node_type}</h3><p>No documentation available.</p>")
+            return
+
+        badge_text = "Native C++ DSP" if doc["is_native"] else "PyTorch Pure DSP"
+        badge_bg = "#005577" if doc["is_native"] else "#443366"
+
+        html = f"""
+        <table width="100%" style="border-collapse: collapse; margin-bottom: 6px;">
+            <tr>
+                <td style="font-size: 16px; font-weight: bold; color: #ffffff;">{doc['label']}</td>
+                <td align="right">
+                    <span style="background-color: {badge_bg}; color: #00ccff; padding: 2px 6px; font-size: 10px;">{badge_text}</span>
+                    <span style="color: #888888; font-size: 11px; margin-left: 8px;">Category: {doc['category']}</span>
+                </td>
+            </tr>
+        </table>
+        <hr style="border: 1px solid #333; margin-top: 4px; margin-bottom: 8px;">
+        <p style="font-size: 12px; line-height: 1.4; color: #e0e0e0;">{doc['description']}</p>
+        """
+
+        if doc["inputs"]:
+            html += "<h3 style='color: #ff9900; margin-bottom: 4px;'>Inputs</h3><table width='100%' style='border-collapse: collapse; margin-bottom: 12px;'>"
+            for name, info in doc["inputs"].items():
+                bound = f" <i style='color: #888;'>(bound to '{info['param_name']}')</i>" if info.get("param_name") else ""
+                html += f"<tr style='border-bottom: 1px solid #2a2a2a;'><td width='30%' style='padding: 4px; font-weight: bold; color: #fff;'>{name}{bound}</td><td style='padding: 4px; color: #ccc;'>{info['help']}</td></tr>"
+            html += "</table>"
+
+        if doc["outputs"]:
+            html += "<h3 style='color: #00ccff; margin-bottom: 4px;'>Outputs</h3><table width='100%' style='border-collapse: collapse; margin-bottom: 12px;'>"
+            for name, info in doc["outputs"].items():
+                ch_str = "Stereo" if info.get("channels", 2) == 2 else "Mono"
+                html += f"<tr style='border-bottom: 1px solid #2a2a2a;'><td width='30%' style='padding: 4px; font-weight: bold; color: #fff;'>{name} <span style='font-size: 10px; color: #888;'>({ch_str})</span></td><td style='padding: 4px; color: #ccc;'>{info['help']}</td></tr>"
+            html += "</table>"
+
+        if doc["params"]:
+            html += "<h3 style='color: #ffffff; margin-bottom: 4px;'>Parameters</h3><table width='100%' style='border-collapse: collapse;'>"
+            html += "<tr style='border-bottom: 1px solid #444; color: #888; font-size: 10px;'><th align='left' style='padding: 4px;'>Name</th><th align='left' style='padding: 4px;'>Range / Options</th><th align='left' style='padding: 4px;'>Default</th><th align='left' style='padding: 4px;'>Description</th></tr>"
+            for name, info in doc["params"].items():
+                meta = info.get("meta", {})
+                unit = f" {info['unit']}" if info.get("unit") else ""
+                ptype = info.get("type", "")
+                if ptype == "float":
+                    range_str = f"[{meta.get('min', 0.0):g} .. {meta.get('max', 1.0):g}]{unit}"
+                    def_str = f"{info.get('value', 0.0):g}{unit}"
+                elif ptype == "int":
+                    range_str = f"[{meta.get('min', 0)} .. {meta.get('max', 100)}]{unit}"
+                    def_str = f"{info.get('value', 0)}{unit}"
+                elif ptype == "menu":
+                    range_str = "Menu"
+                    items = meta.get("items", [])
+                    idx = int(info.get("value", 0))
+                    def_str = items[idx] if idx < len(items) else str(idx)
+                elif ptype == "bool":
+                    range_str = "Boolean"
+                    def_str = str(info.get("value", False))
+                else:
+                    range_str = ptype
+                    def_str = str(info.get("value", ""))
+
+                html += f"<tr style='border-bottom: 1px solid #2a2a2a;'><td style='padding: 4px; font-weight: bold; color: #fff;'>{name}</td><td style='padding: 4px; color: #aaa;'>{range_str}</td><td style='padding: 4px; color: #aaa;'>{def_str}</td><td style='padding: 4px; color: #ccc;'>{info['help']}</td></tr>"
+            html += "</table>"
+
+        self.browser.setHtml(html)
+
+
+
 class GraphScene(QGraphicsScene):
+    # Emitted with the node_type when a node's help is requested (header [?]
+    # button or context-menu action).
+    nodeHelpRequested = Signal(str)
+
     def __init__(self, controller):
         super().__init__()
         self.controller = controller
@@ -1377,6 +1585,10 @@ class GraphScene(QGraphicsScene):
             nodes.sort(key=lambda x: x[0])  # Sort by label
             for lbl, class_name in nodes:
                 action = sub_menu.addAction(lbl)
+                doc = plugin_system.get_node_documentation(class_name)
+                if doc.get("description"):
+                    first_line = doc["description"].strip().split("\n")[0]
+                    action.setToolTip(first_line)
                 action.triggered.connect(
                     lambda c=False, n=class_name, p=(click_pos.x(), click_pos.y()): self.controller.add_node(n, p)
                 )

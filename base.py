@@ -168,7 +168,7 @@ class IClockProvider(abc.ABC):
 
 
 class OutputSlot:
-    def __init__(self, name: str, parent: "Node", channels: int = CHANNELS):
+    def __init__(self, name: str, parent: "Node", channels: int = CHANNELS, help: str = ""):
         if channels < 1:
             # Impossible channel configuration: an output must produce at
             # least one channel. Reject at creation (and therefore at
@@ -178,14 +178,16 @@ class OutputSlot:
             )
         self.name = name
         self.parent = parent
+        self.help = help  # Documentation only; never touched by the audio path
         self.buffer = torch.zeros((channels, BLOCK_SIZE), dtype=DTYPE)
 
 
 class InputSlot:
-    def __init__(self, name: str, parent: "Node", param_name: str = None):
+    def __init__(self, name: str, parent: "Node", param_name: str = None, help: str = ""):
         self.name = name
         self.parent = parent
         self.param_name = param_name
+        self.help = help  # Documentation only; never touched by the audio path
         self.connected_outputs: List[OutputSlot] = []
         # Allocate max channels (Stereo) but we will slice it dynamically
         self._scratch = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
@@ -299,6 +301,9 @@ class Parameter:
 class Node:
     category: str = "Uncategorized"
     label: str = ""
+    # Human-readable documentation shown in the UI help panel. Control/UI-side
+    # only; never read by the audio processing path.
+    description: str = ""
 
     def __init__(self, name: str = ""):
         self.id = str(uuid.uuid4())
@@ -311,13 +316,13 @@ class Node:
         self._nrt_epoch = 0
         self._nrt_inbox = None
 
-    def add_input(self, name: str, param_name: str = None) -> InputSlot:
-        slot = InputSlot(name, self, param_name)
+    def add_input(self, name: str, param_name: str = None, help: str = "") -> InputSlot:
+        slot = InputSlot(name, self, param_name, help=help)
         self.inputs[name] = slot
         return slot
 
-    def add_output(self, name: str, channels: int = CHANNELS) -> OutputSlot:
-        slot = OutputSlot(name, self, channels)
+    def add_output(self, name: str, channels: int = CHANNELS, help: str = "") -> OutputSlot:
+        slot = OutputSlot(name, self, channels, help=help)
         self.outputs[name] = slot
         return slot
 
@@ -327,23 +332,23 @@ class Node:
         this to flag the change for their next processing boundary."""
         pass
 
-    def add_float_param(self, name: str, val: float, min_v=0.0, max_v=1.0):
-        self.params[name] = Parameter(val, "float", owner=self, min=min_v, max=max_v)
+    def add_float_param(self, name: str, val: float, min_v=0.0, max_v=1.0, unit: str = "", help: str = ""):
+        self.params[name] = Parameter(val, "float", owner=self, min=min_v, max=max_v, unit=unit, help=help)
 
-    def add_int_param(self, name: str, val: int, min_v=0, max_v=100):
-        self.params[name] = Parameter(val, "int", owner=self, min=min_v, max=max_v)
+    def add_int_param(self, name: str, val: int, min_v=0, max_v=100, unit: str = "", help: str = ""):
+        self.params[name] = Parameter(val, "int", owner=self, min=min_v, max=max_v, unit=unit, help=help)
 
-    def add_bool_param(self, name: str, val: bool):
-        self.params[name] = Parameter(val, "bool", owner=self)
+    def add_bool_param(self, name: str, val: bool, help: str = ""):
+        self.params[name] = Parameter(val, "bool", owner=self, help=help)
 
-    def add_string_param(self, name: str, val: str):
-        self.params[name] = Parameter(val, "string", owner=self)
+    def add_string_param(self, name: str, val: str, help: str = ""):
+        self.params[name] = Parameter(val, "string", owner=self, help=help)
 
-    def add_menu_param(self, name: str, items: List[str], initial_idx=0):
-        self.params[name] = Parameter(initial_idx, "menu", owner=self, items=items)
+    def add_menu_param(self, name: str, items: List[str], initial_idx=0, help: str = ""):
+        self.params[name] = Parameter(initial_idx, "menu", owner=self, items=items, help=help)
 
-    def add_file_param(self, name: str, val: str, filter: str = "All Files (*.*)", mode: str = "open"):
-        self.params[name] = Parameter(val, "file", owner=self, filter=filter, mode=mode)
+    def add_file_param(self, name: str, val: str, filter: str = "All Files (*.*)", mode: str = "open", help: str = ""):
+        self.params[name] = Parameter(val, "file", owner=self, filter=filter, mode=mode, help=help)
 
     def submit_nrt(self, fn, *args, tag=None):
         """Schedule fn(*args) on the engine's background pool. Never blocks.

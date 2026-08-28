@@ -20,17 +20,30 @@ from base import Node, BLOCK_SIZE, SAMPLE_RATE, DTYPE, CHANNELS
 class WaveformOscillator(Node):
     category = "Sources"
     label = "Waveform Oscillator"
+    description = (
+        "Anti-aliased multi-wave oscillator (Sine, Triangle, Sawtooth, Square/Pulse) "
+        "using the PolyBLEP technique: a polynomial residual cancels the aliasing at "
+        "the discontinuities of naive waveforms. Frequency and pulse width are "
+        "audio-rate modulatable via parameter-bound inputs. Mono output; zero latency."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.in_freq = self.add_input("freq_in", "freq")
-        self.in_pw = self.add_input("pw_in", "pulse_width")
-        self.out_sig = self.add_output("signal", channels=1)
+        self.in_freq = self.add_input("freq_in", "freq",
+                                      help="Audio-rate frequency modulation input (Hz). Unconnected: uses 'freq' parameter.")
+        self.in_pw = self.add_input("pw_in", "pulse_width",
+                                    help="Audio-rate pulse-width modulation (0..1). Unconnected: uses 'pulse_width' parameter.")
+        self.out_sig = self.add_output("signal", channels=1,
+                                       help="Mono waveform output in [-amp, +amp].")
 
-        self.add_menu_param("waveform", ["Sine", "Triangle", "Sawtooth", "Square"], 0)
-        self.add_float_param("freq", 440.0, 1.0, 20000.0)
-        self.add_float_param("amp", 0.5, 0.0, 1.0)
-        self.add_float_param("pulse_width", 0.5, 0.01, 0.99)
+        self.add_menu_param("waveform", ["Sine", "Triangle", "Sawtooth", "Square"], 0,
+                            help="Waveform shape to generate.")
+        self.add_float_param("freq", 440.0, 1.0, 20000.0, unit="Hz",
+                             help="Base frequency used when no modulation signal is connected.")
+        self.add_float_param("amp", 0.5, 0.0, 1.0,
+                             help="Output peak amplitude.")
+        self.add_float_param("pulse_width", 0.5, 0.01, 0.99,
+                             help="Duty cycle of the Square/Pulse waveform (ignored by other shapes).")
 
         self.phase = 0.0
         self._dt = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
@@ -110,16 +123,25 @@ class WaveformOscillator(Node):
 class ColoredNoise(Node):
     category = "Sources"
     label = "Colored Noise Generator"
+    description = (
+        "Noise generator with selectable spectral color (White, Pink -3 dB/oct, "
+        "Brown -6 dB/oct, Blue +3 dB/oct, Violet +6 dB/oct). Colors other than white "
+        "are produced by convolving white noise with a 127-tap randomized-phase FIR "
+        "filter shaped to the target spectral slope. Stereo output; zero latency."
+    )
 
     TAPS = 127
     HIST = TAPS - 1
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.out_sig = self.add_output("out", channels=CHANNELS)
+        self.out_sig = self.add_output("out", channels=CHANNELS,
+                                       help="Stereo noise output scaled by 'amp'.")
 
-        self.add_menu_param("type", ["White", "Pink (-3dB/oct)", "Brown (-6dB/oct)", "Blue (+3dB/oct)", "Violet (+6dB/oct)"], 0)
-        self.add_float_param("amp", 0.2, 0.0, 1.0)
+        self.add_menu_param("type", ["White", "Pink (-3dB/oct)", "Brown (-6dB/oct)", "Blue (+3dB/oct)", "Violet (+6dB/oct)"], 0,
+                            help="Spectral color of the generated noise.")
+        self.add_float_param("amp", 0.2, 0.0, 1.0,
+                             help="Output peak amplitude.")
 
         self._raw_noise = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
         self._conv_in = torch.zeros((1, CHANNELS, self.HIST + BLOCK_SIZE), dtype=DTYPE)

@@ -14,10 +14,15 @@ logger = logging.getLogger(__name__)
 class Note(Node):
     category = "Visual"
     label = "Comment / Note"
+    description = (
+        "Canvas annotation node. Holds a free-form text string and processes no "
+        "audio; useful for documenting patches directly on the graph."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_string_param("text", "Hello World")
+        self.add_string_param("text", "Hello World",
+                              help="Annotation text displayed on the canvas.")
 
     def process(self):
         pass
@@ -26,12 +31,19 @@ class Note(Node):
 class Noise(Node):
     category = "Sources"
     label = "White Noise"
+    description = (
+        "Uniform white noise generator: each sample is drawn from [-1, 1) and "
+        "scaled by the amplitude parameter. Can be disabled for silence. Stereo "
+        "output; zero latency, no state."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_bool_param("enabled", True)
-        self.add_float_param("amp", 0.1)
-        self.out = self.add_output("out")
+        self.add_bool_param("enabled", True,
+                            help="Enable noise generation; when off the output is silence.")
+        self.add_float_param("amp", 0.1,
+                             help="Output peak amplitude applied to the [-1, 1] noise.")
+        self.out = self.add_output("out", help="Stereo white noise output.")
 
     def process(self):
         if self.params["enabled"].value:
@@ -45,13 +57,19 @@ class Noise(Node):
 class Selector(Node):
     category = "Utilities"
     label = "A/B Selector"
+    description = (
+        "Passes one of two inputs to the output based on a menu parameter: "
+        "Input A or Input B. Glitch-free at block boundaries but switching is "
+        "instant (no crossfade). Zero latency, no state."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_menu_param("source", ["Input A", "Input B"])
-        self.in_a = self.add_input("A")
-        self.in_b = self.add_input("B")
-        self.out = self.add_output("out")
+        self.add_menu_param("source", ["Input A", "Input B"], 0,
+                            help="Which input to route to the output.")
+        self.in_a = self.add_input("A", help="Signal routed to the output when source = Input A.")
+        self.in_b = self.add_input("B", help="Signal routed to the output when source = Input B.")
+        self.out = self.add_output("out", help="Selected input signal.")
 
     def process(self):
         idx = int(self.params["source"].value)
@@ -64,6 +82,12 @@ class Selector(Node):
 class FileRecorder(Node):
     category = "I/O"
     label = "File Recorder"
+    description = (
+        "Records its input to a 16-bit PCM WAV file. The audio thread converts "
+        "blocks into a pre-allocated pool and hands indices to a lock-free queue; "
+        "all disk I/O runs on a dedicated writer thread, so recording never blocks "
+        "audio. Clipping is applied at +/-1.0 before int16 conversion."
+    )
 
     # Blocks of audio the writer may fall behind before RT drops frames
     # (128 blocks ≈ 1.4 s cushion at 48 kHz / 512).
@@ -71,9 +95,12 @@ class FileRecorder(Node):
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_file_param("filename", "output.wav", filter="WAV Files (*.wav)", mode="save")
-        self.add_bool_param("record", False)
-        self.inp = self.add_input("in")
+        self.add_file_param("filename", "output.wav", filter="WAV Files (*.wav)", mode="save",
+                            help="Target WAV file path for the recording.")
+        self.add_bool_param("record", False,
+                            help="Start/stop recording. Turning on spawns the writer thread off the audio path.")
+        self.inp = self.add_input("in",
+                                  help="Signal to record (mono inputs are duplicated to both WAV channels).")
 
         # RT-side gate only; flipped on engine/UI threads, read in process().
         self._recording = False

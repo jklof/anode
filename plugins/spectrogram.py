@@ -88,15 +88,24 @@ MAX_FREQ = 20000.0
 class SpectrogramDisplay(Node):
     category = "Visual"
     label = "Spectrogram"
+    description = (
+        "Scrolling spectrogram visualizer with selectable colormap and dB range "
+        "controls. Computes an STFT of a private copy of the signal on the audio "
+        "thread and streams magnitude frames via a bounded SPSC telemetry buffer "
+        "to a Qt widget. Audio passes through unchanged."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.inp = self.add_input("in", help="Signal to visualize (analysis uses a private copy).")
+        self.out = self.add_output("out", channels=CHANNELS, help="Pass-through copy of the input, unaltered.")
 
-        self.add_menu_param("colormap", list(COLORMAPS.keys()), initial_idx=0)
-        self.add_float_param("min_db", -80.0, -120.0, -20.0)
-        self.add_float_param("max_db", 0.0, -20.0, 20.0)
+        self.add_menu_param("colormap", list(COLORMAPS.keys()), initial_idx=0,
+                            help="Color map used to render magnitude values.")
+        self.add_float_param("min_db", -80.0, -120.0, -20.0, unit="dB",
+                             help="Magnitude mapped to the bottom of the color scale.")
+        self.add_float_param("max_db", 0.0, -20.0, 20.0, unit="dB",
+                             help="Magnitude mapped to the top of the color scale.")
 
         # Pre-allocated SPSC telemetry buffer for waterfall frames (~170 ms cushion at 93.75 blocks/sec)
         self.monitor_queue = TelemetryRingBuffer(capacity=16, shape=(CHANNELS, DISPLAY_BINS), dtype=np.float32)

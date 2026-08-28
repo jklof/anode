@@ -23,6 +23,33 @@ def test_plugin_metadata_integrity():
         assert category in known_categories, f"Node {name} has unknown category '{category}'. Valid: {known_categories}"
 
 
+def test_node_documentation_integrity():
+    """Verify that every registered node has descriptions, documented ports, and parameter help."""
+    plugin_system.load_plugins("plugins")
+
+    for node_type, cls in plugin_system.NODE_REGISTRY.items():
+        doc = plugin_system.get_node_documentation(node_type)
+
+        # 1. Class Description / Docstring
+        assert doc["description"], f"Node '{node_type}' is missing a description or docstring"
+        assert len(doc["description"]) >= 15, (
+            f"Node '{node_type}' description is too short ({len(doc['description'])} chars)"
+        )
+
+        # 2. Port Documentation
+        for port_name, p_info in doc["inputs"].items():
+            assert p_info["help"], f"Node '{node_type}' input '{port_name}' is missing help text"
+        for port_name, p_info in doc["outputs"].items():
+            assert p_info["help"], f"Node '{node_type}' output '{port_name}' is missing help text"
+
+        # 3. Parameter Documentation
+        for param_name, p_info in doc["params"].items():
+            assert p_info["help"], f"Node '{node_type}' param '{param_name}' is missing help text"
+            assert isinstance(p_info["unit"], str), (
+                f"Node '{node_type}' param '{param_name}' unit must be a string"
+            )
+
+
 def test_node_naming_logic():
     """
     Verify the base Node class correctly uses the 'label' attribute

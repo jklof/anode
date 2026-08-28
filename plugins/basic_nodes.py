@@ -6,14 +6,25 @@ from base import Node, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
 class SineOscillator(Node):
     category = "Sources"
     label = "Sine Oscillator"
+    description = (
+        "Pure sine wave generator: phase accumulates at the incoming frequency, "
+        "wrapped to [0, 2π), and sine() is evaluated per sample. The frequency and "
+        "amplitude inputs are parameter-bound modulation inputs, so an unconnected "
+        "slot falls back to the constant parameter value. Mono output."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_float_param("freq", 440.0, 20.0, 20000.0)
-        self.add_float_param("amp", 0.5, 0.0, 1.0)
-        self.in_freq = self.add_input("freq_in", "freq")
-        self.in_amp = self.add_input("amp_in", "amp")
-        self.out_sig = self.add_output("signal", channels=1)
+        self.add_float_param("freq", 440.0, 20.0, 20000.0, unit="Hz",
+                             help="Oscillator frequency used when no modulation signal is connected.")
+        self.add_float_param("amp", 0.5, 0.0, 1.0,
+                             help="Output peak amplitude used when no modulation signal is connected.")
+        self.in_freq = self.add_input("freq_in", "freq",
+                                      help="Audio-rate frequency modulation input (Hz). Unconnected: uses 'freq' parameter.")
+        self.in_amp = self.add_input("amp_in", "amp",
+                                     help="Audio-rate amplitude modulation input (linear gain). Unconnected: uses 'amp' parameter.")
+        self.out_sig = self.add_output("signal", channels=1,
+                                       help="Mono sine output in [-amp, +amp].")
         self.two_pi = 2 * np.pi
         self.sr_recip = 1.0 / SAMPLE_RATE
         self.phase = 0.0
@@ -34,11 +45,16 @@ class SineOscillator(Node):
 class StereoToMono(Node):
     category = "Utilities"
     label = "Stereo to Mono"
+    description = (
+        "Downmixes a stereo input to mono by averaging the left and right channels "
+        "((L + R) / 2). A mono input is passed through unchanged. No parameters; "
+        "pure stateless math with zero latency."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
-        self.out = self.add_output("out", channels=1)
+        self.inp = self.add_input("in", help="Stereo (or mono) signal to downmix.")
+        self.out = self.add_output("out", channels=1, help="Mono average of the input channels.")
 
     def process(self):
         t = self.inp.get_tensor()
@@ -57,12 +73,18 @@ class StereoToMono(Node):
 class MonoToStereo(Node):
     category = "Utilities"
     label = "Mono to Stereo"
+    description = (
+        "Upmixes mono (or stereo) input to stereo with a linear pan law: "
+        "L = in * (1 - pan) / 2 and R = in * (1 + pan) / 2. At pan = 0 both "
+        "channels receive equal, attenuated copies of the input."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_float_param("pan", 0.0, -1.0, 1.0)
-        self.inp = self.add_input("in")
-        self.out = self.add_output("out", channels=2)
+        self.add_float_param("pan", 0.0, -1.0, 1.0,
+                             help="Pan position: -1 hard left, 0 center, +1 hard right.")
+        self.inp = self.add_input("in", help="Mono signal to pan into stereo.")
+        self.out = self.add_output("out", channels=2, help="Panned stereo output.")
 
     def process(self):
         t = self.inp.get_tensor()
@@ -76,13 +98,21 @@ class MonoToStereo(Node):
 class Gain(Node):
     category = "Utilities"
     label = "Gain"
+    description = (
+        "Simple linear gain stage: output = input * gain. The 'mod' input is "
+        "parameter-bound to the volume parameter, providing audio-rate amplitude "
+        "modulation when connected (unconnected slots use the constant parameter "
+        "value). Zero latency, no state."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_float_param("vol", 1.0, 0.0, 2.0)
-        self.inp = self.add_input("in")
-        self.gain_mod = self.add_input("mod", "vol")
-        self.out = self.add_output("out")
+        self.add_float_param("vol", 1.0, 0.0, 2.0, unit="x",
+                             help="Linear gain multiplier used when no modulation signal is connected.")
+        self.inp = self.add_input("in", help="Signal to amplify.")
+        self.gain_mod = self.add_input("mod", "vol",
+                                       help="Audio-rate gain modulation input (linear multiplier). Unconnected: uses 'vol' parameter.")
+        self.out = self.add_output("out", help="Amplified signal, same channel count as the input.")
 
     def process(self):
         t = self.inp.get_tensor()
@@ -98,12 +128,20 @@ class Gain(Node):
 class ChannelSplitter(Node):
     category = "Utilities"
     label = "Channel Splitter"
+    description = (
+        "Splits the channels of an input signal into separate mono outputs: "
+        "channel 0 goes to 'left', channel 1 to 'right'. Missing input channels "
+        "produce silence on the corresponding output. Zero latency, no state."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
+        self.inp = self.add_input("in", help="Stereo (or wider) signal to split.")
         # Create outputs and store in a list for loop-based processing
-        self.outputs_list = [self.add_output("left", channels=1), self.add_output("right", channels=1)]
+        self.outputs_list = [
+            self.add_output("left", channels=1, help="Mono copy of input channel 0."),
+            self.add_output("right", channels=1, help="Mono copy of input channel 1 (silence if mono input)."),
+        ]
 
     def process(self):
         t = self.inp.get_tensor()
@@ -120,12 +158,19 @@ class ChannelSplitter(Node):
 class ChannelJoiner(Node):
     category = "Utilities"
     label = "Channel Joiner"
+    description = (
+        "Joins two mono signals into a single stereo signal: 'left' becomes "
+        "channel 0 and 'right' becomes channel 1. Zero latency, no state."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
         # Create inputs and store in a list
-        self.inputs_list = [self.add_input("left"), self.add_input("right")]
-        self.out = self.add_output("out", channels=2)
+        self.inputs_list = [
+            self.add_input("left", help="Mono signal placed on the left channel."),
+            self.add_input("right", help="Mono signal placed on the right channel."),
+        ]
+        self.out = self.add_output("out", channels=2, help="Stereo output combining both inputs.")
 
     def process(self):
         out_buffer = self.out.buffer
@@ -149,11 +194,18 @@ class ChannelJoiner(Node):
 class DialNode(Node):
     category = "Sources"
     label = "Dial"
+    description = (
+        "Constant CV source: outputs the 'value' parameter as a static signal on "
+        "every channel. Intended as a modulation source for parameter-bound "
+        "inputs of other nodes. Includes a rotary-dial custom UI."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_float_param("value", 0.5, 0.0, 1.0)
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.add_float_param("value", 0.5, 0.0, 1.0,
+                             help="Constant output value produced on every channel.")
+        self.out = self.add_output("out", channels=CHANNELS,
+                                   help="Stereo constant signal at the dial value.")
 
     def process(self):
         val = self.params["value"].value

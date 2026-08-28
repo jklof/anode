@@ -343,14 +343,25 @@ class MediaPlayerWidget(QWidget):
 class MediaPlayerNode(Node):
     category = "I/O"
     label = "Media Player"
+    description = (
+        "Streams local audio files or remote URLs (via yt-dlp resolution) "
+        "through a background worker thread with reconnecting ffmpeg demuxing. "
+        "The audio thread pulls pre-converted blocks from a bounded queue "
+        "without blocking; underruns output silence. Supports play/pause, "
+        "looping, and seeking from its custom UI."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_file_param("file_path", "", filter="Audio Files (*.mp3 *.wav *.flac *.m4a);;All (*.*)")
-        self.add_bool_param("playing", True)
-        self.add_bool_param("looping", False)
-        self.add_float_param("seek_ratio", -1.0)
-        self.add_output("out")
+        self.add_file_param("file_path", "", filter="Audio Files (*.mp3 *.wav *.flac *.m4a);;All (*.*)",
+                            help="Media file (or URL) to play; loading happens on a background worker.")
+        self.add_bool_param("playing", True,
+                            help="Play/pause; when off the node outputs silence but keeps buffering.")
+        self.add_bool_param("looping", False,
+                            help="Restart from the beginning when playback reaches the end.")
+        self.add_float_param("seek_ratio", -1.0, min_v=-1.0, max_v=1.0,
+                             help="Write-only seek trigger: set to a 0..1 position to seek; -1 = idle.")
+        self.add_output("out", help="Decoded stereo audio (silence while paused or buffering).")
 
         # Increase Queue size to prevent buffer underruns
         self.queue = queue.Queue(maxsize=500)

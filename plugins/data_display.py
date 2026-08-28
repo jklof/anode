@@ -38,6 +38,12 @@ except ImportError:
 class DataDisplayNode(Node):
     category = "Visual"
     label = "Data Display"
+    description = (
+        "HUD statistics display: every ~4 blocks it analyzes a private copy of "
+        "the signal and pushes RMS, peak, DC offset, silence/constant "
+        "classification, and per-channel values through a pre-allocated dict "
+        "ring buffer to a Qt overlay widget. Audio passes through unchanged."
+    )
 
     # Analyze every N blocks: ~23 Hz at 48 kHz / 512 samples per block.
     UPDATE_INTERVAL_BLOCKS = 4
@@ -48,8 +54,8 @@ class DataDisplayNode(Node):
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.inp = self.add_input("in", help="Signal to analyze (analysis uses a private copy).")
+        self.out = self.add_output("out", channels=CHANNELS, help="Pass-through copy of the input, unaltered.")
 
         # Pre-allocated SPSC telemetry buffer for dict statistics
         self.monitor_queue = TelemetryDictRingBuffer(capacity=4)

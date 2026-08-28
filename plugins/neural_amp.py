@@ -74,17 +74,27 @@ class NamNode(FFINode):
     LIB_NAME = "neural_amp"
     category = "Effects"
     label = "Neural Amp Modeler"
+    description = (
+        "Neural network amplifier/emulator capture player backed by native C++ "
+        "inference (libneural_amp). .nam model files are loaded on a background "
+        "NRT worker and installed at a safe boundary; replaced models are "
+        "deallocated off the audio thread. Drive and level provide input/output "
+        "gain trimming."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_input("in")
-        self.add_output("out")
+        self.add_input("in", help="Instrument-level signal to run through the neural model.")
+        self.add_output("out", help="Modeled amplifier output with level gain applied.")
 
         # Internal params
         # CHANGED: Use add_file_param to enable generic UI widget
-        self.add_file_param("model_path", "", filter="NAM Models (*.nam);;All Files (*.*)")
-        self.add_float_param("drive", 1.0, 0.0, 4.0)
-        self.add_float_param("level", 1.0, 0.0, 4.0)
+        self.add_file_param("model_path", "", filter="NAM Models (*.nam);;All Files (*.*)",
+                            help="Neural Amp Modeler .nam capture file; loaded on a background worker.")
+        self.add_float_param("drive", 1.0, 0.0, 4.0, unit="x",
+                             help="Input gain applied before the model.")
+        self.add_float_param("level", 1.0, 0.0, 4.0, unit="x",
+                             help="Output gain applied after the model.")
 
         # Status tracking for telemetry
         self._status = "Idle"

@@ -26,6 +26,14 @@ class Theme:
         # Clock icon
         "clock_master": QColor("#00FF00"),
         "clock_slave": QColor("#666666"),
+        # Documentation / help
+        "help_button": QColor("#888888"),
+        "help_button_hover": QColor("#00ccff"),
+        "doc_bg": QColor(25, 25, 25),
+        "doc_header_bg": QColor(35, 35, 35),
+        "doc_table_border": QColor(50, 50, 50),
+        "doc_badge_bg": QColor(0, 204, 255, 35),
+        "doc_badge_text": QColor("#00ccff"),
         # Processing load colors
         "load_low": QColor(0, 255, 0, 100),
         "load_medium": QColor(255, 255, 0, 100),

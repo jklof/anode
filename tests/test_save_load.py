@@ -62,6 +62,38 @@ def test_save_load():
     assert gain_node.inp.connected_outputs[0].name == "signal"
 
 
+def test_undo_metadata_preserved_in_snapshot():
+    """Regression: undo/redo parameter snapshots must preserve help/unit
+    metadata inside meta so the help system never loses documentation after
+    a restore round trip."""
+    from core import Graph
+    import plugin_system
+
+    plugin_system.load_plugins("plugins")
+    cls = plugin_system.NODE_REGISTRY.get("Gain")
+    node = cls()
+    node.id = "g1"
+    graph = Graph()
+    graph.add_node(node)
+
+    metadata = node.params["vol"].meta
+    assert "help" in metadata and metadata["help"]
+    assert "unit" in metadata and metadata["unit"] == "x"
+
+    # Snapshot-style dict restore (as produced by undo/redo) keeps meta intact
+    snapshot = {
+        "id": node.id,
+        "type": "Gain",
+        "name": node.name,
+        "params": {k: {"value": v.value, "type": v.type, "meta": v.meta} for k, v in node.params.items()},
+        "pos": node.pos,
+    }
+    node.load_state(snapshot)
+    restored_meta = node.params["vol"].meta
+    assert restored_meta.get("help") == metadata["help"]
+    assert restored_meta.get("unit") == "x"
+
+
 def test_delete_undo_attaches_graph_before_load_state():
     """Regression: DeleteNodeCommand.undo() used to call node.load_state()
     BEFORE the engine attached node.graph, so nodes that submit background

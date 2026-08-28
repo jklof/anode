@@ -158,7 +158,8 @@ class ScriptNode(Node):
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_string_param("code", DEFAULT_CODE)
+        self.add_string_param("code", DEFAULT_CODE,
+                              help="Python source executed each block. Ports are defined in the source with #inputs/#outputs comments.")
         self.compiled_code = None
         self.state_dict = {}
         self.error_line = -1
@@ -177,7 +178,7 @@ class ScriptNode(Node):
                 slot.disconnect()
         for name in inputs:
             if name not in self.inputs:
-                self.add_input(name)
+                self.add_input(name, help="Script input slot")
 
         # 2. Update Output Slots
         for name in list(self.outputs.keys()):
@@ -192,7 +193,7 @@ class ScriptNode(Node):
                                     inp.disconnect(out_slot)
         for name in outputs:
             if name not in self.outputs:
-                self.add_output(name)
+                self.add_output(name, help="Script output slot")
 
         self.request_graph_rebuild()
 

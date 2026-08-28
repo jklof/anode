@@ -20,19 +20,29 @@ from base import Node, CHANNELS, BLOCK_SIZE, DTYPE
 class MathOp(Node):
     category = "Utilities"
     label = "Math Operator"
+    description = (
+        "Vectorized arithmetic and CV conditioner. Applies Add, Subtract, "
+        "Multiply, Divide, Min, Max, Invert, Absolute, Clamp [0,1], or Scale & "
+        "Offset to input A, using input B (if connected) or the scalar parameter "
+        "as the second operand. Output channel count follows the widest operand. "
+        "Divide is zero-safe via a sign-correct epsilon."
+    )
 
     OPERATIONS = ["Add", "Subtract", "Multiply", "Divide", "Min", "Max",
                   "Invert", "Absolute", "Clamp", "Scale & Offset"]
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.in_a = self.add_input("in_a")
-        self.in_b = self.add_input("in_b")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.in_a = self.add_input("in_a", help="Primary operand (also the signal passed through unary modes).")
+        self.in_b = self.add_input("in_b", help="Second operand. Unconnected: the 'scalar' parameter is used instead.")
+        self.out = self.add_output("out", channels=CHANNELS, help="Result of the selected operation.")
 
-        self.add_menu_param("op", self.OPERATIONS, 0)
-        self.add_float_param("scalar", 1.0, -100.0, 100.0)
-        self.add_float_param("offset", 0.0, -100.0, 100.0)
+        self.add_menu_param("op", self.OPERATIONS, 0,
+                            help="Arithmetic operation to apply.")
+        self.add_float_param("scalar", 1.0, -100.0, 100.0,
+                             help="Scalar operand used when input B is unconnected.")
+        self.add_float_param("offset", 0.0, -100.0, 100.0,
+                             help="Additive offset used by the Scale & Offset mode.")
 
         self._tmp = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
         self._maskf = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)

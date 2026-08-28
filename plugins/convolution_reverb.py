@@ -102,14 +102,23 @@ class ReverbWidget(QWidget):
 class ConvolutionReverb(Node):
     category = "Effects"
     label = "Convolution Reverb"
+    description = (
+        "Partitioned frequency-domain convolution reverb. Impulse responses are "
+        "decoded, resampled, and FFT-partitioned on a background NRT worker; the "
+        "audio thread runs a zero-allocation uniform-partitioned overlap-add "
+        "convolver. Before an IR is ready the dry signal is passed through "
+        "scaled by (1 - mix)."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_input("in")
-        self.add_output("out")
+        self.add_input("in", help="Signal to reverberate; mono inputs are duplicated for stereo IRs.")
+        self.add_output("out", help="Dry/wet mixed output (wet only after an IR is loaded).")
 
-        self.add_float_param("mix", 0.5, 0.0, 1.0)
-        self.add_file_param("ir_path", "", filter="Audio Files (*.wav *.flac *.mp3)")
+        self.add_float_param("mix", 0.5, 0.0, 1.0,
+                             help="Dry/wet balance: 0 = dry only, 1 = wet only.")
+        self.add_file_param("ir_path", "", filter="Audio Files (*.wav *.flac *.mp3)",
+                            help="Impulse response file; prepared on a background worker.")
 
         self.loading = False
         self.current_ir_path = ""

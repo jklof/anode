@@ -27,6 +27,12 @@ CUTOFF_MAX = 20000.0
 class BiquadFilter(FFINode):
     category = "Effects"
     label = "Biquad Filter (IIR)"
+    description = (
+        "Native C++ RBJ biquad IIR filter (Low Pass, High Pass, Band Pass, Notch, "
+        "Peaking, Low Shelf, High Shelf). Coefficients are recomputed at block rate "
+        "from the cutoff/Q/gain parameters, so fast parameter moves may zipper. "
+        "Mono inputs are duplicated to both output channels."
+    )
 
     LIB_NAME = "biquad"
     # Matches cpp/biquad.cpp set_param switch-case
@@ -37,15 +43,20 @@ class BiquadFilter(FFINode):
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_menu_param("type", self.FILTER_TYPES, 0)
-        self.add_float_param("cutoff", 1000.0, CUTOFF_MIN, CUTOFF_MAX)
-        self.add_float_param("q", 0.707, 0.1, 10.0)
-        self.add_float_param("gain_db", 0.0, -24.0, 24.0)
+        self.add_menu_param("type", self.FILTER_TYPES, 0,
+                            help="Filter response type.")
+        self.add_float_param("cutoff", 1000.0, CUTOFF_MIN, CUTOFF_MAX, unit="Hz",
+                             help="Cutoff/corner frequency of the filter.")
+        self.add_float_param("q", 0.707, 0.1, 10.0, unit="Q",
+                             help="Resonance (quality factor); higher values ring more.")
+        self.add_float_param("gain_db", 0.0, -24.0, 24.0, unit="dB",
+                             help="Boost/cut used by Peaking and Shelf filter types.")
 
-        self.inp = self.add_input("in")
+        self.inp = self.add_input("in", help="Signal to filter; mono inputs are duplicated to stereo.")
         # Modulation socket: connected signal is used as cutoff (Hz).
-        self.in_mod = self.add_input("mod_cutoff")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.in_mod = self.add_input("mod_cutoff",
+                                     help="Audio-rate cutoff modulation (Hz, uses the mean of the block). Unconnected: uses 'cutoff' parameter.")
+        self.out = self.add_output("out", channels=CHANNELS, help="Filtered stereo output.")
 
     def process(self):
         if not self.lib or not self.dsp_handle:
@@ -104,6 +115,12 @@ class BiquadFilter(FFINode):
 class LinearPhaseEQ(FFINode):
     category = "Effects"
     label = "Linear Phase EQ (FIR)"
+    description = (
+        "Native C++ 255-tap linear-phase FIR equalizer (Low Pass, High Pass, Band "
+        "Pass, Band Stop). The odd-length Type-I symmetric FIR introduces a constant "
+        "integer group delay of (N-1)/2 = 127 samples (~2.65 ms at 48 kHz), reported "
+        "in the node telemetry. Zero phase distortion across the passband."
+    )
 
     LIB_NAME = "fir_eq"
     # Matches cpp/fir_eq.cpp set_param switch-case
@@ -114,12 +131,16 @@ class LinearPhaseEQ(FFINode):
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_menu_param("type", self.FILTER_TYPES, 0)
-        self.add_float_param("cutoff", 1000.0, CUTOFF_MIN, CUTOFF_MAX)
-        self.add_float_param("q", 1.0, 0.1, 10.0)
+        self.add_menu_param("type", self.FILTER_TYPES, 0,
+                            help="Filter response type.")
+        self.add_float_param("cutoff", 1000.0, CUTOFF_MIN, CUTOFF_MAX, unit="Hz",
+                             help="Primary cutoff/corner frequency.")
+        self.add_float_param("q", 1.0, 0.1, 10.0, unit="Q",
+                             help="Bandwidth/resonance control for band responses.")
 
-        self.inp = self.add_input("in")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.inp = self.add_input("in", help="Signal to filter; mono inputs are duplicated to stereo.")
+        self.out = self.add_output("out", channels=CHANNELS,
+                                   help="Filtered stereo output, delayed by 127 samples (linear phase).")
 
     def process(self):
         super().process()

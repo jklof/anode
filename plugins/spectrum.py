@@ -41,16 +41,25 @@ MAX_FREQ = 20000.0
 class SpectrumDisplay(Node):
     category = "Visual"
     label = "Spectrum Visualizer"
+    description = (
+        "Real-time FFT spectrum analyzer with log-frequency display. Computes a "
+        "windowed FFT of a private copy of the signal on the audio thread and "
+        "streams magnitude spectra through a bounded SPSC telemetry buffer to a "
+        "Qt widget with per-band smoothing. Audio passes through unchanged."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.inp = self.add_input("in", help="Signal to analyze (analysis uses a private copy).")
+        self.out = self.add_output("out", channels=CHANNELS, help="Pass-through copy of the input, unaltered.")
 
         # Display parameters (min/max consumed by the node, smoothing by the UI)
-        self.add_float_param("min_db", -70.0, -120.0, -20.0)
-        self.add_float_param("max_db", 6.0, -10.0, 24.0)
-        self.add_float_param("smoothing", 0.65, 0.0, 0.95)
+        self.add_float_param("min_db", -70.0, -120.0, -20.0, unit="dB",
+                             help="Magnitude mapped to the bottom of the display.")
+        self.add_float_param("max_db", 6.0, -10.0, 24.0, unit="dB",
+                             help="Magnitude mapped to the top of the display.")
+        self.add_float_param("smoothing", 0.65, 0.0, 0.95,
+                             help="Display smoothing between frames (0 = none, higher = slower movement).")
 
         # Pre-allocated SPSC telemetry buffer for instantaneous spectra (capacity 4 frames)
         self.monitor_queue = TelemetryRingBuffer(capacity=4, shape=(CHANNELS, DISPLAY_BINS), dtype=np.float32)

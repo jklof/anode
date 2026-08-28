@@ -22,15 +22,24 @@ DECIM_MAX = 64
 class Bitcrusher(Node):
     category = "Effects"
     label = "Bitcrusher"
+    description = (
+        "Sample-and-hold decimation combined with bit-depth quantization. The "
+        "hold grid is anchored to a global sample index, so the plateau phase "
+        "stays continuous across block boundaries and when the decimation factor "
+        "changes. Dry/wet mix blends the crushed signal with the input."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.inp = self.add_input("in", help="Signal to crush; mono inputs broadcast to stereo.")
+        self.out = self.add_output("out", channels=CHANNELS, help="Crushed stereo output.")
 
-        self.add_int_param("bits", 8, 1, 16)
-        self.add_int_param("downsample", 1, 1, DECIM_MAX)
-        self.add_float_param("mix", 1.0, 0.0, 1.0)
+        self.add_int_param("bits", 8, 1, 16, unit="bits",
+                           help="Quantization depth: 1 = extreme, 16 = near-full resolution.")
+        self.add_int_param("downsample", 1, 1, 64, unit="x",
+                           help="Sample-and-hold decimation factor (hold length in samples).")
+        self.add_float_param("mix", 1.0, 0.0, 1.0,
+                             help="Dry/wet crossfade between input and crushed signal.")
 
         self._g0 = 0  # global sample offset of the next block (reset in start())
         self._ext = torch.zeros((CHANNELS, BLOCK_SIZE + DECIM_MAX), dtype=DTYPE)

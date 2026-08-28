@@ -20,18 +20,30 @@ MODES = ["Tanh (Tape)", "Soft Clip", "Hard Clip", "Wavefolder", "Asymmetric Tube
 class WaveShaper(Node):
     category = "Effects"
     label = "WaveShaper / Saturation"
+    description = (
+        "Zero-latency nonlinear saturation with five transfer functions: Tanh "
+        "(tape-style), cubic soft clip, hard clip, sine wavefolder, and "
+        "asymmetric tube. Drive, bias, mix, and output level shape the response; "
+        "drive is audio-rate modulatable via a parameter-bound input."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
-        self.drive_mod = self.add_input("drive_mod", "drive")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.inp = self.add_input("in", help="Signal to saturate; mono inputs broadcast into the stereo chain.")
+        self.drive_mod = self.add_input("drive_mod", "drive",
+                                        help="Audio-rate drive modulation. Unconnected: uses 'drive' parameter.")
+        self.out = self.add_output("out", channels=CHANNELS, help="Saturated stereo output.")
 
-        self.add_menu_param("mode", MODES, 0)
-        self.add_float_param("drive", 1.0, 0.1, 20.0)
-        self.add_float_param("bias", 0.0, -1.0, 1.0)
-        self.add_float_param("mix", 1.0, 0.0, 1.0)
-        self.add_float_param("output_level", 1.0, 0.0, 2.0)
+        self.add_menu_param("mode", MODES, 0,
+                            help="Nonlinear transfer function to apply.")
+        self.add_float_param("drive", 1.0, 0.1, 20.0, unit="x",
+                             help="Input gain into the nonlinear stage; used when no modulation is connected.")
+        self.add_float_param("bias", 0.0, -1.0, 1.0,
+                             help="DC offset applied before shaping (asymmetry control).")
+        self.add_float_param("mix", 1.0, 0.0, 1.0,
+                             help="Dry/wet crossfade between input and shaped signal.")
+        self.add_float_param("output_level", 1.0, 0.0, 2.0, unit="x",
+                             help="Output trim applied after the mix.")
 
         self._driven = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
         self._shaped = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)

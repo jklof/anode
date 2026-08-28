@@ -8,11 +8,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QFileDialog,
     QSizePolicy,
+    QDockWidget,
 )
 from PySide6.QtGui import QAction, QKeySequence, QPalette, QColor
 from PySide6.QtCore import Qt
 from controller import AppController
-from ui_system import GraphScene, GraphView
+from ui_system import GraphScene, GraphView, NodeHelpWidget, NodeItem
 import plugin_system
 
 from ui_icons import create_icon
@@ -37,10 +38,32 @@ class MainWindow(QMainWindow):
         self.view = GraphView(self.scene)
         self.setCentralWidget(self.view)
 
+        # --- Node Reference dock panel ---
+        self.dock_help = QDockWidget("Node Reference", self)
+        self.dock_help.setObjectName("DockNodeReference")
+        self.help_widget = NodeHelpWidget()
+        self.dock_help.setWidget(self.help_widget)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.dock_help)
+
+        self.scene.selectionChanged.connect(self._on_selection_changed)
+        self.scene.nodeHelpRequested.connect(self._on_node_help_requested)
+
         self._create_actions()
         self._create_menus()
         self._create_toolbar()
         self.create_default_patch()
+
+    def _on_selection_changed(self):
+        selected_nodes = [item for item in self.scene.selectedItems() if isinstance(item, NodeItem)]
+        if len(selected_nodes) == 1:
+            self.help_widget.display_node_type(selected_nodes[0].node_type)
+        elif len(selected_nodes) == 0:
+            self.help_widget.display_welcome()
+
+    def _on_node_help_requested(self, node_type: str):
+        self.help_widget.display_node_type(node_type)
+        self.dock_help.show()
+        self.dock_help.raise_()
 
     def create_default_patch(self):
         id_osc = self.controller.add_node("SineOscillator", (-275, 0))
@@ -154,6 +177,15 @@ class MainWindow(QMainWindow):
         dev = menubar.addMenu("&Developer")
         dev.addAction(self.act_show_load)
         dev.addAction(self.act_reload)
+
+        help_menu = menubar.addMenu("&Help")
+        act_toggle_doc = self.dock_help.toggleViewAction()
+        act_toggle_doc.setText("&Node Reference Panel")
+        help_menu.addAction(act_toggle_doc)
+
+        act_shortcuts = QAction("&Keyboard Shortcuts", self)
+        act_shortcuts.triggered.connect(lambda: self.help_widget.display_welcome() or self.dock_help.show())
+        help_menu.addAction(act_shortcuts)
 
     def _create_toolbar(self):
         t = QToolBar("Main Toolbar", self)

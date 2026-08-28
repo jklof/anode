@@ -12,6 +12,12 @@ class Compressor(FFINode):
     LIB_NAME = "compressor"
     category = "Effects"
     label = "Compressor"
+    description = (
+        "Native C++ feed-forward dynamics compressor with soft-knee, attack/"
+        "release ballistics and makeup gain. Supports an optional sidechain "
+        "input for external keying; without a sidechain the main input is used "
+        "for detection. Mono sidechains are replicated across channels."
+    )
 
     # Map params to C++ switch-case IDs
     PARAM_MAP = {"thresh": 0, "ratio": 1, "attack": 2, "release": 3, "knee": 4, "makeup": 5}
@@ -20,17 +26,23 @@ class Compressor(FFINode):
         super().__init__(name)
 
         # Audio Ports
-        self.add_input("in")
-        self.add_input("sidechain")  # Optional input
-        self.add_output("out")
+        self.add_input("in", help="Signal to compress.")
+        self.add_input("sidechain", help="Optional detector signal. Unconnected: the main input drives gain reduction.")  # Optional input
+        self.add_output("out", help="Compressed signal with makeup gain applied.")
 
         # Parameters
-        self.add_float_param("thresh", -20.0, -60.0, 0.0)
-        self.add_float_param("ratio", 4.0, 1.0, 20.0)
-        self.add_float_param("knee", 6.0, 0.0, 24.0)
-        self.add_float_param("attack", 10.0, 0.1, 200.0)
-        self.add_float_param("release", 100.0, 10.0, 1000.0)
-        self.add_float_param("makeup", 0.0, 0.0, 24.0)
+        self.add_float_param("thresh", -20.0, -60.0, 0.0, unit="dB",
+                             help="Level above which gain reduction is applied.")
+        self.add_float_param("ratio", 4.0, 1.0, 20.0, unit=":1",
+                             help="Compression ratio above the threshold.")
+        self.add_float_param("knee", 6.0, 0.0, 24.0, unit="dB",
+                             help="Soft-knee width around the threshold.")
+        self.add_float_param("attack", 10.0, 0.1, 200.0, unit="ms",
+                             help="Time constant for gain reduction onset.")
+        self.add_float_param("release", 100.0, 10.0, 1000.0, unit="ms",
+                             help="Time constant for gain recovery.")
+        self.add_float_param("makeup", 0.0, 0.0, 24.0, unit="dB",
+                             help="Makeup gain applied after compression.")
 
         # Pre-allocate buffer for sidechain alignment
         self._sc_buffer = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
@@ -139,6 +151,12 @@ class Compressor(FFINode):
 class NoiseGate(Node):
     category = "Effects"
     label = "Noise Gate"
+    description = (
+        "Downward expander / noise gate with attack, hold, and release stages. "
+        "Signal below the threshold is attenuated by up to 'range' dB according "
+        "to the ratio. An optional sidechain input lets another signal control "
+        "the gating of the main input."
+    )
 
     """Downward expander with lookahead and hold.
 
@@ -162,16 +180,22 @@ class NoiseGate(Node):
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
-        self.sc = self.add_input("sidechain")
-        self.out = self.add_output("out", channels=CHANNELS)
+        self.inp = self.add_input("in", help="Signal to gate.")
+        self.sc = self.add_input("sidechain", help="Optional detector signal. Unconnected: the main input drives the gate.")
+        self.out = self.add_output("out", channels=CHANNELS, help="Gated stereo output.")
 
-        self.add_float_param("thresh", -40.0, -80.0, 0.0)
-        self.add_float_param("ratio", 10.0, 1.0, 50.0)
-        self.add_float_param("attack", 1.0, 0.1, 50.0)
-        self.add_float_param("hold", 50.0, 0.0, 500.0)
-        self.add_float_param("release", 100.0, 5.0, 1000.0)
-        self.add_float_param("range", 60.0, 0.0, 90.0)
+        self.add_float_param("thresh", -40.0, -80.0, 0.0, unit="dB",
+                             help="Level below which the gate closes.")
+        self.add_float_param("ratio", 10.0, 1.0, 50.0, unit=":1",
+                             help="Downward expansion ratio applied under the threshold.")
+        self.add_float_param("attack", 1.0, 0.1, 50.0, unit="ms",
+                             help="Time constant for gate opening.")
+        self.add_float_param("hold", 50.0, 0.0, 500.0, unit="ms",
+                             help="Time the gate stays open after the signal drops below the threshold.")
+        self.add_float_param("release", 100.0, 5.0, 1000.0, unit="ms",
+                             help="Time constant for gate closing.")
+        self.add_float_param("range", 60.0, 0.0, 90.0, unit="dB",
+                             help="Maximum attenuation applied when the gate is fully closed.")
 
         self.gr_db = 0.0
         self.hold_left = 0
@@ -240,18 +264,28 @@ class NoiseGate(Node):
 class BrickwallLimiter(Node):
     category = "Effects"
     label = "Brickwall Limiter"
+    description = (
+        "Lookahead-free peak limiter with program-dependent release: smoothly "
+        "ramps gain down before peaks cross the threshold and recovers over the "
+        "release time. Ceiling and threshold are in dBFS; threshold can be "
+        "audio-rate modulated via a parameter-bound input."
+    )
 
     LOOKAHEAD = 240
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_input("in")
-        self.add_input("thresh_in", "threshold")
-        self.add_output("out", channels=CHANNELS)
+        self.add_input("in", help="Signal to limit; mono inputs are expanded to stereo.")
+        self.add_input("thresh_in", "threshold",
+                       help="Audio-rate threshold modulation (linear amplitude). Unconnected: uses 'threshold' parameter.")
+        self.add_output("out", channels=CHANNELS, help="Limited stereo output clamped to the ceiling.")
 
-        self.add_float_param("threshold", -0.1, -40.0, 0.0)
-        self.add_float_param("ceiling", -0.1, -20.0, 0.0)
-        self.add_float_param("release", 50.0, 1.0, 1000.0)
+        self.add_float_param("threshold", -0.1, -40.0, 0.0, unit="dBFS",
+                             help="Level where gain reduction begins.")
+        self.add_float_param("ceiling", -0.1, -20.0, 0.0, unit="dBFS",
+                             help="Maximum output level; peaks never exceed this value.")
+        self.add_float_param("release", 50.0, 1.0, 1000.0, unit="ms",
+                             help="Time for gain to recover after a peak.")
 
         self._ring = torch.zeros((CHANNELS, self.LOOKAHEAD), dtype=DTYPE)
         self._delayed = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
@@ -312,17 +346,28 @@ class BrickwallLimiter(Node):
 class TransientShaper(Node):
     category = "Effects"
     label = "Transient Shaper"
+    description = (
+        "Two-band transient designer: separates the fast attack portion of the "
+        "envelope from the sustain portion and boosts or cuts each "
+        "independently (-1..+2 attack, -1..+1 sustain). Both sections are "
+        "audio-rate modulatable via parameter-bound inputs."
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_input("in")
-        self.add_input("attack_mod", "attack")
-        self.add_input("sustain_mod", "sustain")
-        self.add_output("out", channels=CHANNELS)
+        self.add_input("in", help="Signal to process; mono inputs are expanded to stereo.")
+        self.add_input("attack_mod", "attack",
+                       help="Audio-rate attack amount modulation. Unconnected: uses 'attack' parameter.")
+        self.add_input("sustain_mod", "sustain",
+                       help="Audio-rate sustain amount modulation. Unconnected: uses 'sustain' parameter.")
+        self.add_output("out", channels=CHANNELS, help="Transient-shaped stereo output.")
 
-        self.add_float_param("attack", 0.0, -1.0, 2.0)
-        self.add_float_param("sustain", 0.0, -1.0, 1.0)
-        self.add_float_param("output_gain_db", 0.0, -18.0, 18.0)
+        self.add_float_param("attack", 0.0, -1.0, 2.0,
+                             help="Attack emphasis: negative dulls transients, positive sharpens them.")
+        self.add_float_param("sustain", 0.0, -1.0, 1.0,
+                             help="Sustain emphasis: negative tightens decay, positive extends it.")
+        self.add_float_param("output_gain_db", 0.0, -18.0, 18.0, unit="dB",
+                             help="Output trim applied after shaping.")
 
         self._e_fast = 0.0
         self._e_slow = 0.0
@@ -374,18 +419,28 @@ class TransientShaper(Node):
 class AutoGain(Node):
     category = "Utilities"
     label = "Auto Gain / Leveler"
+    description = (
+        "Slow automatic leveler: measures the RMS level over a sliding window "
+        "(0.2-10 s) and applies a smoothed, gain-limited correction toward the "
+        "target level. A silence gate freezes the gain during quiet passages to "
+        "avoid boosting noise."
+    )
 
     MAX_BLOCKS = int(10.0 * SAMPLE_RATE / BLOCK_SIZE)
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.add_input("in")
-        self.add_output("out", channels=CHANNELS)
+        self.add_input("in", help="Signal to level; mono inputs are expanded to stereo.")
+        self.add_output("out", channels=CHANNELS, help="Gain-smoothed stereo output.")
 
-        self.add_float_param("target_db", -14.0, -40.0, 0.0)
-        self.add_float_param("window_s", 2.0, 0.2, 10.0)
-        self.add_float_param("max_gain_db", 18.0, 0.0, 36.0)
-        self.add_float_param("silence_gate_db", -50.0, -80.0, -20.0)
+        self.add_float_param("target_db", -14.0, -40.0, 0.0, unit="dB",
+                             help="RMS level the node aims to converge to.")
+        self.add_float_param("window_s", 2.0, 0.2, 10.0, unit="s",
+                             help="Length of the RMS averaging window.")
+        self.add_float_param("max_gain_db", 18.0, 0.0, 36.0, unit="dB",
+                             help="Maximum correction applied in either direction.")
+        self.add_float_param("silence_gate_db", -50.0, -80.0, -20.0, unit="dB",
+                             help="RMS level below which gain adjustment is frozen.")
 
         self._rms_history = torch.zeros(self.MAX_BLOCKS, dtype=DTYPE)
         self._hist_ptr = 0

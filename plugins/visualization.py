@@ -6,12 +6,19 @@ from base import Node, BLOCK_SIZE, CHANNELS, TelemetryRingBuffer
 class WaveformDisplay(Node):
     category = "Visual"
     label = "Oscilloscope"
+    description = (
+        "Oscilloscope visualizer: analyzes a private copy of the signal on the "
+        "audio thread (downsampled to 128 points) and ships it through a bounded "
+        "SPSC telemetry ring buffer to a Qt widget. Audio passes through "
+        "unchanged; excess telemetry frames are dropped rather than delaying audio."
+    )
+
     VISUAL_WIDTH = 128
 
     def __init__(self, name=""):
         super().__init__(name)
-        self.inp = self.add_input("in")
-        self.out = self.add_output("out")
+        self.inp = self.add_input("in", help="Signal to visualize (analysis uses a private copy).")
+        self.out = self.add_output("out", help="Pass-through copy of the input, unaltered.")
         # Pre-allocated SPSC telemetry buffer owning 4 isolated slots
         self.monitor_queue = TelemetryRingBuffer(
             capacity=4, shape=(CHANNELS, self.VISUAL_WIDTH), dtype=np.float32
