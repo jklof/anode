@@ -36,6 +36,7 @@ class ChorusFlanger(FFINode):
         "feedback": 3,
         "spread": 4,
         "mix": 5,
+        "mode": 6,
     }
 
     def __init__(self, name=""):
@@ -55,6 +56,8 @@ class ChorusFlanger(FFINode):
                              help="Stereo phase offset between the left and right LFOs.")
         self.add_float_param("mix", 0.5, 0.0, 1.0,
                              help="Dry/wet balance: 0 = dry only, 1 = wet only.")
+        self.add_menu_param("mode", ["Chorus / Flanger", "Vibrato"], 0,
+                             help="Operating mode. Vibrato sets 100% wet and zero feedback.")
 
     def process(self):
         super().process()

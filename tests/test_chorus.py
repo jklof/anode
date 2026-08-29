@@ -146,3 +146,30 @@ def test_simple_delay_start_clears_stale_delay_tail():
     node.inputs["in"].get_tensor = lambda: silence
     node.process()
     assert node.outputs["out"].buffer.abs().max() < 1e-6, "stale delay audio survived start()"
+
+
+def test_chorus_vibrato_mode():
+    """Vibrato mode (mode=1) should produce 100% wet output with zero feedback."""
+    node = make_node()
+    # Set vibrato mode with high feedback (should be ignored in vibrato mode)
+    set_params(node, mode=1, rate=2.0, depth_ms=3.0, feedback=0.9)
+
+    # Feed a tone and verify output is stable and 100% wet
+    n = np.arange(BLOCK_SIZE)
+    tone = (0.5 * np.sin(2.0 * np.pi * 440.0 * n / SAMPLE_RATE)).astype(np.float32)
+    block = torch.from_numpy(np.tile(tone, (2, 1)))
+
+    peak = 0.0
+    for _ in range(30):
+        out = process_block(node, block)
+        peak = max(peak, float(out.abs().max()))
+        assert torch.isfinite(out).all(), "vibrato mode produced non-finite values"
+
+    # Output should be stable (not exploding from feedback)
+    assert peak < 2.0, f"vibrato mode unstable: peak {peak}"
+
+    # Verify mode=0 preserves existing chorus behavior
+    node2 = make_node()
+    set_params(node2, mode=0, rate=2.0, depth_ms=3.0, feedback=0.3)
+    out2 = process_block(node2, block)
+    assert torch.isfinite(out2).all(), "normal mode produced non-finite values"

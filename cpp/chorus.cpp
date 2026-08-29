@@ -45,7 +45,7 @@ public:
     ChorusProcessor()
         : sr_(48000.0f), cap_(0), write_pos_(0), phase_(0.0f),
           rate_(0.6f), depth_ms_(3.0f), base_ms_(5.0f), feedback_(0.3f),
-          spread_(1.0f), mix_(0.5f) {}
+          spread_(1.0f), mix_(0.5f), mode_(0) {}
 
     void set_samplerate(float sr) {
         sr_ = sr;
@@ -64,6 +64,7 @@ public:
             case 3: feedback_ = v; break;
             case 4: spread_ = v; break;
             case 5: mix_ = v; break;
+            case 6: mode_ = static_cast<int>(v); break;
         }
     }
 
@@ -107,10 +108,18 @@ public:
                 while (read_pos < 0.0f) read_pos += static_cast<float>(cap_);
                 const float wet = hermite_read(ring, cap_, read_pos);
 
-                const float feed_in = x + std::tanh(feedback_ * wet);
-                ring[static_cast<size_t>(write_pos_)] = feed_in;
-
-                out[c * frames + i] = (1.0f - mix_) * x + mix_ * wet;
+                float feed_in;
+                if (mode_ == 1) {
+                    // Vibrato mode: no feedback, 100% wet
+                    feed_in = x;
+                    ring[static_cast<size_t>(write_pos_)] = feed_in;
+                    out[c * frames + i] = wet;
+                } else {
+                    // Normal chorus/flanger mode
+                    feed_in = x + std::tanh(feedback_ * wet);
+                    ring[static_cast<size_t>(write_pos_)] = feed_in;
+                    out[c * frames + i] = (1.0f - mix_) * x + mix_ * wet;
+                }
             }
             write_pos_ = (write_pos_ + 1) % cap_;
             phase_ += lfo_step;
@@ -124,6 +133,7 @@ private:
     int write_pos_;
     float phase_;                 // LFO phase in cycles [0, 1)
     float rate_, depth_ms_, base_ms_, feedback_, spread_, mix_;
+    int mode_;                    // 0 = normal, 1 = vibrato
     std::vector<float> ring_[2];
 };
 

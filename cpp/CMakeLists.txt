@@ -57,6 +57,17 @@ target_compile_features(chorus PRIVATE cxx_std_17)
 copy_target_to_directory(chorus "${PROJECT_SOURCE_DIR}/../plugins")
 
 
+# --- Target: Karplus-Strong Physical Modeling Synth ---
+add_library(karplus SHARED karplus.cpp)
+target_compile_features(karplus PRIVATE cxx_std_17)
+copy_target_to_directory(karplus "${PROJECT_SOURCE_DIR}/../plugins")
+
+# --- Target: 6-Stage Stereo Phaser ---
+add_library(phaser SHARED phaser.cpp)
+target_compile_features(phaser PRIVATE cxx_std_17)
+copy_target_to_directory(phaser "${PROJECT_SOURCE_DIR}/../plugins")
+
+
 # --- Target: NAM Processor ---
 FetchContent_Populate(NAM_CORE)
 set(NAM_PATH ${nam_core_SOURCE_DIR})
