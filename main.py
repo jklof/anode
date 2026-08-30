@@ -54,7 +54,12 @@ class MainWindow(QMainWindow):
         self.create_default_patch()
 
     def _on_selection_changed(self):
-        selected_nodes = [item for item in self.scene.selectedItems() if isinstance(item, NodeItem)]
+        # Qt can emit selectionChanged while the scene's C++ object is already
+        # torn down (e.g. during widget destruction at shutdown); ignore it.
+        try:
+            selected_nodes = [item for item in self.scene.selectedItems() if isinstance(item, NodeItem)]
+        except RuntimeError:
+            return
         if len(selected_nodes) == 1:
             self.help_widget.display_node_type(selected_nodes[0].node_type)
         elif len(selected_nodes) == 0:
@@ -244,7 +249,28 @@ class MainWindow(QMainWindow):
             self.lbl_status.setStyleSheet("color: red; font-weight: bold;")
 
     def closeEvent(self, event):
+        # Detach scene callbacks before Qt tears the C++ scene down; late
+        # selectionChanged emissions during destruction would otherwise hit a
+        # deleted object.
+        try:
+            self.scene.selectionChanged.disconnect(self._on_selection_changed)
+            self.scene.nodeHelpRequested.disconnect(self._on_node_help_requested)
+        except (RuntimeError, TypeError):
+            pass
         self.controller.stop_audio()
+        # The engine is stopped (audio thread joined), so this is a control-
+        # thread operation: give nodes a chance to release native resources
+        # (native DSP handles, streams, workers) deterministically instead of
+        # letting them die at interpreter shutdown, where extension-module
+        # teardown order can report leaked handles (e.g. nanobind/pylibrb).
+        engine = getattr(self.controller, "engine", None)
+        graph = getattr(engine, "graph", None)
+        if graph is not None:
+            for node in list(graph.nodes):
+                try:
+                    node.remove()
+                except Exception:
+                    logging.exception(f"Node cleanup failed on shutdown: {node}")
         super().closeEvent(event)
 
 

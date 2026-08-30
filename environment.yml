@@ -31,3 +31,4 @@ dependencies:
       - python-rtmidi
       - onnxruntime
       - swift-f0
+      - pylibrb
