@@ -14,8 +14,8 @@ dependencies:
 
   # ---- Everything else ----
   # Only dependencies actually imported by the app / plugins.
-  # (scipy, librosa, onnxruntime, mido and the pip TTS/ASR extras were
-  # removed as unused — re-add if you need them for local experiments.)
+  # (scipy, librosa, and pip TTS/ASR extras were removed as unused —
+  # re-add if you need them for local experiments.)
   - cmake
   - cxx-compiler
   - numpy
@@ -29,3 +29,5 @@ dependencies:
       - sounddevice
       - mido
       - python-rtmidi
+      - onnxruntime
+      - swift-f0
