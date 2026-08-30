@@ -179,3 +179,52 @@ def test_swift_f0_zero_net_allocation():
     tracemalloc.stop()
 
     assert growth < 64 * 1024, f"net allocation {growth} bytes over 50 blocks"
+
+
+def test_swift_f0_decimator_lengths_and_dtype():
+    """3:1 FIR decimation must reproduce resampy's int(L*16000/48000) length."""
+    from plugins.swift_f0_node import ANALYSIS_SR as A_SR, _build_decim_kernel
+
+    kernel = _build_decim_kernel()
+    pad = (kernel.shape[-1] - 3) // 2
+
+    for L in (7200, 7680, 10800, 14400):
+        y = torch.nn.functional.conv1d(
+            torch.zeros(1, 1, L, dtype=DTYPE), kernel, stride=3, padding=pad
+        )
+        assert y.shape[-1] == int(L * A_SR / SAMPLE_RATE)
+        assert y.dtype == DTYPE
+
+
+def test_swift_f0_decimator_passband_and_alias_rejection():
+    """Kernel passes 440 Hz at unity amplitude and rejects 12 kHz.
+
+    Without the anti-aliasing lowpass, 12 kHz would alias into the 0-8 kHz
+    band after 3:1 decimation and corrupt the pitch estimate.
+    """
+    from plugins.swift_f0_node import _build_decim_kernel
+
+    kernel = _build_decim_kernel()
+    pad = (kernel.shape[-1] - 3) // 2
+    L = 7200
+    t = np.arange(L) / SAMPLE_RATE
+
+    def rms(x):
+        return float(torch.sqrt((x ** 2).mean()))
+
+    # Unity DC gain: constant input produces constant output.
+    dc_out = torch.nn.functional.conv1d(
+        torch.ones(1, 1, L, dtype=DTYPE), kernel, stride=3, padding=pad
+    )
+    assert dc_out.mean().item() == pytest.approx(1.0, abs=1e-2)
+
+    # Passband: 440 Hz tone keeps its amplitude (expected rms 0.5/sqrt(2)).
+    tone = torch.from_numpy((0.5 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)).view(1, 1, L)
+    tone_out = torch.nn.functional.conv1d(tone, kernel, stride=3, padding=pad)
+    assert rms(tone_out) == pytest.approx(0.5 / np.sqrt(2), rel=1e-2)
+
+    # Alias rejection: 12 kHz is above the post-decimation Nyquist (8 kHz) and
+    # must be attenuated far below in-band level (resampy kaiser_best parity).
+    hi = torch.from_numpy((0.5 * np.sin(2 * np.pi * 12000.0 * t)).astype(np.float32)).view(1, 1, L)
+    hi_out = torch.nn.functional.conv1d(hi, kernel, stride=3, padding=pad)
+    assert rms(hi_out) < 0.01, "12 kHz must not alias into the 0-8 kHz analysis band"

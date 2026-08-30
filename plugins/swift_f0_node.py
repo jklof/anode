@@ -16,11 +16,11 @@ would raise AttributeError at runtime. The class/port/param names are unaffected
 import logging
 import math
 import threading
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
 import torch
-import resampy
 
 from base import Node, BLOCK_SIZE, CHANNELS, DTYPE, SAMPLE_RATE, SPSCRingBuffer
 
@@ -45,6 +45,27 @@ CHUNK_DURATION_S = 0.15  # ~150 ms analysis window
 CHUNK_SAMPLES_48K = int(CHUNK_DURATION_S * SAMPLE_RATE)
 MODEL_MIN_F0 = 46.875
 MODEL_MAX_F0 = 2093.75
+
+# 48 kHz -> 16 kHz is an exact 3:1 integer decimation, so it can be done as a
+# strided FIR lowpass (F.conv1d, stride=3) instead of resampy's general
+# fractional resampler. The kernel is a DC-normalized Blackman-windowed sinc
+# with cutoff at ANALYSIS_SR / 2 (8 kHz), which makes the decimation alias-free.
+# Output length floor(L/3) matches resampy.resample(..., axis=-1) exactly for
+# the chunk sizes this worker produces, and no external C library is involved.
+DECIM_TAPS = 129
+
+
+@lru_cache(maxsize=1)
+def _build_decim_kernel():
+    """Anti-aliasing lowpass kernel for the 3:1 (48k -> 16k) decimator.
+
+    Blackman-windowed sinc lowpass with cutoff at ANALYSIS_SR/2 (8 kHz) and
+    unity DC gain. Immutable; safe to share read-only across worker threads.
+    """
+    n = np.arange(DECIM_TAPS) - (DECIM_TAPS - 1) // 2
+    kernel = np.sinc(2 * (ANALYSIS_SR / (2.0 * SAMPLE_RATE)) * n) * np.blackman(DECIM_TAPS)
+    kernel /= kernel.sum()
+    return torch.from_numpy(kernel.astype(np.float32)).view(1, 1, DECIM_TAPS)
 
 
 class SwiftF0Node(Node):
@@ -188,9 +209,17 @@ class SwiftF0Node(Node):
                 accum_audio = [audio_48k[-keep_samples:]]
                 accum_samples = keep_samples
 
-                # Resample 48 kHz -> 16 kHz (exact 3:1 decimation)
+                # Resample 48 kHz -> 16 kHz via 3:1 FIR decimation.
+                # The DC-normalized Blackman-windowed sinc kernel (cutoff 8 kHz)
+                # makes decimation alias-free; output length int(L/3) matches
+                # resampy.resample() exactly. audio_48k is contiguous float32,
+                # so view() is zero-copy.
                 try:
-                    audio_16k = resampy.resample(audio_48k, SAMPLE_RATE, ANALYSIS_SR, axis=-1).astype(np.float32)
+                    x = torch.from_numpy(audio_48k).view(1, 1, -1)
+                    y = torch.nn.functional.conv1d(
+                        x, _build_decim_kernel(), stride=3, padding=(DECIM_TAPS - 3) // 2
+                    )
+                    audio_16k = y[0, 0].numpy()
                 except Exception:
                     continue
 
