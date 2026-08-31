@@ -4,9 +4,19 @@ transformation (Effects).
 
 Thin FFINode wrapper over libvocal_transformer (cpp/vocal_transformer.cpp).
 All spectral processing (true-envelope cepstral fitting, resampled-frame
-pitch shifting, peak-locked phase vocoding, VTLN warping) runs natively; the
-Python side only marshals pointers, pushes staged parameters once per
-change, and forwards block-rate CV from the modulation sockets.
+pitch shifting, peak-locked phase vocoding, asymmetric multi-band VTLN
+warping with precomputed spectral-tilt / H1 harmonic shaping, and
+tract-shaped 1.5-7 kHz aspiration noise) runs natively; the Python side only
+marshals pointers, pushes staged parameters once per change, and forwards
+block-rate CV from the modulation sockets.
+
+Gender morphing uses an asymmetric vocal-tract-length warp: the F1 region
+(< 1 kHz) is decoupled from F2/F3 (1-4 kHz) because the adult male pharynx
+is disproportionately long relative to the oral cavity. Feminine morphs
+(+1) additionally apply a precomputed spectral tilt (HF attenuation,
+clamped to +-8 dB) plus H1 harmonic emphasis (0-350 Hz, gated off DC) to
+avoid a buzzy/pinched sound when shifting up, and broaden formant bandwidths
+via an adaptive cepstral lifter cutoff.
 
 Latency: FIXED 4608 samples (96 ms @ 48 kHz) across the whole pitch range —
 see get_telemetry(). The 'mix' parameter is NOT latency-compensated: below
@@ -26,12 +36,13 @@ class VocalTransformer(FFINode):
     description = (
         "Studio-grade real-time vocal pitch, formant, and gender transformer. "
         "Employs True-Envelope peak cepstral estimation, peak-locked phase "
-        "vocoding, and vocal tract length normalization (VTLN) to eliminate "
-        "metallic phasiness, prevent pitch-harmonic comb ripples, and preserve "
-        "crisp unvoiced sibilants. Fixed algorithmic latency of 4608 samples "
-        "(96 ms at 48 kHz), covering the worst case across the full pitch "
-        "range; mix below 1.0 is a comb-filtering effect, not a compensated "
-        "crossfade."
+        "vocoding, and asymmetric multi-band vocal tract length normalization "
+        "(VTLN) — decoupling the F1 region from F2/F3, with precomputed "
+        "spectral-tilt and H1 harmonic shaping to eliminate the buzzy/pinched "
+        "quality on upward shifts and dullness on downward shifts, plus "
+        "tract-filtered 1.5-7 kHz aspiration noise. Fixed algorithmic latency "
+        "of 4608 samples (96 ms at 48 kHz) across the full pitch range; mix "
+        "below 1.0 is a comb-filtering effect, not a compensated crossfade."
     )
 
     LIB_NAME = "vocal_transformer"
@@ -75,10 +86,15 @@ class VocalTransformer(FFINode):
         self.add_float_param("formant_shift", 0.0, -24.0, 24.0, unit="st",
                              help="Vocal tract resonance / formant shift in semitones.")
         self.add_float_param("gender_morph", 0.0, -1.0, 1.0, unit="",
-                             help="Vocal tract length morphing (-1.0 = feminine/child, "
-                                  "0.0 = neutral, +1.0 = masculine/deep).")
+                             help="Vocal tract length morphing (+1.0 = feminine/child "
+                                  "short tract, 0.0 = neutral, -1.0 = masculine/deep). "
+                                  "F1 is warped at reduced intensity; positive values "
+                                  "add spectral-tilt + H1 harmonic emphasis and broaden "
+                                  "formant bandwidths.")
         self.add_float_param("breathiness", 0.0, 0.0, 1.0, unit="",
-                             help="Vocal aspiration noise level.")
+                             help="Vocal aspiration noise level. Deterministic, "
+                                  "tract-shaped noise injected into the 1.5-7 kHz "
+                                  "band only (avoids low-frequency rumble).")
         self.add_float_param("sibilant_bypass", 0.8, 0.0, 1.0, unit="",
                              help="Preserves natural unvoiced consonants (/s/, /t/, /k/) "
                                   "without pitch artifacts.")

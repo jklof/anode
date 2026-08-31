@@ -2,11 +2,13 @@
 //
 // Studio-grade vocal pitch / formant / gender transformer:
 //   - resampled-analysis-frame pitch shifting (frame reads at stride ratio)
-//   - 1024-pt True-Envelope estimation (Roebel-Rodet, SYMMETRIC quefrency lifter)
+//   - 1024-pt True-Envelope estimation (Roebel-Rodet, SYMMETRIC quefrency
+//     lifter with formant-bandwidth-adaptive cutoff)
 //   - same-grid peak-locked phase vocoder (Laroche-Dolson), unvoiced fallback
-//   - formant-preserving envelope replacement + VTLN bilinear allpass warp
+//   - formant-preserving envelope replacement + asymmetric multi-band VTLN warp
+//     (F1 decoupled; precomputed spectral-tilt & H1-harmonic shaping)
 //   - raised-cosine sibilant bypass (3.5-5.5 kHz) blending COMPLEX bins
-//   - xorshift32 breathiness noise (deterministic, RT-safe)
+//   - tract-shaped 1.5-7 kHz xorshift32 aspiration noise (deterministic, RT-safe)
 //   - ring-buffer OLA with FIXED emission latency (kLatency = 4608 samples = 96 ms)
 //
 // mix = 0 is a bit-exact memcpy bypass; set_param(mix) clears transient state on
@@ -62,12 +64,18 @@ public:
           breathiness_(0.0f), sibilant_mix_(0.8f), mix_(1.0f), prev_mix_(1.0f),
           rng_state_(kRngSeed) {
         build_tables();
-        recompute_vtln_warp();
+        recompute_tables();
         reset();
     }
 
     void set_samplerate(float sr) {
-        sr_ = sr;   // windows are normalized-frequency; sr only scales Hz mapping
+        // Windows are normalized-frequency; sr scales the Hz mapping of the
+        // VTLN band boundary, the tilt/H1 shaping bands, and the breath band
+        // limits — every table below must be rebuilt when the rate changes.
+        if (sr > 1.0f && sr != sr_) {
+            sr_ = sr;
+            recompute_tables();
+        }
     }
 
     void set_param(int id, float v) {
@@ -76,10 +84,11 @@ public:
             case 1: formant_st_ = std::max(-24.0f, std::min(24.0f, v)); break;
             case 2:
                 gender_morph_ = std::max(-1.0f, std::min(1.0f, v));
-                // VTLN warp buckets depend only on gender_morph; rebuild the
-                // table here (param-change path) instead of recomputing 513
-                // atan/sin/cos per frame in replace_envelope().
-                recompute_vtln_warp();
+                // VTLN warp buckets, spectral tilt, and H1 emphasis all depend
+                // only on gender_morph; rebuild every table here (param-change
+                // path) instead of recomputing 513 atan/sin/cos/pow per frame
+                // inside replace_envelope()/synthesize().
+                recompute_tables();
                 break;
             case 3: breathiness_ = std::max(0.0f, std::min(1.0f, v)); break;
             case 4: sibilant_mix_ = std::max(0.0f, std::min(1.0f, v)); break;
@@ -186,7 +195,10 @@ private:
     float cos_tab_[kFFT / 2];   // twiddle tables
     float sin_tab_[kFFT / 2];
     float vtln_warp_bin_[kHalf]; // VTLN warp buckets: source bin -> dest pos
-                                // (rebuilt in recompute_vtln_warp() on gender change)
+                                // (rebuilt in recompute_tables() on gender/sr change)
+    float excitation_shaper_[kHalf]; // spectral tilt * H1 emphasis, multiplied
+                                // into the fine excitation in synthesize()
+                                // (rebuilt in recompute_tables() too)
 
     // ---- Per-hop scratch (no allocation) ------------------------------------
     float scratch_time_[kFFT];     // synthesized output frame (pre-window)
@@ -236,23 +248,53 @@ private:
         }
     }
 
-    // Precompute the VTLN allpass warp bucket table (source bin -> destination
-    // position). Depends only on gender_morph_; identity when gender_morph_ = 0.
-    void recompute_vtln_warp() {
-        const float alpha = gender_morph_ * 0.25f;
-        if (alpha == 0.0f) {
-            for (int k = 0; k < kHalf; ++k)
-                vtln_warp_bin_[k] = static_cast<float>(k);
-            return;
-        }
+    // Precompute every parameter-dependent spectral table:
+    //   vtln_warp_bin_[k]   — asymmetric multi-band VTLN allpass warp bucket
+    //                         (source bin -> destination position). The F1
+    //                         region (< 1 kHz) warps at reduced intensity so
+    //                         the disproportionately long adult-male pharynx
+    //                         shifts F2/F3 more than F1; identity at neutral.
+    //   excitation_shaper_[k] — spectral tilt (clamped to +-8 dB) times H1
+    //                         harmonic emphasis (gated strictly off DC). Kills
+    //                         the buzzy/pinched quality on upward shifts and
+    //                         dullness on downward shifts.
+    // Depends only on gender_morph_ / sr_; rebuilt on param or rate change.
+    void recompute_tables() {
+        const float alpha_base = gender_morph_ * 0.25f;
+        const float bin_hz = sr_ / static_cast<float>(kFFT);
+
         for (int k = 0; k < kHalf; ++k) {
-            const float w = kPi * static_cast<float>(k) / static_cast<float>(kHalf - 1);
-            const float wp = w + 2.0f * std::atan(
-                -alpha * std::sin(w) / (1.0f + alpha * std::cos(w)));
-            float b = wp / kPi * static_cast<float>(kHalf - 1);
-            if (b < 0.0f) b = 0.0f;
-            if (b > static_cast<float>(kHalf - 1)) b = static_cast<float>(kHalf - 1);
-            vtln_warp_bin_[k] = b;
+            const float f_hz = static_cast<float>(k) * bin_hz;
+
+            // 1. Asymmetric multi-band VTLN warp table.
+            if (alpha_base == 0.0f) {
+                vtln_warp_bin_[k] = static_cast<float>(k);
+            } else {
+                float alpha = alpha_base;
+                if (f_hz < 1000.0f) {
+                    alpha *= (0.6f + 0.4f * (f_hz / 1000.0f));
+                }
+                const float w = kPi * static_cast<float>(k) / static_cast<float>(kHalf - 1);
+                const float wp = w + 2.0f * std::atan(
+                    -alpha * std::sin(w) / (1.0f + alpha * std::cos(w)));
+                float b = wp / kPi * static_cast<float>(kHalf - 1);
+                if (b < 0.0f) b = 0.0f;
+                if (b > static_cast<float>(kHalf - 1)) b = static_cast<float>(kHalf - 1);
+                vtln_warp_bin_[k] = b;
+            }
+
+            // 2. Precomputed spectral tilt & H1 harmonic emphasis.
+            float tilt_db = -gender_morph_ * 6.0f * (f_hz / 8000.0f);
+            if (tilt_db > 8.0f) tilt_db = 8.0f;
+            if (tilt_db < -8.0f) tilt_db = -8.0f;
+            const float tilt_gain = std::pow(10.0f, tilt_db / 20.0f);
+
+            float h1_gain = 1.0f;
+            if (gender_morph_ > 0.0f && k > 0 && f_hz < 350.0f) {
+                h1_gain += 0.75f * gender_morph_ * (1.0f - f_hz / 350.0f);
+            }
+
+            excitation_shaper_[k] = tilt_gain * h1_gain;
         }
     }
 
@@ -304,20 +346,7 @@ private:
         // 8. Sibilant complex-bin blend + reconstruction into scratch_time_.
         reconstruct();
 
-        // 9. Breathiness: deterministic xorshift32 noise, time domain,
-        //    pre-synthesis-window. Skipped entirely when breathiness_ = 0.
-        if (breathiness_ > 0.0f) {
-            const float amt = breathiness_ * 0.05f;
-            for (int i = 0; i < kFFT; ++i) {
-                rng_state_ ^= rng_state_ << 13;
-                rng_state_ ^= rng_state_ >> 17;
-                rng_state_ ^= rng_state_ << 5;
-                const float n = (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
-                scratch_time_[i] += amt * n;
-            }
-        }
-
-        // 10. Synthesis window, accumulate into the OLA ring at this frame's
+        // 9. Synthesis window, accumulate into the OLA ring at this frame's
         //     output position (256*m). Emission is handled by the trailing
         //     read pointer in process() once the frame is the last contributor.
         const long long base = 256LL * frame_index_[c];
@@ -343,7 +372,18 @@ private:
             // Symmetric liftering on BOTH quefrency halves: lifting only the
             // positive half would destroy c(n) = c(N - n) symmetry and make the
             // forward transform complex (imaginary leakage into the envelope).
-            apply_symmetric_lifter(fft_re_, kFFT, kLifter);
+            //
+            // Adaptive lifter cutoff: feminine morphs (gender_morph_ > 0) have
+            // higher acoustic wall/radiation losses relative to vocal-tract
+            // volume, broadening formant bandwidths (lower Q). Shorten the
+            // cutoff toward 18 (broader peaks) as gender_morph_ -> 1; retain
+            // the full 32-quefrency resolution (sharp peaks) at =< 0.
+            int eff_lifter = kLifter;
+            if (gender_morph_ > 0.0f) {
+                eff_lifter = static_cast<int>(kLifter - gender_morph_ * 12.0f);
+                if (eff_lifter < 18) eff_lifter = 18;
+            }
+            apply_symmetric_lifter(fft_re_, kFFT, eff_lifter);
 
             // Forward FFT of the liftered (real, even) cepstrum.
             for (int i = 0; i < kFFT; ++i) fft_im_[i] = 0.0f;
@@ -453,9 +493,10 @@ private:
             }
         }
 
-        // Magnitudes: replaced envelope x fine excitation.
+        // Magnitudes: replaced envelope x (fine excitation x precomputed
+        // excitation shaper — spectral tilt and H1 harmonic emphasis).
         for (int k = 0; k < kHalf; ++k)
-            synth_mag_[k] = envelope_[k] * excitation_[k];
+            synth_mag_[k] = envelope_[k] * (excitation_[k] * excitation_shaper_[k]);
 
         // Update phase history for the next frame.
         for (int k = 0; k < kHalf; ++k) {
@@ -465,14 +506,49 @@ private:
     }
 
     void reconstruct() {
-        // Sibilant crossfade gain + complex-bin blending, then rebuild the
-        // full conjugate-symmetric spectrum and invert. NEVER interpolate
-        // phase angles: (1-g)*Y_voc + g*X_orig avoids +-pi branch-cut
-        // cancellation.
+        // Sibilant crossfade gain + complex-bin blending of the BAND-LIMITED,
+        // tract-shaped aspiration noise, then rebuild the full conjugate-
+        // symmetric spectrum and invert. NEVER interpolate phase angles:
+        // (1-g)*Y_voc + g*X_orig avoids +-pi branch-cut cancellation.
         const float bin_hz = sr_ / static_cast<float>(kFFT);
+
+        // Tract-shaped aspiration: normalize the final envelope peak so the
+        // breath gain follows the frame's formant shape, then inject the
+        // deterministic xorshift32 noise into complex bins ONLY in the
+        // 1.5-7 kHz band where real glottal aspiration energy lives
+        // (DC and Nyquist strictly skipped).
+        float max_env = 1e-9f;
+        for (int k = 0; k < kHalf; ++k) {
+            if (envelope_[k] > max_env) max_env = envelope_[k];
+        }
+        const int k_low = static_cast<int>(1500.0f * (kFFT / sr_));
+        const int k_high = static_cast<int>(7000.0f * (kFFT / sr_));
+        const float breath_scale = breathiness_ * 0.08f;
+
         for (int kd = 0; kd < kHalf; ++kd) {
-            const float vr = synth_mag_[kd] * std::cos(synth_phase_[kd]);
-            const float vi = synth_mag_[kd] * std::sin(synth_phase_[kd]);
+            float vr = synth_mag_[kd] * std::cos(synth_phase_[kd]);
+            float vi = synth_mag_[kd] * std::sin(synth_phase_[kd]);
+
+            // Complex tract-filtered breath injection (1.5-7 kHz band).
+            if (breathiness_ > 0.0f && kd >= k_low && kd <= k_high
+                && kd < kHalf - 1) {
+                rng_state_ ^= rng_state_ << 13;
+                rng_state_ ^= rng_state_ >> 17;
+                rng_state_ ^= rng_state_ << 5;
+                const float n_re =
+                    (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
+
+                rng_state_ ^= rng_state_ << 13;
+                rng_state_ ^= rng_state_ >> 17;
+                rng_state_ ^= rng_state_ << 5;
+                const float n_im =
+                    (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
+
+                const float env_norm = envelope_[kd] / max_env;
+                const float noise_gain = breath_scale * env_norm * synth_mag_[kd];
+                vr += n_re * noise_gain;
+                vi += n_im * noise_gain;
+            }
 
             float band_gain = 0.0f;
             const float f_hz = static_cast<float>(kd) * bin_hz;
