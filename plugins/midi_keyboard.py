@@ -119,6 +119,12 @@ class PianoWidget(QWidget):
                 if curr_w == white_idx:
                     return note
                 curr_w += 1
+
+        # No key matched (e.g. x < 0 or x >= width): report "no note" instead of
+        # an implicit None so mousePressEvent's `if note >= 0` cannot crash.
+        return -1
+
+
 class MIDIKeyboardWidget(QWidget):
     IS_NODE_UI = True
     NODE_CLASS_NAME = "MIDIKeyboardNode"
@@ -154,14 +160,10 @@ class MIDIKeyboardWidget(QWidget):
         self.proxy.set_parameter("start_note", start)
 
     def _on_ui_note_on(self, note, vel):
-        node = self.proxy.controller.engine.graph.node_map.get(self.proxy.node_id)
-        if node and hasattr(node, "_ui_queue"):
-            node._ui_queue.try_push(("note_on", note, vel))
+        self.proxy.push_custom_event(("note_on", note, vel))
 
     def _on_ui_note_off(self, note):
-        node = self.proxy.controller.engine.graph.node_map.get(self.proxy.node_id)
-        if node and hasattr(node, "_ui_queue"):
-            node._ui_queue.try_push(("note_off", note, 0))
+        self.proxy.push_custom_event(("note_off", note, 0))
 
     def update_from_params(self, params):
         if "start_note" in params:
@@ -239,4 +241,3 @@ class MIDIKeyboardNode(Node):
     def get_telemetry(self) -> dict:
         latest, ok = self.monitor_queue.try_pop()
         return latest if ok else {}
-        return -1

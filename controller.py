@@ -91,9 +91,10 @@ class AppController(QObject):
             self.engine.push_command(("param", nid, pname, val))
         self._pending_params.clear()
 
-        # Fix: If the engine is stopped, completed background NRT tasks (like file loads)
-        # do not trigger on_nrt_complete because node.sync() is only called in the engine's 
-        # real-time processing loop. We periodically poll and drain completed NRT tasks when stopped.
+        # If the engine is stopped, completed background NRT tasks (like file
+        # loads) are only drained by the engine's real-time loop; we poll and
+        # drain them here (via Engine._drain_nrt_all) so on_nrt_complete()
+        # still fires while the engine is stopped (AGENTS.md §6).
         if not self.engine.running:
             nrt_completed = False
             for node in self.engine.graph.nodes:

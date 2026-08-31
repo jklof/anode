@@ -350,3 +350,35 @@ def test_transient_shaper_mono_input_keeps_stereo_output():
 
 def test_auto_gain_mono_input_keeps_stereo_output():
     _assert_mono_input_keeps_stereo_buffer("AutoGain")
+
+
+def test_compressor_native_reset_clears_delay_line():
+    """AGENTS.md §7: every native DSP class exports reset(void*). Without it
+    the compressor's lookahead delay line keeps leaking stale samples (and the
+    detector envelope keeps its gain-reduction state) across a transport
+    restart."""
+    node = make_node("Compressor")
+    if not (node.lib and node.dsp_handle):
+        pytest.skip("compressor native library not available")
+    assert hasattr(node.lib, "reset"), "compressor must export reset(void*)"
+
+    loud = torch.full((1, BLOCK_SIZE), 0.9, dtype=torch.float32)
+    silent = torch.zeros(1, BLOCK_SIZE, dtype=torch.float32)
+
+    # Fill the lookahead delay line with signal (first block is silent while
+    # the delay line warms up).
+    process_block(node, loud)
+    process_block(node, loud)
+    assert float(node.outputs["out"].buffer[0].abs().max()) > 1e-6
+
+    # Silenced input: without reset the stale 0.9 samples still leak out of
+    # the delay line (envelope also holds gain-reduction state).
+    process_block(node, silent)
+    stale = node.outputs["out"].buffer.clone()
+    assert float(stale[0].abs().max()) > 1e-6
+
+    # FFINode.start() calls lib.reset() when available — silence must stay
+    # exactly silent afterwards.
+    node.start()
+    process_block(node, silent)
+    assert float(node.outputs["out"].buffer[0].abs().max()) < 1e-6

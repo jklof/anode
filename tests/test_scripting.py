@@ -1,6 +1,7 @@
 import pytest
 import torch
 import plugin_system
+from base import BLOCK_SIZE, CHANNELS
 from core import Graph
 
 
@@ -79,3 +80,54 @@ if True
     assert node.compiled_code is None
     assert node.error_msg is not None
     assert node.error_line == 4
+
+
+def test_script_node_mono_value_broadcast_to_stereo_output():
+    """A mono (1, B) value assigned to a stereo script output must broadcast to
+    both channels (AGENTS.md §2 channel adaptation), not mute channel 1."""
+    plugin_system.load_plugins("plugins")
+    ScriptClass = plugin_system.NODE_REGISTRY.get("ScriptNode")
+    node = ScriptClass()
+
+    code = """
+inputs = ['audio_in']
+outputs = ['stereo_out']
+stereo_out = audio_in
+"""
+    node.params["code"].set(code)
+    node.sync()
+    node.on_ui_param_change("code")
+
+    mono = torch.full((1, BLOCK_SIZE), 0.25, dtype=torch.float32)
+    node.inputs["audio_in"].get_tensor = lambda: mono
+    node.process()
+
+    out = node.outputs["stereo_out"].buffer
+    assert out.shape == (CHANNELS, BLOCK_SIZE)
+    assert torch.allclose(out[0], mono[0])
+    assert torch.allclose(out[1], mono[0])
+    assert node.error_msg is None
+
+
+def test_script_node_unassigned_output_zero_filled():
+    """Script outputs that are never assigned must be zero-filled every block
+    (anti-ghosting), while assigned ones keep their value."""
+    plugin_system.load_plugins("plugins")
+    ScriptClass = plugin_system.NODE_REGISTRY.get("ScriptNode")
+    node = ScriptClass()
+
+    code = """
+inputs = ['a']
+outputs = ['used_out', 'unused_out']
+used_out = a
+"""
+    node.params["code"].set(code)
+    node.sync()
+    node.on_ui_param_change("code")
+
+    sig = torch.full((2, BLOCK_SIZE), 0.5, dtype=torch.float32)
+    node.inputs["a"].get_tensor = lambda: sig
+    node.process()
+
+    assert torch.allclose(node.outputs["used_out"].buffer, sig)
+    assert node.outputs["unused_out"].buffer.abs().max().item() == 0.0

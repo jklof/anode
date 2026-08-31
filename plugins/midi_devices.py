@@ -70,7 +70,8 @@ class MIDIInputNode(Node):
 
     def on_ui_param_change(self, param_name):
         if param_name == "device_name":
-            self.params["device_name"].sync()
+            # The engine committed the staged value (set()+sync()) before
+            # invoking this callback (AGENTS.md §5); no re-sync needed here.
             self._request_port_restart()
 
     def _request_port_restart(self):
@@ -170,7 +171,8 @@ class MIDIOutputNode(Node):
 
     def on_ui_param_change(self, param_name):
         if param_name == "device_name":
-            self.params["device_name"].sync()
+            # The engine committed the staged value (set()+sync()) before
+            # invoking this callback (AGENTS.md §5); no re-sync needed here.
             self._request_port_restart()
 
     def _request_port_restart(self):
@@ -358,4 +360,3 @@ class MIDIOutputWidget(QWidget):
     def on_telemetry(self, data):
         if "status" in data:
             self.lbl_status.setText(data["status"])
-        return {"status": self._status}

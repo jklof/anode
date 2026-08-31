@@ -81,6 +81,18 @@ class NodeProxy:
     def update_queue(self, new_queue):
         self.monitor_queue = new_queue
 
+    def push_custom_event(self, event_payload) -> bool:
+        """Route a UI-originated event (e.g. the MIDI keyboard's note on/off)
+        to the engine-side node's SPSC UI queue. Encapsulates the graph lookup
+        so widgets never traverse ``controller.engine.graph`` directly; the
+        lock-free queue remains the only cross-thread channel touched here."""
+        engine = getattr(self.controller, "engine", None)
+        if engine and engine.graph:
+            node = engine.graph.node_map.get(self.node_id)
+            if node and hasattr(node, "_ui_queue"):
+                return node._ui_queue.try_push(event_payload)
+        return False
+
     def create_param_widget(self, param_name):
         """
         Create a smart parameter widget for the given parameter name.

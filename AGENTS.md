@@ -120,6 +120,8 @@ Parameter callbacks should request lifecycle changes rather than directly manipu
 
 Lifecycle contract: `on_ui_param_change(name)` observes a synchronized parameter. The engine's `param`/`add` command handlers call `param.set(val)` followed by `param.sync()` BEFORE invoking `on_ui_param_change(name)`, so `param.value` is committed and caches are updated. Node callbacks may read the staged value via `param.get_staging_safe()` (equal to `value` after the sync) — but active DSP-side consumption always reads `param.value`, which is committed at the block boundary via `sync()` in the processing loop.
 
+Because the engine has already committed the value, `on_ui_param_change()` implementations must not defensively call `param.sync()` on the changed parameter — it is redundant and only masks contract violations. A deliberate re-stage followed by `sync()` (e.g. resetting a transient parameter like `seek_ratio` back to its neutral value) is fine.
+
 Audio-rate modulation is allowed where a node explicitly defines such an input.
 
 ---
@@ -246,6 +248,8 @@ Nodes executing arbitrary Python code are not guaranteed to be glitch-free under
 Such nodes may be used for prototyping, but this limitation must remain explicit in their documentation.
 
 `ScriptNode` dynamically alters its own port topology (inputs/outputs) in response to script changes. These topology changes bypass the command/undo history system: they are applied directly to the node and surfaced via graph-structure dirty marking, and are not individually undoable.
+
+`ScriptNode` applies the standard channel-adaptation rule to its script outputs: a mono `(1, B)` value assigned to a wider output is broadcast across all output channels (via `copy_`, which never resizes the destination); values that are too wide are copied into the leading channels; and any output that is unassigned, non-tensor, or has leftover channels is zero-filled every block so stale audio never survives.
 
 ---
 

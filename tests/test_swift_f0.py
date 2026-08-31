@@ -228,3 +228,45 @@ def test_swift_f0_decimator_passband_and_alias_rejection():
     hi = torch.from_numpy((0.5 * np.sin(2 * np.pi * 12000.0 * t)).astype(np.float32)).view(1, 1, L)
     hi_out = torch.nn.functional.conv1d(hi, kernel, stride=3, padding=pad)
     assert rms(hi_out) < 0.01, "12 kHz must not alias into the 0-8 kHz analysis band"
+
+
+def test_swift_f0_pool_handoff_sends_index_not_copy():
+    """With a live worker, process() must hand the worker an integer pool index
+    referencing a pre-allocated buffer, never a freshly allocated numpy copy
+    per block (RT allocation regression guard)."""
+    node = make_node()
+    blk = sine_block(440.0)
+    process_block(node, blk)  # warm-up (worker off: push path skipped)
+
+    class _FakeWorker:
+        def is_alive(self):
+            return True
+
+    node._worker_thread = _FakeWorker()
+    try:
+        for _ in range(10):
+            process_block(node, blk)
+
+        indices = []
+        while True:
+            payload, ok = node._audio_queue.try_pop()
+            if not ok:
+                break
+            indices.append(payload)
+
+        assert node._pool_seq >= 10
+        assert len(indices) == 10, "all 10 blocks must be queued (capacity 64)"
+        # Every payload is an integer pool index — the old code pushed a fresh
+        # numpy array here (self._mono_scratch.copy()).
+        assert all(isinstance(i, int) for i in indices)
+        assert len(set(indices)) == 10, "pool indices must be unique during a cycle"
+        assert all(0 <= i < len(node._mono_pool) for i in indices)
+
+        # The referenced pool slot holds the exact downmixed audio for that
+        # block (stereo inputs are averaged: (L + R) * 0.5).
+        expected = blk[0].numpy().copy()
+        for i in indices:
+            assert node._mono_pool[i].shape == (BLOCK_SIZE,)
+            assert np.allclose(node._mono_pool[i], expected, atol=1e-7)
+    finally:
+        node._worker_thread = None

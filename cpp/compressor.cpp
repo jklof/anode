@@ -153,6 +153,16 @@ public:
         recalc_coeffs();
     }
 
+    // AGENTS.md §7 reset contract: clears the detector RMS envelope, the
+    // last-GR meter state, and the lookahead delay line so transport restarts
+    // cannot leak stale gain-reduction values or residual delayed audio.
+    void reset() {
+        _envelope = 0.0f;
+        _last_gr = 1.0f;
+        _write_head = 0;
+        std::fill(_delay_buffer.begin(), _delay_buffer.end(), 0.0f);
+    }
+
 private:
     void recalc_coeffs() {
         float ds_rate = _samplerate / static_cast<float>(SIDECHAIN_DOWNSAMPLE_FACTOR);
@@ -231,4 +241,8 @@ EXPORT void set_samplerate(void* handle, float samplerate) {
     if (handle) {
         static_cast<CompressorProcessor*>(handle)->set_samplerate(samplerate);
     }
+}
+
+EXPORT void reset(void* handle) {
+    if (handle) static_cast<CompressorProcessor*>(handle)->reset();
 }

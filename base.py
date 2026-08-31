@@ -406,8 +406,11 @@ class Node:
             self.graph.engine.nrt.submit(self, fn, args, tag)
 
     def on_nrt_complete(self, tag, ok, result):
-        """Override in subclasses to receive background task results. Called
-        from sync(), so it's safe to mutate node state here."""
+        """Override in subclasses to receive background task results. Called by
+        Engine._drain_nrt_all() on the engine/control thread between blocks: at
+        command execution boundaries, at periodic (~100 ms) telemetry ticks,
+        and from the UI poll timer when the engine is stopped — never inside
+        Node.sync() per block. It is safe to mutate node state here."""
         pass
 
     def sync(self):

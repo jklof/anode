@@ -278,10 +278,9 @@ class BaseAudioDeviceNode(Node):
 
     def on_ui_param_change(self, param_name):
         if param_name == "device_index":
-            # CRITICAL FIX: The Engine 'param' command sets _staging,
-            # but hasn't called sync() yet. We MUST sync manually
-            # so that _start_stream() sees the NEW selection, not the old one.
-            self.params["device_index"].sync()
+            # The engine committed the staged value (set()+sync()) before
+            # invoking this callback (AGENTS.md §5), so
+            # params["device_index"].value is already the new selection.
 
             # Device change is an explicit control operation: request a stream
             # restart on the NRT path (stop old stream -> open new stream ->

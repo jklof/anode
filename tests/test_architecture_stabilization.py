@@ -437,9 +437,14 @@ def test_save_serializes_pending_param_value(tmp_path):
 
 
 def test_controller_save_flushes_pending_params(tmp_path):
-    from PySide6.QtCore import QCoreApplication
+    # NOTE: must be a QApplication (GUI app), not a bare QCoreApplication.
+    # Qt only allows one app instance per process; if a bare QCoreApplication
+    # lingers, any later test that constructs a QWidget aborts with qFatal.
+    # The offscreen platform keeps this headless-safe.
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
 
-    app = QCoreApplication.instance() or QCoreApplication([])
+    app = QApplication.instance() or QApplication([])
     import controller as ctrl_mod
 
     c = ctrl_mod.AppController()

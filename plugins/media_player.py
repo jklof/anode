@@ -415,9 +415,8 @@ class MediaPlayerNode(Node):
                 self._request_restart(path)
 
     def on_ui_param_change(self, param_name):
-        if param_name in self.params:
-            self.params[param_name].sync()
-
+        # The engine set()+sync()ed the parameter before invoking this callback
+        # (AGENTS.md §5), so params[param_name].value is already committed.
         if param_name == "file_path":
             path = self.params["file_path"].value
             if path:

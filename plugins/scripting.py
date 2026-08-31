@@ -211,7 +211,8 @@ class ScriptNode(Node):
 
     def on_ui_param_change(self, param_name: str):
         if param_name == "code":
-            self.params["code"].sync()
+            # The engine has already set()+sync()ed the parameter before
+            # invoking this callback (AGENTS.md §5); no re-sync needed here.
             self._recompile()
 
     def load_state(self, data: dict):
@@ -244,11 +245,21 @@ class ScriptNode(Node):
                 if name in execution_scope:
                     val = execution_scope[name]
                     if isinstance(val, torch.Tensor):
-                        ch_to_copy = min(out.buffer.shape[0], val.shape[0])
-                        frames_to_copy = min(out.buffer.shape[1], val.shape[1])
-                        out.buffer[:ch_to_copy, :frames_to_copy].copy_(val[:ch_to_copy, :frames_to_copy])
-                        if ch_to_copy < out.buffer.shape[0]:
-                            out.buffer[ch_to_copy:].zero_()
+                        v = val
+                        if v.ndim == 1:
+                            v = v.unsqueeze(0)  # (B,) -> (1, B)
+                        out_c, out_f = out.buffer.shape[0], out.buffer.shape[1]
+                        if v.shape[0] <= out_c and v.shape[1] == out_f:
+                            # Channel adaptation (AGENTS.md §2): a mono (1, B)
+                            # value broadcasts into every output channel via
+                            # copy_ (which never resizes the destination).
+                            out.buffer.copy_(v)
+                        else:
+                            ch_to_copy = min(out_c, v.shape[0])
+                            frames_to_copy = min(out_f, v.shape[1])
+                            out.buffer[:ch_to_copy, :frames_to_copy].copy_(v[:ch_to_copy, :frames_to_copy])
+                            if ch_to_copy < out_c:
+                                out.buffer[ch_to_copy:].zero_()
                     elif isinstance(val, (float, int, bool)):
                         out.buffer.fill_(float(val))
                     else:

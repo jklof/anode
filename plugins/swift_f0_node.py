@@ -122,6 +122,17 @@ class SwiftF0Node(Node):
         self._audio_queue = SPSCRingBuffer(capacity=64)
         self._results_queue = SPSCRingBuffer(capacity=64)
 
+        # Zero-allocation audio handoff: the audio thread pushes a round-robin
+        # pool *index* into _audio_queue instead of a fresh numpy copy per
+        # block; the worker reads _mono_pool[idx]. With FIFO (SPSC) discipline
+        # the producer only revisits slot `idx` after a full cycle of 64
+        # pushes, while the worker releases each block once it has been folded
+        # into the concatenation buffer (its retention is bounded by the
+        # CHUNK_SAMPLES_48K*2 trim window, far below the pool size), so a slot
+        # is never overwritten while still referenced by the worker.
+        self._mono_pool = [np.zeros(BLOCK_SIZE, dtype=np.float32) for _ in range(64)]
+        self._pool_seq = 0
+
         # 5. Worker Thread and Detector State
         self._worker_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -174,9 +185,10 @@ class SwiftF0Node(Node):
         while not self._stop_event.is_set():
             # 1. Drain incoming audio from audio thread
             while True:
-                block, ok = self._audio_queue.try_pop()
+                block_idx, ok = self._audio_queue.try_pop()
                 if not ok:
                     break
+                block = self._mono_pool[block_idx]
                 accum_audio.append(block)
                 accum_samples += len(block)
 
@@ -371,11 +383,15 @@ class SwiftF0Node(Node):
         self.gate_out.buffer[0].fill_(self._current_gate)
         self.conf_out.buffer[0].fill_(self._current_conf)
 
-        # 5. Push downmixed mono audio slice to worker queue (no per-block buffer growth)
+        # 5. Push downmixed mono audio slice to worker queue. Zero-allocation:
+        #    the queue carries a pool *index*, not a fresh numpy buffer.
         if self._worker_thread is not None and self._worker_thread.is_alive():
             if sig.shape[0] > 1:
                 np.add(sig[0].cpu().numpy(), sig[1].cpu().numpy(), out=self._mono_scratch)
                 self._mono_scratch *= 0.5
             else:
                 np.copyto(self._mono_scratch, sig[0].cpu().numpy())
-            self._audio_queue.try_push(self._mono_scratch.copy())
+            idx = self._pool_seq % len(self._mono_pool)
+            self._pool_seq += 1
+            np.copyto(self._mono_pool[idx], self._mono_scratch)
+            self._audio_queue.try_push(idx)
