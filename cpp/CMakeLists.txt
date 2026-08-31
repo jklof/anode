@@ -79,3 +79,8 @@ target_compile_features(neural_amp PUBLIC cxx_std_20)
 target_compile_definitions(neural_amp PRIVATE NAM_SAMPLE_FLOAT)
 
 copy_target_to_directory(neural_amp "${PROJECT_SOURCE_DIR}/../plugins")
+
+# --- Target: Vocal Transformer ---
+add_library(vocal_transformer SHARED vocal_transformer.cpp)
+target_compile_features(vocal_transformer PRIVATE cxx_std_17)
+copy_target_to_directory(vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
