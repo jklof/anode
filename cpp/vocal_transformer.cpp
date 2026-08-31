@@ -1,18 +1,18 @@
 // VocalTransformer native processor (ANode standard C-ABI).
 //
 // Studio-grade vocal pitch / formant / gender transformer:
+//   - resampled-analysis-frame pitch shifting (frame reads at stride ratio)
 //   - 1024-pt True-Envelope estimation (Roebel-Rodet, SYMMETRIC quefrency lifter)
-//   - destination-grid pitch-shift bin mapping with linear magnitude interpolation
-//   - peak-locked phase vocoder (Laroche-Dolson) with destination-collision
-//     resolution and un-locked fallback for unvoiced frames
-//   - formant scaling + VTLN bilinear allpass warp (omega'(0)=0, omega'(pi)=pi)
+//   - same-grid peak-locked phase vocoder (Laroche-Dolson), unvoiced fallback
+//   - formant-preserving envelope replacement + VTLN bilinear allpass warp
 //   - raised-cosine sibilant bypass (3.5-5.5 kHz) blending COMPLEX bins
 //   - xorshift32 breathiness noise (deterministic, RT-safe)
-//   - 75% overlap-add, Hann x (Hann/1.5) exact COLA, linear-buffer emit
+//   - ring-buffer OLA with FIXED emission latency (kLatency = 4608 samples = 96 ms)
 //
-// Algorithmic latency: 1024 samples (one full analysis window) = 21.33 ms @ 48 kHz.
 // mix = 0 is a bit-exact memcpy bypass; set_param(mix) clears transient state on
-// bypass-boundary transitions (anti-ghosting).
+// bypass-boundary transitions (anti-ghosting). All ring indices are wrapped into
+// [0, kRingSize) via & kRingMask AFTER reducing positions into int range — the
+// double->int cast must never receive an out-of-range value (UB).
 //
 // Zero steady-state heap allocation: every buffer is a fixed member array.
 
@@ -62,6 +62,7 @@ public:
           breathiness_(0.0f), sibilant_mix_(0.8f), mix_(1.0f), prev_mix_(1.0f),
           rng_state_(kRngSeed) {
         build_tables();
+        recompute_vtln_warp();
         reset();
     }
 
@@ -73,7 +74,13 @@ public:
         switch (id) {
             case 0: pitch_st_ = std::max(-24.0f, std::min(24.0f, v)); break;
             case 1: formant_st_ = std::max(-24.0f, std::min(24.0f, v)); break;
-            case 2: gender_morph_ = std::max(-1.0f, std::min(1.0f, v)); break;
+            case 2:
+                gender_morph_ = std::max(-1.0f, std::min(1.0f, v));
+                // VTLN warp buckets depend only on gender_morph; rebuild the
+                // table here (param-change path) instead of recomputing 513
+                // atan/sin/cos per frame in replace_envelope().
+                recompute_vtln_warp();
+                break;
             case 3: breathiness_ = std::max(0.0f, std::min(1.0f, v)); break;
             case 4: sibilant_mix_ = std::max(0.0f, std::min(1.0f, v)); break;
             case 5:
@@ -99,10 +106,15 @@ public:
         if (frames <= 0) return;
 
         // Dry bypass: bit-exact memcpy early-out (zero latency, zero CPU).
+        // Must honor the mono->stereo duplication contract of the normal path,
+        // otherwise a raw channels==1 call would leave output channel 1 stale.
         if (mix_ <= 0.0f) {
-            for (int c = 0; c < channels; ++c)
-                std::memcpy(out + c * frames, in + c * frames,
+            const int chs = (channels == 1) ? kMaxChannels : channels;
+            for (int c = 0; c < chs; ++c) {
+                const float* src = (channels == 1) ? in : in + c * frames;
+                std::memcpy(out + c * frames, src,
                             static_cast<size_t>(frames) * sizeof(float));
+            }
             return;
         }
 
@@ -142,7 +154,8 @@ public:
             }
         }
 
-        // Zero any unused output channels (anti-ghosting).
+        // Zero any unused output channels (anti-ghosting). Defensive only:
+        // chs is always kMaxChannels today (mono is internally duplicated).
         for (int c = chs; c < kMaxChannels; ++c)
             std::memset(out + c * frames, 0, static_cast<size_t>(frames) * sizeof(float));
     }
@@ -162,7 +175,7 @@ private:
     float in_ring_[kMaxChannels][kRingSize];   // raw input history
     float ola_ring_[kMaxChannels][kRingSize];  // output OLA ring (trailing read)
     long long total_received_[kMaxChannels];   // input samples received
-    int   frame_index_[kMaxChannels];          // frames processed (start = 256*m)
+    long long frame_index_[kMaxChannels];      // frames processed (start = 256*m)
     float prev_phase_in_[kMaxChannels][kHalf];
     float prev_phase_out_[kMaxChannels][kHalf];
 
@@ -172,6 +185,8 @@ private:
     int   rev_[kFFT];           // FFT bit-reversal permutation
     float cos_tab_[kFFT / 2];   // twiddle tables
     float sin_tab_[kFFT / 2];
+    float vtln_warp_bin_[kHalf]; // VTLN warp buckets: source bin -> dest pos
+                                // (rebuilt in recompute_vtln_warp() on gender change)
 
     // ---- Per-hop scratch (no allocation) ------------------------------------
     float scratch_time_[kFFT];     // synthesized output frame (pre-window)
@@ -221,13 +236,36 @@ private:
         }
     }
 
+    // Precompute the VTLN allpass warp bucket table (source bin -> destination
+    // position). Depends only on gender_morph_; identity when gender_morph_ = 0.
+    void recompute_vtln_warp() {
+        const float alpha = gender_morph_ * 0.25f;
+        if (alpha == 0.0f) {
+            for (int k = 0; k < kHalf; ++k)
+                vtln_warp_bin_[k] = static_cast<float>(k);
+            return;
+        }
+        for (int k = 0; k < kHalf; ++k) {
+            const float w = kPi * static_cast<float>(k) / static_cast<float>(kHalf - 1);
+            const float wp = w + 2.0f * std::atan(
+                -alpha * std::sin(w) / (1.0f + alpha * std::cos(w)));
+            float b = wp / kPi * static_cast<float>(kHalf - 1);
+            if (b < 0.0f) b = 0.0f;
+            if (b > static_cast<float>(kHalf - 1)) b = static_cast<float>(kHalf - 1);
+            vtln_warp_bin_[k] = b;
+        }
+    }
+
     // ---- Per-hop pipeline ---------------------------------------------------
 
     void process_frame(int c, float ratio) {
         // 1. Analysis frame: read from the input ring at stride `ratio`
         //    (linear interpolation). Frame m starts at input position 256*m;
         //    the pitch shift happens right here in the frame read.
-        const double fpos = 256.0 * (double)frame_index_[c];
+        //    fpos grows without bound over a long session, so wrap it into
+        //    ring range BEFORE the double->int cast — an out-of-range cast is
+        //    UB and (on x86 cvttsd2si) silently reads ring position 0.
+        const double fpos = std::fmod(256.0 * (double)frame_index_[c], (double)kRingSize);
         for (int i = 0; i < kFFT; ++i) {
             const double pos = fpos + (double)i * (double)ratio;
             const int i0 = (int)std::floor(pos) & kRingMask;
@@ -331,12 +369,14 @@ private:
     }
 
     static float interp(const float* buf, float pos) {
-        int i = static_cast<int>(pos);
-        if (i < 0) i = 0;
-        if (i > kHalf - 1) i = kHalf - 1;
+        // Clamp the FRACTION too: clamping only the integer index would leave a
+        // negative fraction when pos < 0, extrapolating past the array's lower
+        // edge and potentially producing a negative envelope.
+        if (pos < 0.0f) pos = 0.0f;
+        if (pos > static_cast<float>(kHalf - 1)) pos = static_cast<float>(kHalf - 1);
+        const int i = static_cast<int>(pos);
         const int j = (i < kHalf - 1) ? i + 1 : i;
-        const float f = pos - static_cast<float>(i);
-        return buf[i] + (buf[j] - buf[i]) * f;
+        return buf[i] + (buf[j] - buf[i]) * (pos - static_cast<float>(i));
     }
 
     // Formant-preserving envelope replacement + formant/VTLN warp.
@@ -362,21 +402,12 @@ private:
             envelope_[k] = interp(warped_envelope_, pos);
         }
 
-        // (c) VTLN bilinear allpass warp (omega'(0)=0, omega'(pi)=pi preserved).
-        const float alpha = gender_morph_ * 0.25f;
-        if (alpha != 0.0f) {
-            for (int k = 0; k < kHalf; ++k) {
-                const float w = kPi * static_cast<float>(k) / static_cast<float>(kHalf - 1);
-                const float wp = w + 2.0f * std::atan(
-                    -alpha * std::sin(w) / (1.0f + alpha * std::cos(w)));
-                float b = wp / kPi * static_cast<float>(kHalf - 1);
-                if (b < 0.0f) b = 0.0f;
-                if (b > static_cast<float>(kHalf - 1))
-                    b = static_cast<float>(kHalf - 1);
-                warped_envelope_[k] = interp(envelope_, b);
-            }
-            std::memcpy(envelope_, warped_envelope_, kHalf * sizeof(float));
-        }
+        // (c) VTLN bilinear allpass warp (omega'(0)=0, omega'(pi)=pi preserved),
+        //     via the precomputed warp-bucket table (rebuilt on gender_morph
+        //     change). Table is identity when gender_morph_ = 0.
+        for (int k = 0; k < kHalf; ++k)
+            warped_envelope_[k] = interp(envelope_, vtln_warp_bin_[k]);
+        std::memcpy(envelope_, warped_envelope_, kHalf * sizeof(float));
     }
 
     int find_peaks() {

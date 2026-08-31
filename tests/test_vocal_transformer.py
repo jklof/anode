@@ -1,3 +1,4 @@
+import ctypes
 import gc
 import tracemalloc
 
@@ -120,6 +121,24 @@ def test_vocal_transformer_mix_zero_bit_exact():
     blk = torch.randn(CHANNELS, BLOCK_SIZE, dtype=DTYPE) * 0.3
     out = process_block(node, blk)
     assert torch.equal(out, blk)
+
+
+def test_vocal_transformer_native_mono_bypass_writes_stereo():
+    """Native library contract: with mix=0 and channels=1, the bypass path must
+    duplicate the mono input into BOTH output channels. Regression for the
+    mix<=0 bypass mono-duplication fix — previously channel 1 was left stale
+    (ghosting) because the bypass used the raw channel count."""
+    node = make_node()
+    node.lib.set_param(node.dsp_handle, 5, 0.0)   # mix = 0 -> native bypass
+    n = BLOCK_SIZE
+    mono = (np.random.rand(n).astype(np.float32) * 0.3 - 0.15)
+    in_buf = (ctypes.c_float * n)(*mono)
+    out_buf = (ctypes.c_float * (2 * n))(*([-1.0] * (2 * n)))  # poisoned
+    node.lib.process(node.dsp_handle, in_buf, out_buf, 1, n)
+    out = np.frombuffer(out_buf, dtype=np.float32)
+    assert np.array_equal(out[:n], mono)
+    assert np.array_equal(out[n:], mono), \
+        "bypass with channels=1 must write both output channels"
 
 
 def test_vocal_transformer_zero_shift_spectrum():

@@ -3,14 +3,15 @@ VocalTransformer — studio-grade human voice pitch, formant, and gender
 transformation (Effects).
 
 Thin FFINode wrapper over libvocal_transformer (cpp/vocal_transformer.cpp).
-All spectral processing (true-envelope cepstral fitting, destination-grid
-bin mapping, peak-locked phase vocoding, VTLN warping) runs natively; the
+All spectral processing (true-envelope cepstral fitting, resampled-frame
+pitch shifting, peak-locked phase vocoding, VTLN warping) runs natively; the
 Python side only marshals pointers, pushes staged parameters once per
 change, and forwards block-rate CV from the modulation sockets.
 
-Latency: 1024 samples (one FFT window) — see get_telemetry(). The 'mix'
-parameter is NOT latency-compensated: below 1.0 it is a comb-filtering
-special effect, matching the RubberbandPitchShifter disclosure.
+Latency: FIXED 4608 samples (96 ms @ 48 kHz) across the whole pitch range —
+see get_telemetry(). The 'mix' parameter is NOT latency-compensated: below
+1.0 it is a comb-filtering special effect, matching the RubberbandPitchShifter
+disclosure.
 """
 
 import ctypes
@@ -27,9 +28,10 @@ class VocalTransformer(FFINode):
         "Employs True-Envelope peak cepstral estimation, peak-locked phase "
         "vocoding, and vocal tract length normalization (VTLN) to eliminate "
         "metallic phasiness, prevent pitch-harmonic comb ripples, and preserve "
-        "crisp unvoiced sibilants. Algorithmic latency 1024 samples at neutral "
-        "pitch (up to ~85 ms at extreme shifts); mix below 1.0 is a "
-        "comb-filtering effect, not a compensated crossfade."
+        "crisp unvoiced sibilants. Fixed algorithmic latency of 4608 samples "
+        "(96 ms at 48 kHz), covering the worst case across the full pitch "
+        "range; mix below 1.0 is a comb-filtering effect, not a compensated "
+        "crossfade."
     )
 
     LIB_NAME = "vocal_transformer"
@@ -84,7 +86,7 @@ class VocalTransformer(FFINode):
                              help="Dry/wet crossfade (0.0 = dry only, 1.0 = transformed). "
                                   "NOT latency-compensated: below 1.0 this combs the "
                                   "spectrum because the wet path lags the dry path by "
-                                  "up to 4096 samples.")
+                                  "4608 samples (~96 ms).")
 
     def process(self):
         # Mirrors plugins/filters.py BiquadFilter.process(): replicate the
