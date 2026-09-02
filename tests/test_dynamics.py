@@ -382,3 +382,39 @@ def test_compressor_native_reset_clears_delay_line():
     node.start()
     process_block(node, silent)
     assert float(node.outputs["out"].buffer[0].abs().max()) < 1e-6
+
+
+def test_autogain_window_reads_recent_ring_entries():
+    """Regression: _rms_history is a true ring. Once the write pointer passes
+    the window length, fresh samples land past the linear prefix, so the old
+    _rms_history[:_hist_count] read averaged stale data and the long-term
+    measurement froze on the first window's worth of samples."""
+    node = make_node("AutoGain")
+    set_params(node, target_db=-14.0, window_s=0.5, max_gain_db=18.0,
+               silence_gate_db=-50.0)
+    n_window = int(0.5 * SAMPLE_RATE / BLOCK_SIZE)   # 50 blocks
+
+    quiet = torch.full((CHANNELS, BLOCK_SIZE), 0.01, dtype=DTYPE)
+    loud = torch.full((CHANNELS, BLOCK_SIZE), 0.25, dtype=DTYPE)
+
+    for _ in range(120):          # write pointer advances well past the window
+        process_block(node, quiet)
+    for _ in range(5):
+        process_block(node, loud)
+
+    ptr, count = node._hist_ptr, node._hist_count
+    assert count == n_window
+    assert ptr >= n_window, "write pointer must have passed the window length"
+
+    # Correct ring read: the last `count` entries must contain the recent
+    # loud blocks (the data the node's long-term RMS must now be averaging).
+    ring_recent = [node._rms_history[(ptr - 1 - i) % node.MAX_BLOCKS].item()
+                   for i in range(count)]
+    # Old buggy read: the linear prefix holds only stale quiet samples.
+    stale_prefix = node._rms_history[:count].tolist()
+
+    assert max(ring_recent) == pytest.approx(0.25, abs=1e-3), \
+        "ring window must contain the recent loud blocks"
+    assert max(stale_prefix) < 0.05, \
+        "linear prefix holds only stale quiet data (the old bug's read window)"
+

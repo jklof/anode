@@ -88,7 +88,7 @@ class MIDIInputNode(Node):
         if not port_name or not MIDO_AVAILABLE:
             return None, "No Device", epoch
         try:
-            port = mido.open_input(port_name)
+            port = mido.open_input(port_name, callback=self._midi_callback)
             return port, f"Active: {port_name[:20]}", epoch
         except Exception as e:
             raise RuntimeError(f"Failed to open '{port_name}': {e}")
@@ -112,6 +112,17 @@ class MIDIInputNode(Node):
                 self._close_port_sync()
                 self._status = "Error"
                 self.error_msg = str(result)
+
+    def on_nrt_discarded(self, tag, ok, result):
+        if tag == "open_input" and ok and result:
+            # Superseded open: the port was created but never installed, so
+            # close it here (engine thread) to avoid leaking the device.
+            new_port = result[0] if isinstance(result, tuple) else None
+            if new_port:
+                try:
+                    new_port.close()
+                except Exception:
+                    pass
 
     def _midi_callback(self, message):
         self._queue.try_push((0, message))
@@ -219,6 +230,18 @@ class MIDIOutputNode(Node):
                 self._close_port_sync()
                 self._status = "Error"
                 self.error_msg = str(result)
+
+    def on_nrt_discarded(self, tag, ok, result):
+        if tag == "open_output" and ok and result:
+            # Superseded open: the port was created but never installed (and
+            # no writer thread was started for it), so close it here to avoid
+            # leaking the device.
+            new_port = result[0] if isinstance(result, tuple) else None
+            if new_port:
+                try:
+                    new_port.close()
+                except Exception:
+                    pass
 
     def _writer_loop(self):
         while not self._stop_event.is_set():

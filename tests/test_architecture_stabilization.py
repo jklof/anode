@@ -561,3 +561,94 @@ def test_connect_allows_mono_to_stereo():
     g.add_node(stereo)
     assert g.connect("mono", "out", "stereo", "in") is True
     assert len(stereo.inputs["in"].connected_outputs) == 1
+
+
+def test_connect_rejected_carries_cmd_id_while_engine_running():
+    """AGENTS.md §8: when the running audio loop drains the command queue,
+    connect_rejected must still carry the originating command id so history
+    can remove exactly the rejected command. Regression: the worker unpacked
+    the queued entry as `_, cmd` and dropped the id."""
+    plugin_system.load_plugins("plugins")
+    engine = Engine()
+    g = engine.graph
+    n1 = plugin_system.NODE_REGISTRY["Gain"]()
+    n1.id = "a"
+    n2 = plugin_system.NODE_REGISTRY["Gain"]()
+    n2.id = "b"
+    g.add_node(n1)
+    g.add_node(n2)
+
+    engine.start()
+    try:
+        bad_id = engine.push_command(("conn", "a", "out", "a", "in"))
+        rejected = None
+        deadline = time.time() + 5.0
+        while time.time() < deadline and rejected is None:
+            try:
+                msg = engine.output_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if isinstance(msg, dict) and msg.get("type") == "connect_rejected":
+                rejected = msg
+        assert rejected is not None, "no connect_rejected message while engine running"
+        assert rejected["cmd_id"] == bad_id
+        assert rejected["cmd_id"] is not None
+    finally:
+        engine.stop()
+
+
+def test_nrt_discarded_hook_receives_superseded_payloads():
+    """When a newer submit() supersedes an in-flight job, drain() must route
+    the completed-but-stale payload to on_nrt_discarded() (so resource-owning
+    payloads — native DSP handles, open streams, worker bundles — can be
+    released) instead of dropping it silently."""
+    from base import Node
+
+    completed, discarded = [], []
+
+    class _Probe(Node):
+        def on_nrt_complete(self, tag, ok, payload):
+            completed.append((tag, ok, payload))
+
+        def on_nrt_discarded(self, tag, ok, payload):
+            discarded.append((tag, ok, payload))
+
+    engine = Engine()
+    probe = _Probe("probe")
+    probe.id = "probe"
+    engine.graph.add_node(probe)
+
+    probe.submit_nrt(lambda: "first", tag="job")
+    probe.submit_nrt(lambda: "second", tag="job")
+
+    # Wait for both jobs to finish and land in the node's inbox.
+    deadline = time.time() + 5.0
+    while time.time() < deadline and probe._nrt_inbox.qsize() < 2:
+        time.sleep(0.01)
+    assert probe._nrt_inbox.qsize() >= 2
+
+    engine._drain_nrt_all()
+    assert ("job", True, "second") in completed
+    assert discarded == [("job", True, "first")]
+
+
+def test_connect_rejects_outputs_wider_than_engine_channels():
+    """Outputs declaring more channels than the global engine format are
+    rejected at connect time: InputSlot scratch buffers are sized for
+    CHANNELS, and channel adaptation must stay explicit and deterministic
+    (a wider copy would raise a shape RuntimeError mid-block)."""
+    plugin_system.load_plugins("plugins")
+    g = Graph()
+    wide = _ChanNode("wide", out_channels=CHANNELS + 2)
+    gain = plugin_system.NODE_REGISTRY["Gain"]()
+    gain.id = "g"
+    g.add_node(wide)
+    g.add_node(gain)
+
+    assert g.connect("wide", "out", "g", "in") is False
+    assert gain.inputs["in"].connected_outputs == []
+
+    # Stereo outputs remain connectable.
+    assert g.connect("g", "out", "wide", "in") is True
+    assert len(wide.inputs["in"].connected_outputs) == 1
+

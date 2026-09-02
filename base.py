@@ -249,6 +249,12 @@ class InputSlot:
                 if out.buffer.shape[0] > max_channels:
                     max_channels = out.buffer.shape[0]
 
+            # The scratch buffer is fixed at the engine's global channel
+            # format; Graph.connect() rejects sources wider than this, but
+            # clamp defensively so a future policy change can never turn
+            # into a shape-mismatch RuntimeError mid-block.
+            max_channels = min(max_channels, CHANNELS)
+
             # Create a view of the scratch buffer (no memory allocation)
             target = self._scratch[:max_channels]
 
@@ -411,6 +417,16 @@ class Node:
         command execution boundaries, at periodic (~100 ms) telemetry ticks,
         and from the UI poll timer when the engine is stopped — never inside
         Node.sync() per block. It is safe to mutate node state here."""
+        pass
+
+    def on_nrt_discarded(self, tag, ok, payload):
+        """Called by NRTExecutor.drain() when a completed background job is
+        discarded because a newer submit() superseded it (per-node scalar
+        epoch). Override in subclasses whose NRT payloads own resources
+        (native DSP handles, open streams, worker bundles) that must be
+        released even though on_nrt_complete() will never see the result.
+        Runs on the engine/control thread between blocks, like
+        on_nrt_complete()."""
         pass
 
     def sync(self):

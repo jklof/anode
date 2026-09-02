@@ -54,8 +54,11 @@ def test_static_delay_impulse_position():
             found = block_idx * BLOCK_SIZE + int(peaks[0])
             break
     assert found is not None, "impulse lost"
-    # Allow +-2 samples: read head clamps to >= 1 sample behind write head
-    assert abs(found - delay_samples - 1) <= 3, f"impulse at {found}, expected ~{delay_samples}"
+    # Hermite taps are centered on buf[floor] (ym1, y0, y1, y2), so an integer
+    # read position returns buf[floor] exactly: the impulse reappears at the
+    # exact delay D with no interpolator offset. (Allow +-3 for the LFO drift
+    # of the nonzero rate and the d_min=1 read-head clamp.)
+    assert abs(found - delay_samples) <= 3, f"impulse at {found}, expected ~{delay_samples}"
 
 
 def test_mix_zero_is_bit_exact_passthrough():

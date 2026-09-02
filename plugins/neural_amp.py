@@ -120,7 +120,9 @@ class NamNode(FFINode):
         super().on_ui_param_change(param_name)
 
         if param_name == "model_path":
-            self.params[param_name].sync()
+            # The engine committed the staged value (set()+sync()) before
+            # invoking this callback (AGENTS.md §5); load_state() also commits
+            # parameters before re-triggering this path. No re-sync here.
             path = self.params["model_path"].value
             if self.lib and path:
                 self._status = "Loading..."
@@ -189,6 +191,18 @@ class NamNode(FFINode):
             self._status = "Error"
             self._current_filename = "Load Failed"
 
+    def on_nrt_discarded(self, tag, ok, result):
+        if tag == "load_model" and ok and result:
+            # Superseded load: the fully prepared native handle is never
+            # installed, so destroy it here (engine thread, off the audio
+            # path) to avoid leaking the model weights.
+            new_handle = result[0] if isinstance(result, tuple) else None
+            if new_handle and self.lib:
+                try:
+                    self.lib.destroy(new_handle)
+                except Exception as e:
+                    logger.error(f"NAM discarded-handle destroy failed: {e}")
+
     def get_telemetry(self) -> dict:
         return {"status": self._status, "filename": self._current_filename}
 
@@ -218,8 +232,6 @@ class NamNode(FFINode):
             self.on_ui_param_change("model_path")
 
     def start(self):
-        if self.lib and self.dsp_handle and hasattr(self.lib, "reset"):
-            try:
-                self.lib.reset(self.dsp_handle)
-            except Exception as e:
-                logging.error(f"NAM Reset failed: {e}")
+        # FFINode.start() performs the standard reset contract (_call_reset())
+        # and marks native params dirty so they are re-pushed on the next block.
+        super().start()

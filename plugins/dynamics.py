@@ -265,9 +265,9 @@ class BrickwallLimiter(Node):
     category = "Effects"
     label = "Brickwall Limiter"
     description = (
-        "Lookahead-free peak limiter with program-dependent release: smoothly "
-        "ramps gain down before peaks cross the threshold and recovers over the "
-        "release time. Ceiling and threshold are in dBFS; threshold can be "
+        "Peak limiter with a 240-sample lookahead delay and program-dependent "
+        "release: smoothly ramps gain down before peaks cross the threshold "
+        "and recovers over the release time. Ceiling and threshold are in dBFS; threshold can be "
         "audio-rate modulated via a parameter-bound input."
     )
 
@@ -490,8 +490,24 @@ class AutoGain(Node):
         self._hist_ptr = (self._hist_ptr + 1) % self.MAX_BLOCKS
         self._hist_count = min(self._hist_count + 1, N)
 
-        hist_slice = self._rms_history[:self._hist_count]
-        long_rms = float(torch.sqrt(torch.mean(torch.pow(hist_slice, 2.0))).item())
+        # The history is a true ring: once _hist_ptr passes the window length,
+        # fresh samples land past the linear prefix, so reading the linear
+        # prefix _rms_history[:_hist_count] would average stale data. Read the
+        # last _hist_count entries ending at _hist_ptr - 1 instead, as one
+        # contiguous slice or two wrapped slices.
+        K = self._hist_count
+        P = self._hist_ptr
+        if P >= K:
+            hist_slice = self._rms_history[P - K:P]
+            mean_sq = float(torch.mean(torch.pow(hist_slice, 2.0)).item())
+        else:
+            s1 = self._rms_history[self.MAX_BLOCKS - (K - P):]
+            s2 = self._rms_history[:P]
+            sum_sq = (float(torch.sum(torch.pow(s1, 2.0)).item())
+                      + float(torch.sum(torch.pow(s2, 2.0)).item()))
+            mean_sq = sum_sq / float(K)
+
+        long_rms = math.sqrt(max(0.0, mean_sq))
         long_rms_db = 20.0 * math.log10(max(long_rms, 1e-9))
 
         gain_db = target_db - long_rms_db

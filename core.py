@@ -9,7 +9,7 @@ import logging
 import concurrent.futures
 from typing import Dict, List, Optional, Tuple
 import plugin_system
-from base import BLOCK_SIZE, SAMPLE_RATE, IClockProvider, Node
+from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE, IClockProvider, Node
 
 _STRUCTURAL_OPS = frozenset({"add", "del", "conn", "disconn", "restore", "clear", "load", "reload", "clock"})
 
@@ -165,8 +165,16 @@ class Graph:
             return False
 
         # Reject impossible channel configurations. Only outputs that carry a
-        # real buffer declare a channel count; if present it must be >= 1.
-        if buf is not None and buf.shape[0] < 1:
+        # real buffer declare a channel count; if present it must be >= 1 and
+        # within the engine's global channel format (InputSlot scratch buffers
+        # are sized for CHANNELS; anything wider is unsupported).
+        if buf is not None and (buf.shape[0] < 1 or buf.shape[0] > CHANNELS):
+            if buf.shape[0] > CHANNELS:
+                logging.warning(
+                    f"Connection rejected: {src.name}.{src_port} declares "
+                    f"{buf.shape[0]} channels; the engine format supports at "
+                    f"most {CHANNELS}."
+                )
             return False
 
         # Check if adding this connection would create a cycle:
@@ -218,6 +226,15 @@ class Graph:
         for n in self.nodes:
             if isinstance(n, IClockProvider):
                 n.set_master(n == node)
+
+    def clear_master_clock(self):
+        """Detach any master clock (e.g. when loading a patch saved without a
+        clock_id) so add_node()'s first-provider auto-assignment is not
+        silently retained for patches that were saved clockless."""
+        self.clock_source = None
+        for n in self.nodes:
+            if isinstance(n, IClockProvider):
+                n.set_master(False)
 
     def recalculate_order(self):
         self._order_dirty = True
@@ -361,7 +378,15 @@ class NRTExecutor:
             except queue.Empty:
                 return
             if epoch != node._nrt_epoch:
-                continue  # superseded by a newer submit() — discard silently
+                # Superseded by a newer submit(): the payload is never
+                # delivered to on_nrt_complete(), so give the node a chance
+                # to release any resources it carries (native DSP handles,
+                # open streams, worker bundles) before discarding it.
+                try:
+                    node.on_nrt_discarded(tag, ok, payload)
+                except Exception as e:
+                    logging.error(f"NRT discard handler failed for {node.name}: {e}")
+                continue
             node.on_nrt_complete(tag, ok, payload)
 
     def discard(self, node):
@@ -580,8 +605,18 @@ class Engine:
                     pass
             elif op == "conn":
                 _, sid, sp, did, dp = cmd
+                # A re-connect of an existing edge is a no-op in Graph.connect
+                # (InputSlot.connect dedups); do not re-announce it, otherwise
+                # the UI snapshot accumulates duplicate connection records.
+                src_n = self.graph.node_map.get(sid)
+                dst_n = self.graph.node_map.get(did)
+                already = (
+                    src_n is not None and dst_n is not None
+                    and sp in src_n.outputs and dp in dst_n.inputs
+                    and src_n.outputs[sp] in dst_n.inputs[dp].connected_outputs
+                )
                 success = self.graph.connect(sid, sp, did, dp)
-                if success:
+                if success and not already:
                     try:
                         self.output_queue.put_nowait(
                             {"type": "connected", "src_id": sid, "src_port": sp, "dst_id": did, "dst_port": dp}
@@ -736,6 +771,8 @@ class Engine:
                             new_graph.connect(src_id, c.get("src_port"), dst_id, c.get("dst_port"))
                     if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
                         new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
+                    else:
+                        new_graph.clear_master_clock()
                     self.graph = new_graph
                     self.graph.engine = self
                     if self.running:
@@ -781,6 +818,8 @@ class Engine:
                             new_graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])
                     if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
                         new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
+                    else:
+                        new_graph.clear_master_clock()
                     self.graph = new_graph
                     self.graph.engine = self
                     if self.running:
@@ -846,11 +885,14 @@ class Engine:
                 while not self.command_queue.empty():
                     entry = self.command_queue.get_nowait()
                     if isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[0], int):
-                        _, cmd = entry
+                        cmd_id, cmd = entry
                     else:
                         # Backwards compatibility with raw commands
-                        cmd = entry
-                    self._apply_command(cmd)
+                        cmd_id, cmd = None, entry
+                    # Forward the engine-assigned command identity so result
+                    # messages (e.g. connect_rejected) can be associated with
+                    # the exact originating request (AGENTS.md §8).
+                    self._apply_command(cmd, cmd_id)
 
                 plan = self._active_plan
 

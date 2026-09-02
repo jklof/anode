@@ -377,6 +377,10 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         else:
             k = min(hw_channels, CHANNELS)
             outdata[:, :k] = self._scratch_buffer[:, :k]
+            # Anti-ghosting: channels beyond the engine format must still be
+            # written every callback; PortAudio buffers are not zeroed.
+            if hw_channels > k:
+                outdata[:, k:] = 0.0
 
     def process(self):
         # 1. Get Tensor (on CPU)

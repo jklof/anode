@@ -140,8 +140,10 @@ class MediaStreamWorker(threading.Thread):
                     if not resampled_frames:
                         continue
 
-                    # Convert to numpy and stack
+                    # Convert to numpy and concatenate in one pass per decode
+                    # batch (a rolling np.hstack per frame is O(n^2) in copies).
                     # AV returns list of frames (usually 1, but can be more)
+                    chunks = [buffer_accum] if buffer_accum.shape[1] > 0 else []
                     for r_frame in resampled_frames:
                         np_frame = r_frame.to_ndarray()  # Shape (Channels, Samples)
 
@@ -151,7 +153,12 @@ class MediaStreamWorker(threading.Thread):
                         elif np_frame.shape[0] > 2:
                             np_frame = np_frame[:2, :]
 
-                        buffer_accum = np.hstack([buffer_accum, np_frame])
+                        chunks.append(np_frame)
+                    buffer_accum = (
+                        np.concatenate(chunks, axis=1)
+                        if chunks
+                        else np.zeros((2, 0), dtype=np.float32)
+                    )
 
                     # Push blocks to queue
                     while buffer_accum.shape[1] >= BLOCK_SIZE:
@@ -510,6 +517,16 @@ class MediaPlayerNode(Node):
         self.eof = False
         if result["deps_missing"]:
             self.status_msg = "Dependencies Missing"
+
+    def on_nrt_discarded(self, tag, ok, result):
+        if tag == "restart" and ok and isinstance(result, dict):
+            # Superseded restart: the bundle was never installed, so its
+            # worker thread must be retired here (the next restart's NRT job
+            # only knows about _pending_bundle / installed workers).
+            w = result.get("worker")
+            if w is not None:
+                w.stop()
+                w.join(timeout=2.0)
 
     def _handle_worker_event(self, type, data):
         if type == "meta":

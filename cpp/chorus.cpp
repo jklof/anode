@@ -25,17 +25,19 @@ constexpr float kMaxDelayMs = 30.0f;
 
 inline float hermite_read(const std::vector<float>& buf, int cap,
                           float read_pos) {
-    // read_pos in [0, cap); interpolate buf[floor]..buf[floor+3]
+    // read_pos in [0, cap); Catmull-Rom over buf[floor-1]..buf[floor+2],
+    // centered on buf[floor] so an integer read position returns buf[floor]
+    // exactly (no 1-sample offset).
     int i0 = static_cast<int>(read_pos);
     float frac = read_pos - static_cast<float>(i0);
+    const int im1 = (i0 - 1 + cap) % cap;
     const int i1 = (i0 + 1) % cap;
     const int i2 = (i0 + 2) % cap;
-    const int i3 = (i0 + 3) % cap;
-    const float y0 = buf[i0], y1 = buf[i1], y2 = buf[i2], y3 = buf[i3];
-    const float c1 = 0.5f * (y1 - y0);
-    const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
-    const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
-    return ((c3 * frac + c2) * frac + c1) * frac + y1;
+    const float ym1 = buf[im1], y0 = buf[i0], y1 = buf[i1], y2 = buf[i2];
+    const float c1 = 0.5f * (y1 - ym1);
+    const float c2 = ym1 - 2.5f * y0 + 2.0f * y1 - 0.5f * y2;
+    const float c3 = 0.5f * (y2 - ym1) + 1.5f * (y0 - y1);
+    return ((c3 * frac + c2) * frac + c1) * frac + y0;
 }
 
 } // namespace
@@ -106,6 +108,10 @@ public:
                 // Read BEFORE pushing the feedback-injected sample
                 float read_pos = static_cast<float>(write_pos_) - d;
                 while (read_pos < 0.0f) read_pos += static_cast<float>(cap_);
+                // Float rounding can land exactly on cap (e.g. -1e-5f + cap
+                // rounds up to cap), which would read buf[cap] out of bounds;
+                // the true position is then ~0 (frac ~0), so clamp to 0.
+                if (read_pos >= static_cast<float>(cap_)) read_pos = 0.0f;
                 const float wet = hermite_read(ring, cap_, read_pos);
 
                 float feed_in;

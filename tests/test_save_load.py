@@ -136,3 +136,44 @@ def test_delete_undo_attaches_graph_before_load_state():
         plugin_system.NODE_REGISTRY.pop(PROBE, None)
 
     assert events == [True], "load_state must run with node.graph attached"
+
+
+def test_engine_load_respects_clockless_patch():
+    """A patch saved without a clock_id must load with no master clock:
+    Graph.add_node() auto-assigns the first clock provider, and the load path
+    must clear that auto-assignment when the saved clock_id is null."""
+    from base import Node, IClockProvider
+    from core import Engine
+
+    class _TestClockNode(Node, IClockProvider):
+        def __init__(self, name=""):
+            Node.__init__(self, name)
+            IClockProvider.__init__(self)
+
+        def start_clock(self, tick_callback):
+            pass
+
+        def stop_clock(self):
+            pass
+
+    plugin_system.NODE_REGISTRY["_TestClockNode"] = _TestClockNode
+    try:
+        engine = Engine()
+        payload = {
+            "nodes": [{"type": "_TestClockNode", "id": "clk", "name": "clk"}],
+            "connections": [],
+            "clock_id": None,
+        }
+        engine.push_command(("load", json.dumps(payload)))
+        assert "clk" in engine.graph.node_map
+        assert engine.graph.clock_source is None
+        assert engine.graph.node_map["clk"].is_master is False
+
+        # Positive control: a saved clock_id is honored.
+        payload["clock_id"] = "clk"
+        engine.push_command(("load", json.dumps(payload)))
+        assert engine.graph.clock_source is engine.graph.node_map["clk"]
+        assert engine.graph.node_map["clk"].is_master is True
+    finally:
+        plugin_system.NODE_REGISTRY.pop("_TestClockNode", None)
+

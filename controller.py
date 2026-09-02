@@ -152,15 +152,18 @@ class AppController(QObject):
                         ws["connections"] = []
                     else:
                         ws["connections"] = ws["connections"].copy()
-                    ws["connections"].append(
-                        {
-                            "src_id": msg["src_id"],
-                            "src_port": msg["src_port"],
-                            "dst_id": msg["dst_id"],
-                            "dst_port": msg["dst_port"],
-                        }
-                    )
-                    graph_changed = True
+                    conn_dict = {
+                        "src_id": msg["src_id"],
+                        "src_port": msg["src_port"],
+                        "dst_id": msg["dst_id"],
+                        "dst_port": msg["dst_port"],
+                    }
+                    # Defensive dedup: the engine no longer re-announces
+                    # no-op re-connects, but never let the snapshot drift
+                    # into duplicate connection records.
+                    if conn_dict not in ws["connections"]:
+                        ws["connections"].append(conn_dict)
+                        graph_changed = True
                 elif m_type == "connect_rejected":
                     # Associate the rejection with the exact originating
                     # command via its engine-assigned id.

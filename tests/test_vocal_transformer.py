@@ -455,3 +455,32 @@ def test_vocal_transformer_tract_shaped_breathiness():
     assert mid_diff > lf_diff * 3.0, \
         f"Aspiration noise must be concentrated above 1.5 kHz and shaped by " \
         f"tract (lf_diff {lf_diff:.3e}, mid_diff {mid_diff:.3e})"
+
+
+def test_vocal_transformer_mid_mix_blends_latency_aligned_dry():
+    """out(mix) must equal (1-mix)*dry + mix*wet where `dry` is the input
+    delayed by the fixed 4608-sample latency — i.e. (0, 1) mix values
+    crossfade without comb filtering. Regression: any mix > 0 emitted 100%
+    wet, making the mix knob a binary bypass switch."""
+    blocks = tone_blocks(220.0, 14)
+    flat_in = torch.cat(blocks, dim=1)
+
+    def run(mix):
+        node = make_node()
+        set_params(node, mix=mix)
+        return torch.cat([process_block(node, b) for b in blocks], dim=1)
+
+    wet_full = run(1.0)
+    mid = run(0.5)
+
+    # Stream alignment: block m's emission reads the input ring at
+    # o = (m+1)*BLOCK_SIZE - kLatency + i, and block m occupies stream samples
+    # [m*BLOCK_SIZE, (m+1)*BLOCK_SIZE), so stream index j corresponds to input
+    # sample j - (kLatency - BLOCK_SIZE).
+    align = LATENCY - BLOCK_SIZE
+    dry_aligned = torch.zeros_like(flat_in)
+    dry_aligned[:, align:] = flat_in[:, :flat_in.shape[1] - align]
+    expected = 0.5 * dry_aligned + 0.5 * wet_full
+    assert torch.allclose(mid, expected, atol=1e-4), \
+        "mix=0.5 must blend the latency-aligned dry signal with the wet path"
+

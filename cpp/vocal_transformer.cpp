@@ -150,13 +150,17 @@ public:
 
             // Emit this block's output from the fixed latency L behind the
             // input stream (every emitted sample is fully accumulated; the
-            // first L samples of the stream are silence).
+            // first L samples of the stream are silence). The dry path is
+            // read from the input history ring at the same latency-aligned
+            // position, so (0,1) mix values crossfade without comb filtering.
             const long long read_base = total_received_[c] - kLatency;
             for (int i = 0; i < frames; ++i) {
                 const long long o = read_base + i;
                 if (o >= 0) {
-                    out_ch[i] = ola_ring_[c][o & kRingMask];
+                    const float wet = ola_ring_[c][o & kRingMask];
                     ola_ring_[c][o & kRingMask] = 0.0f;
+                    const float dry = in_ring_[c][o & kRingMask];
+                    out_ch[i] = (1.0f - mix_) * dry + mix_ * wet;
                 } else {
                     out_ch[i] = 0.0f;
                 }

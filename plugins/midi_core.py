@@ -38,7 +38,10 @@ class MIDINoteToCV(Node):
     description = (
         "Converts MIDI Note-On / Note-Off messages into monophonic CV tensors "
         "(pitch in Hz, binary gate, and linear velocity) with last-note priority. "
-        "Outputs are (1, BLOCK_SIZE) float32 tensors ready for direct modulation."
+        "Outputs are (1, BLOCK_SIZE) float32 tensors ready for direct modulation. "
+        "Note events are evaluated per audio block: sub-block sample offsets are "
+        "coalesced at block boundaries, so gate/velocity transitions are "
+        "block-quantized (up to ~10.7 ms at 48 kHz)."
     )
 
     def __init__(self, name=""):

@@ -283,3 +283,77 @@ def test_engine_startup_reset_skips_midi_slots():
     assert float(osc.outputs["signal"].buffer[0, 0]) == 0.0
     # MIDI packet untouched (still empty).
     assert midi_node.msg_out.packet.messages == []
+
+def test_midi_input_node_delivers_callback_messages():
+    """The NRT-opened port must be wired with node._midi_callback (passed via
+    mido.open_input(callback=...)), so messages pushed by mido's callback
+    thread flow through the SPSC queue into msg_out.packet on process().
+    Regression: open_input was called without a callback and nothing ever
+    polled the port, so the node could not receive hardware MIDI."""
+    plugin_system.load_plugins("plugins")
+    node = plugin_system.NODE_REGISTRY["MIDIInputNode"]()
+
+    msg = FakeMidoMessage("note_on", note=64, velocity=100)
+    node._midi_callback(msg)   # what mido's callback thread invokes
+    node.process()             # audio-thread drain
+
+    msgs = node.msg_out.packet.messages
+    assert len(msgs) == 1
+    assert msgs[0][0] == 0
+    assert msgs[0][1] is msg
+
+    # Anti-ghosting: the packet is cleared at the top of every process()
+    node.process()
+    assert len(node.msg_out.packet.messages) == 0
+
+
+def test_midi_input_port_open_passes_callback():
+    """_open_port_nrt must hand node._midi_callback to mido.open_input so the
+    port actually invokes it."""
+    plugin_system.load_plugins("plugins")
+    import plugins.midi_devices as md
+    node = plugin_system.NODE_REGISTRY["MIDIInputNode"]()
+    if not md.MIDO_AVAILABLE:
+        pytest.skip("mido not installed")
+
+    captured = {}
+
+    class _FakePort:
+        def close(self):
+            pass
+
+    def fake_open_input(name, callback=None):
+        captured["name"] = name
+        captured["callback"] = callback
+        return _FakePort()
+
+    original = md.mido.open_input
+    md.mido.open_input = fake_open_input
+    try:
+        port, status, epoch = node._open_port_nrt("TestPort", 7)
+    finally:
+        md.mido.open_input = original
+
+    assert captured["name"] == "TestPort"
+    assert captured["callback"] == node._midi_callback
+    assert status.startswith("Active")
+
+
+def test_midi_ports_discarded_on_superseded_nrt_open():
+    """A superseded port-open result must be closed via on_nrt_discarded()
+    instead of leaking the device port."""
+    plugin_system.load_plugins("plugins")
+    import plugins.midi_devices as md
+
+    for class_name, tag in (("MIDIInputNode", "open_input"),
+                            ("MIDIOutputNode", "open_output")):
+        node = plugin_system.NODE_REGISTRY[class_name]()
+        closed = []
+
+        class _FakePort:
+            def close(self):
+                closed.append(True)
+
+        node.on_nrt_discarded(tag, True, (_FakePort(), "Active: x", 5))
+        assert closed == [True], f"{class_name} must close superseded ports"
+

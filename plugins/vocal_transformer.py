@@ -99,10 +99,9 @@ class VocalTransformer(FFINode):
                              help="Preserves natural unvoiced consonants (/s/, /t/, /k/) "
                                   "without pitch artifacts.")
         self.add_float_param("mix", 1.0, 0.0, 1.0,
-                             help="Dry/wet crossfade (0.0 = dry only, 1.0 = transformed). "
-                                  "NOT latency-compensated: below 1.0 this combs the "
-                                  "spectrum because the wet path lags the dry path by "
-                                  "4608 samples (~96 ms).")
+                             help="Dry/wet crossfade (0.0 = dry bypass, 1.0 = transformed "
+                                  "vocal). The dry path is latency-aligned inside the DSP, "
+                                  "so intermediate values crossfade without comb filtering.")
 
     def process(self):
         # Mirrors plugins/filters.py BiquadFilter.process(): replicate the
