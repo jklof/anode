@@ -81,12 +81,19 @@ class MathOp(Node):
                 out.copy_(sig_a).div_(d)
         elif op == 4:    # Min
             if b_conn:
-                torch.minimum(sig_a, sig_b, out=out)
+                # copy_-first: torch.minimum(mono, mono, out=stereo) RESIZES
+                # the out buffer down to (1, BLOCK) (AGENTS.md §2). Broadcast
+                # both operands into full-width buffers first.
+                out.copy_(sig_a)
+                self._tmp.copy_(sig_b)
+                torch.minimum(out, self._tmp, out=out)
             else:
                 out.copy_(sig_a).clamp_(max=scalar)
         elif op == 5:    # Max
             if b_conn:
-                torch.maximum(sig_a, sig_b, out=out)
+                out.copy_(sig_a)
+                self._tmp.copy_(sig_b)
+                torch.maximum(out, self._tmp, out=out)
             else:
                 out.copy_(sig_a).clamp_(min=scalar)
         elif op == 6:    # Invert

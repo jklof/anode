@@ -287,7 +287,19 @@ class BaseAudioDeviceNode(Node):
             # publish state). It never blocks and never touches the stream
             # directly from this callback; the request-id check discards any
             # superseded restart still queued on the pool.
-            self.start()
+            #
+            # Only (re)start when the stream should be running: with the
+            # engine stopped and no active stream, selecting a device must
+            # not open the hardware (the stream opens on engine start via
+            # node.start()). If a stream IS active, switching devices is a
+            # live swap and must proceed.
+            is_running = bool(
+                getattr(self, "graph", None)
+                and getattr(self.graph, "engine", None)
+                and self.graph.engine.running
+            )
+            if is_running or self.stream is not None:
+                self.start()
 
 
 class AudioDeviceInput(BaseAudioDeviceNode):
@@ -303,23 +315,33 @@ class AudioDeviceInput(BaseAudioDeviceNode):
         super().__init__(name)
         self.out = self.add_output("out", help="Live hardware input as a stereo signal (silence on underrun).")
         # Pre-allocated numpy scratch buffer for zero-allocation process()
+        # (engine-thread owned).
         self._numpy_scratch = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+        # Callback-thread-owned scratch: mono->stereo upmix and channel
+        # clamping without per-callback allocations. NEVER shared with
+        # process(), which runs on the engine thread.
+        self._cb_scratch = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
 
     def start(self):
         self._start_stream(sd.InputStream, self._callback)
 
     def _callback(self, indata, frames, time, status):
-        # Handle Mono -> Stereo upmix if necessary
+        # Handle Mono -> Stereo upmix if necessary. Zero-allocation: the
+        # PortAudio callback thread must not allocate per block.
         if indata.shape[1] == self.ring_buffer.channels:
             self.ring_buffer.write(indata)
         elif indata.shape[1] == 1 and self.ring_buffer.channels == 2:
-            expanded = np.hstack([indata, indata])
-            self.ring_buffer.write(expanded)
+            self._cb_scratch[:frames, 0] = indata[:, 0]
+            self._cb_scratch[:frames, 1] = indata[:, 0]
+            self.ring_buffer.write(self._cb_scratch[:frames])
         else:
             min_ch = min(indata.shape[1], self.ring_buffer.channels)
-            temp = np.zeros((frames, self.ring_buffer.channels), dtype=np.float32)
-            temp[:, :min_ch] = indata[:, :min_ch]
-            self.ring_buffer.write(temp)
+            self._cb_scratch[:frames, :min_ch] = indata[:, :min_ch]
+            # Stale samples from a previous callback must not leak into the
+            # unused channels of the reused scratch buffer.
+            if self.ring_buffer.channels > min_ch:
+                self._cb_scratch[:frames, min_ch:] = 0.0
+            self.ring_buffer.write(self._cb_scratch[:frames])
 
     def process(self):
         if self.ring_buffer.read(self._numpy_scratch):

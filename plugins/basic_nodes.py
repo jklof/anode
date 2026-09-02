@@ -220,6 +220,23 @@ try:
         IS_NODE_UI = True
         NODE_CLASS_NAME = "DialNode"
 
+        def _value_range(self):
+            """Normalized [0, 1000] dial maps onto the parameter's min/max
+            metadata (defaults to [0, 1] when absent)."""
+            meta = self.proxy.node_item.params.get("value", {}).get("meta", {})
+            return float(meta.get("min", 0.0)), float(meta.get("max", 1.0))
+
+        def _val_to_dial(self, val):
+            min_v, max_v = self._value_range()
+            span = max_v - min_v
+            if span <= 0:
+                return 0
+            return max(0, min(1000, int(round((val - min_v) / span * 1000))))
+
+        def _dial_to_val(self, val):
+            min_v, max_v = self._value_range()
+            return min_v + (val / 1000.0) * (max_v - min_v)
+
         def __init__(self, node_proxy):
             super().__init__()
             self.proxy = node_proxy
@@ -240,14 +257,14 @@ try:
 
             # Set initial value
             init_val = self.proxy.node_item.params["value"]["value"]
-            self.dial.setValue(int(init_val * 1000))
+            self.dial.setValue(self._val_to_dial(init_val))
             self.label.setText(f"Value: {init_val:.2f}")
 
             self.dial.valueChanged.connect(self.on_dial_changed)
             layout.addWidget(self.dial)
 
         def on_dial_changed(self, val):
-            f_val = val / 1000.0
+            f_val = self._dial_to_val(val)
             self.proxy.set_parameter("value", f_val)
             self.label.setText(f"Value: {f_val:.2f}")
 
@@ -257,7 +274,7 @@ try:
                 self.label.setText(f"Value: {val:.2f}")
                 if not self.dial.isSliderDown():
                     with QSignalBlocker(self.dial):
-                        self.dial.setValue(int(val * 1000))
+                        self.dial.setValue(self._val_to_dial(val))
 
 except ImportError:
     pass

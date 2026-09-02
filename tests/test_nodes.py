@@ -244,3 +244,37 @@ def test_gain_mono_input_does_not_shrink_output_buffer():
     assert gain.out.buffer.shape == (2, 512)
     expected = torch.full_like(gain.out.buffer, 0.5)
     assert torch.allclose(gain.out.buffer, expected)
+
+
+def test_convolution_reverb_start_clears_transport_state():
+    """AGENTS.md §7 reset contract: on transport restart the reverb must not
+    replay the previous session's tail — the convolution history, overlap-add
+    carry, retained last input block and history pointer must be cleared."""
+    plugin_system.load_plugins("plugins")
+    Reverb = plugin_system.NODE_REGISTRY.get("ConvolutionReverb")
+    node = Reverb()
+
+    class _FakePreparedState:
+        def __init__(self):
+            self.input_history = torch.ones(2, 2, 4, dtype=torch.complex64)
+            self.overlap_buffer = torch.full((2, 256), 0.5)
+            self.padding_buffer = torch.full((2, 1024), 0.5)
+            self.history_ptr = 3
+
+    fake = _FakePreparedState()
+    node._prepared_state = fake
+
+    node.start()   # transport restart
+
+    assert float(fake.input_history.abs().max()) == 0.0, \
+        "convolution input history must be cleared on start"
+    assert float(fake.overlap_buffer.abs().max()) == 0.0, \
+        "overlap-add carry must be cleared on start"
+    assert float(fake.padding_buffer.abs().max()) == 0.0, \
+        "retained last input block must be cleared on start"
+    assert fake.history_ptr == 0, "history pointer must reset on start"
+
+    # No prepared state (no IR loaded): start() must be a safe no-op.
+    node._prepared_state = None
+    node.start()
+

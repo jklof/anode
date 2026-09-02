@@ -140,3 +140,41 @@ def test_math_op_no_net_allocation():
     growth, _ = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert growth < 64 * 1024, f"net allocation {growth} bytes over 50 blocks"
+
+
+def test_min_max_mono_inputs_preserve_stereo_buffer():
+    """Regression (AGENTS.md §2 anti-shrink): torch.minimum/maximum with
+    out= silently RESIZE the stereo output buffer down to (1, BLOCK) when
+    both operands are mono. Min/Max must broadcast into the fixed
+    (CHANNELS, BLOCK_SIZE) buffer like every other binary op."""
+    node = make_node()
+    mono_a = torch.full((1, BLOCK_SIZE), 0.4, dtype=DTYPE)
+    mono_b = torch.full((1, BLOCK_SIZE), 0.7, dtype=DTYPE)
+
+    for op_idx, expected in ((4, 0.4), (5, 0.7)):   # Min, Max
+        set_op(node, op_idx)
+        out = process(node, mono_a, mono_b)
+        assert out.shape == (CHANNELS, BLOCK_SIZE), \
+            f"op {op_idx} shrank output buffer to {tuple(out.shape)}"
+        assert torch.allclose(
+            out, torch.full((CHANNELS, BLOCK_SIZE), expected, dtype=DTYPE)), \
+            f"op {op_idx} produced wrong values"
+
+
+def test_min_max_mixed_channels_take_widest_operand():
+    """mono A x stereo B stays stereo and computes elementwise min/max of the
+    broadcast operands (documented channel policy)."""
+    node = make_node()
+    mono_a = torch.full((1, BLOCK_SIZE), 0.4, dtype=DTYPE)
+    stereo_b = torch.full((CHANNELS, BLOCK_SIZE), 0.7, dtype=DTYPE)
+
+    set_op(node, 4)
+    out = process(node, mono_a, stereo_b)
+    assert out.shape == (CHANNELS, BLOCK_SIZE)
+    assert torch.allclose(out, torch.full_like(out, 0.4))
+
+    set_op(node, 5)
+    out = process(node, mono_a, stereo_b)
+    assert out.shape == (CHANNELS, BLOCK_SIZE)
+    assert torch.allclose(out, torch.full_like(out, 0.7))
+

@@ -652,3 +652,100 @@ def test_connect_rejects_outputs_wider_than_engine_channels():
     assert g.connect("g", "out", "wide", "in") is True
     assert len(wide.inputs["in"].connected_outputs) == 1
 
+
+
+def test_audio_device_param_change_does_not_start_stream_when_stopped():
+    """Regression: changing the device with the engine stopped and no active
+    stream must not open the hardware. The stream opens on engine start via
+    node.start(); an already-active stream is a live device swap and still
+    restarts."""
+    from core import Engine as _Engine
+
+    plugin_system.load_plugins("plugins")
+    eng = _Engine()
+    node = plugin_system.NODE_REGISTRY["AudioDeviceInput"]()
+    node.id = "ain"
+    eng.graph.add_node(node)
+
+    node.params["device_index"].set(3)
+    node.sync()
+
+    calls = []
+
+    def _fake_start():
+        calls.append("start")
+
+    original_start = node.start
+    node.start = _fake_start
+
+    try:
+        # Engine stopped, no active stream: device change must NOT start.
+        assert eng.running is False
+        node.on_ui_param_change("device_index")
+        assert calls == [], \
+            "device change while stopped must not start the stream"
+
+        # Positive control: engine running -> a start is requested.
+        eng.running = True
+        try:
+            node.on_ui_param_change("device_index")
+        finally:
+            eng.running = False
+        assert calls == ["start"], \
+            "device change while running must request a stream restart"
+
+        # Positive control 2: engine stopped but a stream is already active
+        # (live device swap continues to work).
+        node.stream = object()
+        calls.clear()
+        node.on_ui_param_change("device_index")
+        assert calls == ["start"], \
+            "device swap with an active stream must still restart"
+        node.stream = None
+    finally:
+        node.start = original_start
+
+
+def test_audio_input_callback_mono_upmix_and_no_allocation():
+    """The PortAudio callback must upmix mono hardware inputs to the stereo
+    ring without per-callback heap allocation (np.hstack/np.zeros were called
+    every block on the callback thread)."""
+    plugin_system.load_plugins("plugins")
+    node = plugin_system.NODE_REGISTRY["AudioDeviceInput"]()
+
+    mono = np.zeros((BLOCK_SIZE, 1), dtype=np.float32)
+    mono[:, 0] = 0.25
+    node._callback(mono, BLOCK_SIZE, None, None)
+
+    scratch = np.zeros((BLOCK_SIZE, 2), dtype=np.float32)
+    assert node.ring_buffer.read(scratch), "callback block must land in the ring"
+    assert np.allclose(scratch[:, 0], scratch[:, 1]), \
+        "mono hardware input must be duplicated to both ring channels"
+    assert np.allclose(scratch[:, 0], 0.25)
+
+    # Multi-channel clamping path: 4-channel hardware into 2-channel ring,
+    # repeated twice so stale scratch content from the first callback would
+    # leak into the second if the unused region were not cleared.
+    quad = np.zeros((BLOCK_SIZE, 4), dtype=np.float32)
+    quad[:, :2] = 0.5
+    quad[:, 2:] = 0.9   # would leak into ring channels if not cleared
+    for _ in range(2):
+        node._callback(quad, BLOCK_SIZE, None, None)
+        assert node.ring_buffer.read(scratch)
+        assert np.allclose(scratch[:, :2], 0.5)
+        assert np.allclose(scratch[:, 2:], 0.0), \
+            "unused ring channels must be zero, not stale scratch content"
+
+    # Steady-state callbacks must not allocate on the callback thread.
+    import gc
+    import tracemalloc
+
+    gc.collect()
+    tracemalloc.start()
+    before, _ = tracemalloc.get_traced_memory()
+    for _ in range(20):
+        node._callback(mono, BLOCK_SIZE, None, None)
+    growth, _ = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert growth < 16 * 1024, f"callback allocated {growth} bytes over 20 blocks"
+

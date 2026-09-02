@@ -265,6 +265,17 @@ class ConvolutionReverb(Node):
             self._status = "Error"
             self._current_filename = "Load Failed"
 
+    def start(self):
+        # Transport restart must not replay the previous session: clear the
+        # convolution history, overlap-add carry and the retained last input
+        # block so no stale reverb tail leaks into the restarted stream
+        # (AGENTS.md §7 reset contract).
+        if self._prepared_state is not None:
+            self._prepared_state.input_history.zero_()
+            self._prepared_state.overlap_buffer.zero_()
+            self._prepared_state.padding_buffer.zero_()
+            self._prepared_state.history_ptr = 0
+
     def get_telemetry(self) -> dict:
         return {"status": self._status, "filename": self._current_filename}
 
