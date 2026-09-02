@@ -749,3 +749,30 @@ def test_audio_input_callback_mono_upmix_and_no_allocation():
     tracemalloc.stop()
     assert growth < 16 * 1024, f"callback allocated {growth} bytes over 20 blocks"
 
+
+def test_audio_device_output_buffers_thread_separated():
+    """process() (engine thread) and _callback() (PortAudio thread) must use
+    separate staging buffers. Regression: both shared one _scratch_buffer — a
+    data race where the producer's copyto and the consumer's ring-read/copy
+    could tear or corrupt audio."""
+    plugin_system.load_plugins("plugins")
+    out = plugin_system.NODE_REGISTRY["AudioDeviceOutput"]()
+
+    assert hasattr(out, "_process_scratch") and hasattr(out, "_cb_scratch")
+    assert out._process_scratch is not out._cb_scratch
+
+    # Engine side: process() writes _process_scratch and pushes the ring.
+    sig = torch.full((CHANNELS, BLOCK_SIZE), 0.25, dtype=torch.float32)
+    out.inp.get_tensor = lambda: sig
+    out.process()
+    assert np.allclose(out._process_scratch[:, 0], 0.25)
+    assert float(out._cb_scratch[0, 0]) == 0.0, \
+        "callback scratch must be untouched by process()"
+
+    # Hardware side: _callback() reads the ring into _cb_scratch and stages
+    # outdata — fully independent of the process-side buffer.
+    outdata = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+    out._callback(outdata, BLOCK_SIZE, None, None)
+    assert np.allclose(outdata, 0.25)
+    assert float(out._cb_scratch[0, 0]) == pytest.approx(0.25)
+    assert out._process_scratch is not out._cb_scratch

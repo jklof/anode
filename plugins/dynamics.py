@@ -123,10 +123,18 @@ class Compressor(FFINode):
         # 5. Channel Logic
         in_channels = in_tensor.shape[0]
         out_channels = out_tensor.shape[0]
-        process_channels = min(in_channels, out_channels)
-
-        if process_channels < out_channels:
-            out_tensor[process_channels:].zero_()
+        # Mono -> stereo duplication (AGENTS.md §2): a mono source into a
+        # stereo node must broadcast to BOTH output channels, not mute the
+        # right channel. Mirrors FFINode.process()'s adaptation policy.
+        if in_channels == 1 and out_channels == 2:
+            self._ffi_in_buffer[0].copy_(in_tensor[0])
+            self._ffi_in_buffer[1].copy_(in_tensor[0])
+            in_tensor = self._ffi_in_buffer
+            process_channels = 2
+        else:
+            process_channels = min(in_channels, out_channels)
+            if process_channels < out_channels:
+                out_tensor[process_channels:].zero_()
 
         in_ptr = ctypes.cast(in_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
         out_ptr = ctypes.cast(out_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))

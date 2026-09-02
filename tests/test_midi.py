@@ -357,3 +357,21 @@ def test_midi_ports_discarded_on_superseded_nrt_open():
         node.on_nrt_discarded(tag, True, (_FakePort(), "Active: x", 5))
         assert closed == [True], f"{class_name} must close superseded ports"
 
+def test_midi_note_to_cv_cold_start_no_seed_glide():
+    """A note played after silence must not portamento from the 440 Hz seed:
+    with glide enabled the first note should snap to its own pitch instead of
+    sweeping down/up from 440 Hz."""
+    plugin_system.load_plugins("plugins")
+    node = plugin_system.NODE_REGISTRY["MIDINoteToCV"]()
+    node.params["glide_ms"].set(50.0)
+    node.sync()
+
+    note = 36                                   # C2 ~= 65.41 Hz
+    target_hz = 440.0 * 2 ** ((note - 69) / 12.0)
+    fake_out = _make_midi_out((0, FakeMidoMessage("note_on", note, 100)))
+    node.midi_in.connected_outputs = [fake_out]
+    node.process()
+
+    assert node.pitch_out.buffer[0, 0].item() == pytest.approx(target_hz, abs=0.01), \
+        "first note after silence must start at its own pitch (no 440 Hz seed glide)"
+    assert node.pitch_out.buffer[0, -1].item() == pytest.approx(target_hz, abs=0.01)

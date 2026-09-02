@@ -418,3 +418,19 @@ def test_autogain_window_reads_recent_ring_entries():
     assert max(stale_prefix) < 0.05, \
         "linear prefix holds only stale quiet data (the old bug's read window)"
 
+def test_compressor_mono_input_duplicated_to_stereo():
+    """AGENTS.md §2 channel adaptation: a mono input into the stereo
+    Compressor must broadcast to BOTH output channels. Regression: the
+    compressor computed process_channels = min(1, 2) = 1, zeroed the right
+    channel, and called the native process with channels=1, muting it."""
+    node = make_node("Compressor")
+    set_params(node, thresh=-60.0, ratio=1.0, knee=0.0, attack=1.0,
+               release=10.0, makeup=0.0)
+
+    mono = torch.full((1, BLOCK_SIZE), 0.5, dtype=DTYPE)
+    out = process_block(node, mono)
+
+    assert out.shape == (CHANNELS, BLOCK_SIZE)
+    assert torch.equal(out[0], out[1]), \
+        "mono input must be duplicated to both output channels"
+    assert float(out[0].abs().max()) > 1e-3, "right channel was muted"

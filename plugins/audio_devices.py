@@ -365,9 +365,14 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         self.inp = self.add_input("audio_in", help="Signal to play through the selected output device.")
         self._tick_callback = None
 
-        # PRE-ALLOCATION: Create a Numpy array in Interleaved format [Block, Channels]
-        # We will copy into this, avoiding new object creation every frame.
-        self._scratch_buffer = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+        # Dedicated staging buffers, one per thread: the engine thread
+        # (process) and the PortAudio callback thread (_callback) must never
+        # share one mutable NumPy array — concurrent copyto / ring-read / copy
+        # on the same buffer is a data race that can tear or corrupt audio.
+        # The ring buffer copies data in/out, so each side only needs its own
+        # staging array.
+        self._process_scratch = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
+        self._cb_scratch = np.zeros((BLOCK_SIZE, CHANNELS), dtype=np.float32)
 
     def start_clock(self, tick_callback):
         self._tick_callback = tick_callback
@@ -384,7 +389,7 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         if self._tick_callback:
             self._tick_callback()
 
-        success = self.ring_buffer.read(self._scratch_buffer)
+        success = self.ring_buffer.read(self._cb_scratch)
 
         if not success:
             outdata.fill(0)
@@ -393,12 +398,12 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         hw_channels = outdata.shape[1]
 
         if hw_channels == CHANNELS:
-            outdata[:] = self._scratch_buffer
+            outdata[:] = self._cb_scratch
         elif hw_channels == 1:
-            outdata[:, 0] = (self._scratch_buffer[:, 0] + self._scratch_buffer[:, 1]) * 0.5
+            outdata[:, 0] = (self._cb_scratch[:, 0] + self._cb_scratch[:, 1]) * 0.5
         else:
             k = min(hw_channels, CHANNELS)
-            outdata[:, :k] = self._scratch_buffer[:, :k]
+            outdata[:, :k] = self._cb_scratch[:, :k]
             # Anti-ghosting: channels beyond the engine format must still be
             # written every callback; PortAudio buffers are not zeroed.
             if hw_channels > k:
@@ -417,11 +422,11 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
         # Option A: If tensor is strictly [2, 512]
         # torch.t() creates a transposed view, .numpy() creates a view of that.
         # copyto is the actual data movement (interleaving).
-        np.copyto(self._scratch_buffer, tensor_data.numpy().T)
+        np.copyto(self._process_scratch, tensor_data.numpy().T)
 
         # 3. Write to Ring Buffer
         # Now we are passing a persistent pointer, not a new object
-        self.ring_buffer.write(self._scratch_buffer)
+        self.ring_buffer.write(self._process_scratch)
 
 
 # ==============================================================================

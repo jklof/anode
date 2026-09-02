@@ -177,3 +177,34 @@ def test_node_proxy_push_custom_event_routes_to_engine_node(qapp):
     # A missing node must report False, never raise.
     missing = NodeProxy("does_not_exist", _FakeController(), None, _FakeItem())
     assert missing.push_custom_event(("note_off", 60, 0)) is False
+
+
+def test_midi_keyboard_telemetry_pushes_only_on_change():
+    """Telemetry (dict+list) must be pushed only when the active-note set
+    changes — not on every audio block (93.75 timed pushes/sec was constant
+    heap churn)."""
+    from plugins.midi_keyboard import MIDIKeyboardNode
+
+    node = MIDIKeyboardNode()
+
+    # Steady state (no events): nothing pushed.
+    node.process()
+    frame, ok = node.monitor_queue.try_pop()
+    assert not ok
+
+    # UI note-on event -> exactly one telemetry push.
+    node._ui_queue.try_push(("note_on", 60, 100))
+    node.process()
+    frame, ok = node.monitor_queue.try_pop()
+    assert ok and frame == {"active_notes": [60]}
+
+    # Further quiet blocks: no additional pushes.
+    node.process()
+    frame, ok = node.monitor_queue.try_pop()
+    assert not ok
+
+    # Note-off -> push announces the empty set so the UI clears the keys.
+    node._ui_queue.try_push(("note_off", 60, 0))
+    node.process()
+    frame, ok = node.monitor_queue.try_pop()
+    assert ok and frame == {"active_notes": []}

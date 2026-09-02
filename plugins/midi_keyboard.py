@@ -199,9 +199,11 @@ class MIDIKeyboardNode(Node):
         self._ui_queue = SPSCRingBuffer(capacity=128)
         self.monitor_queue = TelemetryDictRingBuffer(capacity=4)
         self._active_notes = set()
+        self._notes_dirty = False
 
     def start(self):
         self._active_notes.clear()
+        self._notes_dirty = True
 
     def process(self):
         # Enforce output packet clearing contract
@@ -214,8 +216,10 @@ class MIDIKeyboardNode(Node):
             for offset, msg in in_pkt.messages:
                 if is_note_on(msg):
                     self._active_notes.add(msg.note)
+                    self._notes_dirty = True
                 elif is_note_off(msg):
                     self._active_notes.discard(msg.note)
+                    self._notes_dirty = True
 
         # 2. Drain UI events
         while True:
@@ -228,15 +232,21 @@ class MIDIKeyboardNode(Node):
                 self.midi_out.packet.messages.append((0, msg))
             if ev_type == "note_on" and vel > 0:
                 self._active_notes.add(note)
+                self._notes_dirty = True
             else:
                 self._active_notes.discard(note)
+                self._notes_dirty = True
 
         # 3. Sort merged messages chronologically
         if len(self.midi_out.packet.messages) > 1:
             self.midi_out.packet.messages.sort(key=lambda x: x[0])
 
-        # 4. Push active note mask to telemetry buffer
-        self.monitor_queue.push({"active_notes": list(self._active_notes)})
+        # 4. Push active note mask to telemetry buffer only on change
+        #    (zero allocation in the steady state: no dict/list per block
+        #    when nothing changed).
+        if self._notes_dirty:
+            self.monitor_queue.push({"active_notes": list(self._active_notes)})
+            self._notes_dirty = False
 
     def get_telemetry(self) -> dict:
         latest, ok = self.monitor_queue.try_pop()

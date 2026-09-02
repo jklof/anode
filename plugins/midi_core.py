@@ -73,6 +73,7 @@ class MIDINoteToCV(Node):
 
     def process(self):
         packet = self.midi_in.get_packet()
+        was_idle = (self._current_gate == 0.0)
 
         # Update note stack
         for offset, msg in packet.messages:
@@ -88,6 +89,11 @@ class MIDINoteToCV(Node):
             self._target_pitch_hz = midi_to_hz(active_note)
             self._current_gate = 1.0
             self._current_velocity = active_vel
+            if was_idle:
+                # Cold start / new note after a gap: do not portamento from the
+                # 440 Hz seed (or a stale previous pitch) — snap so the first
+                # note sounds immediately at its pitch instead of sweeping.
+                self._last_pitch_hz = self._target_pitch_hz
         else:
             self._current_gate = 0.0
 

@@ -347,3 +347,34 @@ def test_biquad_shelf_boost_and_cut_accuracy():
         assert abs(high) <= 1.0, \
             f"{gain} dB shelf at 8 kHz measured {high:.2f} dB (expected ~0 dB)"
 
+def test_biquad_mod_cutoff_disconnect_restores_param():
+    """Disconnecting mod_cutoff must re-push the staged cutoff parameter.
+    Regression: without disconnect tracking the native filter stayed stuck on
+    the last modulated frequency (_sync_params_to_cpp saw nothing dirty after
+    the wire was removed). Mirrors the KarplusStrong freq_in contract."""
+    bq = make_node("BiquadFilter")
+    set_params(bq, type=0, cutoff=1000.0, q=0.707)
+
+    calls = []
+    orig_set_param = bq.lib.set_param
+    bq.lib.set_param = lambda h, i, v: (calls.append((i, v)), orig_set_param(h, i, v))[1]
+
+    # Simulate mod_cutoff connected with a 4000 Hz block.
+    mod = torch.full((1, BLOCK_SIZE), 4000.0, dtype=DTYPE)
+    bq.inputs["mod_cutoff"].get_tensor = lambda: mod
+    bq.inputs["mod_cutoff"].connected_outputs = [object()]
+
+    feed_tone(bq, 100.0)
+    assert calls and calls[-1][0] == bq.PARAM_MAP["cutoff"] \
+        and calls[-1][1] == pytest.approx(4000.0), \
+        "modulated cutoff must be pushed while connected"
+
+    # Disconnect: process must re-push the staged 1000 Hz cutoff.
+    del bq.inputs["mod_cutoff"].get_tensor
+    bq.inputs["mod_cutoff"].connected_outputs = []
+    calls.clear()
+    feed_tone(bq, 100.0)
+    cutoff_calls = [v for (i, v) in calls if i == bq.PARAM_MAP["cutoff"]]
+    assert cutoff_calls and cutoff_calls[-1] == pytest.approx(1000.0), \
+        f"disconnect did not restore staged cutoff: {cutoff_calls}"
+    assert not bq._was_cutoff_mod_connected

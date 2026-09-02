@@ -57,6 +57,7 @@ class BiquadFilter(FFINode):
         self.in_mod = self.add_input("mod_cutoff",
                                      help="Audio-rate cutoff modulation (Hz, uses the mean of the block). Unconnected: uses 'cutoff' parameter.")
         self.out = self.add_output("out", channels=CHANNELS, help="Filtered stereo output.")
+        self._was_cutoff_mod_connected = False
 
     def process(self):
         if not self.lib or not self.dsp_handle:
@@ -70,6 +71,14 @@ class BiquadFilter(FFINode):
             sig = self.in_mod.get_tensor()
             eff = float(sig[0].mean().item())
             self.lib.set_param(self.dsp_handle, self.PARAM_MAP["cutoff"], eff)
+            self._was_cutoff_mod_connected = True
+        elif self._was_cutoff_mod_connected:
+            # Disconnect: _sync_params_to_cpp() sees nothing dirty, so the
+            # native filter would otherwise stay stuck on the last modulated
+            # cutoff. Re-push the staged parameter once on the disconnect.
+            self.lib.set_param(self.dsp_handle, self.PARAM_MAP["cutoff"],
+                               float(self.params["cutoff"].value))
+            self._was_cutoff_mod_connected = False
 
         # 3. Preprocess and call native process
         raw_tensor = self.inp.get_tensor()
