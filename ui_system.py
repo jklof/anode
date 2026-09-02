@@ -1226,7 +1226,8 @@ class NodeHelpWidget(QWidget):
         <ul>
             <li><b>Left Click Drag:</b> Move nodes / create wire from socket</li>
             <li><b>Middle Click / Alt+Left Drag:</b> Pan canvas</li>
-            <li><b>Ctrl + Mouse Wheel:</b> Zoom in/out</li>
+            <li><b>Mouse Wheel:</b> Zoom in/out</li>
+            <li><b>Ctrl + Mouse Wheel:</b> Scroll canvas</li>
             <li><b>Ctrl + 0:</b> Zoom to fit</li>
             <li><b>Delete / Backspace:</b> Remove selected nodes &amp; wires</li>
             <li><b>Ctrl + C / Ctrl + V:</b> Copy &amp; paste selection</li>

@@ -131,3 +131,55 @@ used_out = a
 
     assert torch.allclose(node.outputs["used_out"].buffer, sig)
     assert node.outputs["unused_out"].buffer.abs().max().item() == 0.0
+
+
+def test_script_partial_frames_zero_fill_trailing_samples():
+    """Anti-ghosting (AGENTS.md §2): a script output with fewer frames than
+    BLOCK_SIZE must leave no stale samples in the trailing part of the
+    output buffer."""
+    plugin_system.load_plugins("plugins")
+    ScriptClass = plugin_system.NODE_REGISTRY.get("ScriptNode")
+    node = ScriptClass()
+
+    code = """
+outputs = ['short_out']
+short_out = torch.ones(1, 256)
+"""
+    node.params["code"].set(code)
+    node.sync()
+    node.on_ui_param_change("code")
+    assert "short_out" in node.outputs
+
+    # Pre-fill with stale data so ghosting would be visible.
+    node.outputs["short_out"].buffer.fill_(0.75)
+    node.process()
+
+    out = node.outputs["short_out"].buffer
+    assert torch.equal(out[0, :256], torch.ones(256, dtype=torch.float32)), \
+        "first 256 samples must carry the script value"
+    assert float(out[0, 256:].abs().max()) == 0.0, \
+        "trailing samples of a short script output must be zeroed (no ghosting)"
+
+
+def test_script_partial_frames_trailing_channels_cleared():
+    """A short output (fewer frames AND fewer channels than the buffer) must
+    zero both the trailing-frame and trailing-channel regions."""
+    plugin_system.load_plugins("plugins")
+    ScriptClass = plugin_system.NODE_REGISTRY.get("ScriptNode")
+    node = ScriptClass()
+
+    code = """
+outputs = ['short_out']
+short_out = torch.full((1, 128), 0.5)
+"""
+    node.params["code"].set(code)
+    node.sync()
+    node.on_ui_param_change("code")
+    assert "short_out" in node.outputs
+
+    node.outputs["short_out"].buffer.fill_(0.75)
+    node.process()
+
+    out = node.outputs["short_out"].buffer
+    assert torch.equal(out[0, :128], torch.full((128,), 0.5, dtype=torch.float32))
+    assert float(out[0, 128:].abs().max()) == 0.0

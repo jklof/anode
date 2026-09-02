@@ -106,6 +106,13 @@ public:
                 // Fractional delay read with linear interpolation
                 float read_pos = static_cast<float>(write_pos_[c]) - eff_delay;
                 while (read_pos < 0.0f) read_pos += static_cast<float>(DELAY_CAPACITY);
+                // Float rounding can land exactly on DELAY_CAPACITY (e.g.
+                // -2^-12 + 4800 ties and rounds up to 4800), leaving idx0
+                // wrapped to 0 while frac stays ~4800: the interpolation
+                // weights explode and the feedback loop blows up. Wrap
+                // symmetrically.
+                while (read_pos >= static_cast<float>(DELAY_CAPACITY))
+                    read_pos -= static_cast<float>(DELAY_CAPACITY);
                 int idx0 = static_cast<int>(read_pos) % DELAY_CAPACITY;
                 int idx1 = (idx0 + 1) % DELAY_CAPACITY;
                 float frac = read_pos - static_cast<float>(idx0);

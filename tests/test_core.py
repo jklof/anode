@@ -749,3 +749,22 @@ def test_app_controller_delete_node_single_unselected_node():
         assert "n1" in ctl.engine.graph.node_map
     finally:
         ctl.poll_timer.stop()
+
+
+def test_telemetry_dict_ring_buffer_no_stale_keys():
+    """Regression: push() must clear the reused slot dict before updating it,
+    otherwise keys from earlier frames leak into the frame the consumer pops
+    when the pushed dicts vary in keys."""
+    from base import TelemetryDictRingBuffer
+
+    rb = TelemetryDictRingBuffer(capacity=4)
+    assert rb.push({"rms": 0.5, "peak": 0.9})
+    assert rb.push({"rms": 0.3})
+
+    latest = rb.pop_latest()
+    assert latest == {"rms": 0.3}, f"stale keys leaked: {latest}"
+
+    # Empty dict must fully replace the previous frame's keys.
+    assert rb.push({})
+    assert rb.pop_latest() == {}
+

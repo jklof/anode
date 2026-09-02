@@ -240,5 +240,40 @@ def test_karplus_no_net_allocation():
         process_block(node, silence)
     growth, _ = tracemalloc.get_traced_memory()
     tracemalloc.stop()
-
     assert growth < 64 * 1024, f"net allocation {growth} bytes over 50 blocks"
+
+
+def test_karplus_fractional_delay_boundary_stability():
+    """Regression: the fractional read wrap must guard against float rounding
+    landing exactly on DELAY_CAPACITY. With a float32 effective delay of
+    2398 + 2**-12, read_pos = -2**-12 + 4800 is an exact tie that rounds up
+    to 4800.0, so idx0 wraps to 0 while frac stays 4800 and the linear
+    interpolation weights explode the feedback loop (inf/NaN)."""
+    # Replicate the native float32 arithmetic:
+    #   d_filter  = damping / (1 - damping + 0.05)   (damping = 0.5)
+    #   eff_delay = 48000/freq - d_filter - 0.5
+    d_filter = np.float32(0.5) / (np.float32(1.0) - np.float32(0.5) + np.float32(0.05))
+    target = float(np.float32(2398.0) + np.float32(2.0 ** -12))
+    base = 48000.0 / (target + float(d_filter) + 0.5)
+
+    freq = None
+    for delta in np.arange(-0.05, 0.05, 0.00005):
+        cand = np.float32(base + delta)
+        eff = np.float32(np.float32(48000.0) / cand) - d_filter - np.float32(0.5)
+        if float(eff) == target:
+            freq = float(cand)
+            break
+    assert freq is not None, "could not craft a boundary-delay frequency"
+
+    node = make_node()
+    set_params(node, freq=freq, damping=0.5, brightness=0.8, decay=1.0)
+
+    gate = torch.full((CHANNELS, BLOCK_SIZE), 1.0, dtype=DTYPE)
+    silence = torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE)
+    peak = 0.0
+    for blk in range(30):
+        out = process_block(node, gate if blk == 0 else silence)
+        assert torch.isfinite(out).all(), \
+            f"output became non-finite at block {blk} (wrap hazard)"
+        peak = max(peak, float(out.abs().max()))
+    assert peak < 1000.0, f"interpolation weights exploded: peak {peak}"

@@ -177,3 +177,31 @@ def test_engine_load_respects_clockless_patch():
     finally:
         plugin_system.NODE_REGISTRY.pop("_TestClockNode", None)
 
+
+
+def test_parameter_set_stores_native_python_scalars():
+    """Parameter.set() must store native Python scalars, not numpy scalars
+    (np.clip() returned np.float64 / np.int64 which leaked into snapshots,
+    telemetry and UI state). Values must remain JSON-serializable with the
+    plain stdlib encoder."""
+    import numpy as np
+    from base import Parameter
+
+    p = Parameter(0.5, "float", min=0.0, max=1.0)
+    p.set(np.float64(0.7))
+    p.sync()
+    assert type(p.value) is float and p.value == 0.7
+    json.dumps({"v": p.value})
+
+    # Clamping still applies (and clamped results stay native floats)
+    p.set(2.5)
+    p.sync()
+    assert type(p.value) is float and p.value == 1.0
+    json.dumps({"v": p.value})
+
+    q = Parameter(5, "int", min=0, max=10)
+    q.set(7.9)
+    q.sync()
+    assert type(q.value) is int and q.value == 7
+    json.dumps({"v": q.value})
+

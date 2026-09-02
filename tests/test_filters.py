@@ -328,3 +328,22 @@ def test_biquad_mono_input_duplicated_to_stereo():
     assert torch.isfinite(node.out.buffer).all()
     assert torch.allclose(node.out.buffer[0], node.out.buffer[1])
     assert node.out.buffer[1].abs().max() > 1e-3
+
+
+def test_biquad_shelf_boost_and_cut_accuracy():
+    """Stronger shelf settings than test_biquad_shelf_gain: both +12 dB and
+    -12 dB must realize the RBJ asymptote below the corner and unity above
+    it, for either polarity. A sign error in the shelf denominator
+    coefficients (a2/a0) would skew the poles and the curve."""
+    bq = make_node("BiquadFilter")
+    for gain in (12.0, -12.0):
+        set_params(bq, type=5, cutoff=500.0, q=0.707, gain_db=gain)
+
+        low = gain_db(feed_tone(bq, 100.0), 0.5)
+        assert abs(low - gain) <= 0.75, \
+            f"{gain} dB shelf at 100 Hz measured {low:.2f} dB"
+
+        high = gain_db(feed_tone(bq, 8000.0), 0.5)
+        assert abs(high) <= 1.0, \
+            f"{gain} dB shelf at 8 kHz measured {high:.2f} dB (expected ~0 dB)"
+

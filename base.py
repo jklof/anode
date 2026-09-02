@@ -82,7 +82,11 @@ class TelemetryDictRingBuffer:
         next_head = (self.head + 1) % self.capacity
         if next_head == self.tail:
             return False
-        self.slots[self.head].update(data_dict)
+        slot = self.slots[self.head]
+        # Slots are reused: keys from earlier frames must not leak into the
+        # frame the consumer reads (telemetry dicts may vary in keys).
+        slot.clear()
+        slot.update(data_dict)
         self.head = next_head
         return True
 
@@ -302,9 +306,16 @@ class Parameter:
 
     def set(self, val: Any):
         if self.type == "float":
-            self._staging = np.clip(float(val), self.meta.get("min", 0.0), self.meta.get("max", 1.0))
+            # Pure-Python clamp: np.clip() stores a numpy.float64 scalar,
+            # which leaks numpy types into snapshots/telemetry/UI. Keep
+            # parameter values as native Python scalars.
+            min_v = float(self.meta.get("min", 0.0))
+            max_v = float(self.meta.get("max", 1.0))
+            self._staging = min(max(float(val), min_v), max_v)
         elif self.type == "int":
-            self._staging = int(np.clip(val, self.meta.get("min", 0), self.meta.get("max", 100)))
+            min_v = int(self.meta.get("min", 0))
+            max_v = int(self.meta.get("max", 100))
+            self._staging = min(max(int(val), min_v), max_v)
         elif self.type == "bool":
             self._staging = bool(val)
         elif self.type == "menu":

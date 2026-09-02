@@ -258,6 +258,11 @@ class ScriptNode(Node):
                             ch_to_copy = min(out_c, v.shape[0])
                             frames_to_copy = min(out_f, v.shape[1])
                             out.buffer[:ch_to_copy, :frames_to_copy].copy_(v[:ch_to_copy, :frames_to_copy])
+                            # Anti-ghosting: a short frame count must not
+                            # leave stale samples in the trailing part of
+                            # the buffer.
+                            if frames_to_copy < out_f:
+                                out.buffer[:ch_to_copy, frames_to_copy:].zero_()
                             if ch_to_copy < out_c:
                                 out.buffer[ch_to_copy:].zero_()
                     elif isinstance(val, (float, int, bool)):
