@@ -1094,6 +1094,22 @@ class NodeItem(QGraphicsObject):
         if self.can_be_master:
             menu.addAction("Set Master Clock", lambda: self.controller.set_master_clock(self.nid))
 
+        # Node-declared macro presets (e.g. VocalTransformer's gender
+        # transformation presets). Applied through controller.set_parameter
+        # so every value goes through the canonical staged -> engine command
+        # path; the UI knob widgets refresh via on_parameter_update when the
+        # engine acknowledges each change.
+        node_cls = plugin_system.NODE_REGISTRY.get(self.node_type)
+        presets = getattr(node_cls, "PRESETS", None)
+        if presets:
+            preset_menu = menu.addMenu("Presets")
+            for preset_name, preset_values in presets.items():
+                def apply_preset(values=preset_values):
+                    for pname, value in values.items():
+                        if pname in self.params:
+                            self.controller.set_parameter(self.nid, pname, value)
+                preset_menu.addAction(preset_name, apply_preset)
+
         menu.addAction("Node Reference & Help", lambda: self.scene().nodeHelpRequested.emit(self.node_type))
 
         def delete_action():

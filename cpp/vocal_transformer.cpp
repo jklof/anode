@@ -2,14 +2,23 @@
 //
 // Studio-grade vocal pitch / formant / gender transformer:
 //   - resampled-analysis-frame pitch shifting (frame reads at stride ratio)
-//   - 1024-pt True-Envelope estimation (Roebel-Rodet, SYMMETRIC quefrency
-//     lifter with formant-bandwidth-adaptive cutoff)
-//   - same-grid peak-locked phase vocoder (Laroche-Dolson), unvoiced fallback
-//   - formant-preserving envelope replacement + asymmetric multi-band VTLN warp
-//     (F1 decoupled; precomputed spectral-tilt & H1-harmonic shaping)
-//   - raised-cosine sibilant bypass (3.5-5.5 kHz) blending COMPLEX bins
-//   - tract-shaped 1.5-7 kHz xorshift32 aspiration noise (deterministic, RT-safe)
-//   - ring-buffer OLA with FIXED emission latency (kLatency = 4608 samples = 96 ms)
+//   - 2048-pt True-Envelope estimation (Roebel-Rodet, SYMMETRIC quefrency
+//     lifter with formant-bandwidth-adaptive cutoff). 2048 pts at 48 kHz
+//     gives 23.4 Hz bin spacing so male harmonics (80-130 Hz F0) resolve
+//     cleanly — 1024 pts smeared adjacent harmonics into one another.
+//   - same-grid peak-locked phase vocoder (Laroche-Dolson), prominence-
+//     gated peaks, unvoiced fallback
+//   - formant-preserving envelope replacement + piecewise-linear knee VTLN
+//     warp (F1 decoupled; log-octave spectral tilt, dynamic H1 harmonic
+//     boost on the first detected spectral peak)
+//   - voiced/unvoiced-gated sibilant bypass (3.5-5.5 kHz raised cosine,
+//     complex-bin blend) — dry sibilants only mix on UNVOICED frames so
+//     vowels never comb-filter against the pitch-shifted spectrum
+//   - tract-shaped 1.5-7 kHz xorshift32 aspiration noise scaled by the
+//     spectral ENVELOPE (fills valleys between harmonics; deterministic,
+//     RT-safe)
+//   - ring-buffer OLA with FIXED emission latency (kLatency = 9216 samples
+//     = 192 ms @ 48 kHz)
 //
 // mix = 0 is a bit-exact memcpy bypass; set_param(mix) clears transient state on
 // bypass-boundary transitions (anti-ghosting). All ring indices are wrapped into
@@ -31,23 +40,26 @@
 
 namespace {
 
-constexpr int   kFFT = 1024;
-constexpr int   kHop = 256;
-constexpr int   kHalf = 513;              // real frequency bins incl. DC + Nyquist
-constexpr int   kLifter = 32;
+constexpr int   kFFT = 2048;              // 42.7 ms window: resolves male harmonics
+constexpr int   kHop = 256;               // 87.5% overlap
+constexpr int   kHalf = 1025;             // real frequency bins incl. DC + Nyquist
+constexpr int   kLifter = 48;             // wider cepstral lifter for 2048 bins
 constexpr int   kIters = 3;
 constexpr int   kMaxChannels = 2;
-constexpr int   kRingSize = 8192;         // input history + OLA ring (power of 2)
+constexpr int   kRingSize = 16384;        // input history + OLA ring (power of 2;
+                                          // must exceed kLatency + kFFT)
 constexpr int   kRingMask = kRingSize - 1;
 // Fixed emission latency: output block k reads ring positions L behind the
-// input stream. Frame m spans 1024*ratio input samples (ratio <= 4 at +-24 st)
+// input stream. Frame m spans 2048*ratio input samples (ratio <= 4 at +-24 st)
 // and output sample o is complete once frame floor(o/256) has been processed,
-// so L >= 512 + 1024*4 = 4608 keeps every emitted sample fully accumulated.
-constexpr long long kLatency = 4608;
+// so L >= 1024 + 2048*4 = 9216 keeps every emitted sample fully accumulated.
+constexpr long long kLatency = 9216;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTwoPi = 6.28318530717958647692f;
-constexpr float kXoverLowHz = 3500.0f;
+constexpr float kXoverLowHz = 3500.0f;    // sibilant bypass raised-cosine band
 constexpr float kXoverHighHz = 5500.0f;
+constexpr float kVtlnKneeHz = 4500.0f;    // piecewise-linear VTLN knee
+constexpr float kH1MaxHz = 400.0f;        // dynamic H1 boost applies below this
 constexpr unsigned int kRngSeed = 0x1D872B41u;
 
 inline float wrap_phase(float x) {
@@ -84,9 +96,9 @@ public:
             case 1: formant_st_ = std::max(-24.0f, std::min(24.0f, v)); break;
             case 2:
                 gender_morph_ = std::max(-1.0f, std::min(1.0f, v));
-                // VTLN warp buckets, spectral tilt, and H1 emphasis all depend
+                // VTLN warp buckets and spectral tilt depend
                 // only on gender_morph; rebuild every table here (param-change
-                // path) instead of recomputing 513 atan/sin/cos/pow per frame
+                // path) instead of recomputing 1025 log2/pow per frame
                 // inside replace_envelope()/synthesize().
                 recompute_tables();
                 break;
@@ -141,9 +153,9 @@ public:
             total_received_[c] += frames;
 
             // Process every frame whose input span is fully available.
-            // Frame m starts at input position 256*m and spans 1024*ratio
+            // Frame m starts at input position 256*m and spans 2048*ratio
             // input samples — the pitch shift happens in the frame read.
-            while (256.0 * (double)frame_index_[c] + 1024.0 * (double)ratio
+            while (256.0 * (double)frame_index_[c] + 2048.0 * (double)ratio
                    <= (double)total_received_[c] + 1e-6) {
                 process_frame(c, ratio);
             }
@@ -234,10 +246,16 @@ private:
     }
 
     void build_tables() {
+        // Synthesis window normalization: the effective OLA window is
+        // analysis*synthesis = hann^2, whose COLA sum at hop H is
+        // (N/H)*0.375 (exact for Hann^2 at any N/H integer ratio).
+        // H = N/4 -> 1.5, H = N/8 (2048/256) -> 3.0.
+        const float cola = static_cast<float>(kFFT) / static_cast<float>(kHop)
+                           * 0.375f;
         for (int i = 0; i < kFFT; ++i) {
             const float w = 0.5f - 0.5f * std::cos(kTwoPi * static_cast<float>(i) / kFFT);
             window_[i] = w;
-            synth_window_[i] = w / 1.5f;
+            synth_window_[i] = w / cola;
         }
         int bits = 0;
         while ((1 << bits) < kFFT) ++bits;
@@ -253,52 +271,74 @@ private:
     }
 
     // Precompute every parameter-dependent spectral table:
-    //   vtln_warp_bin_[k]   — asymmetric multi-band VTLN allpass warp bucket
-    //                         (source bin -> destination position). The F1
-    //                         region (< 1 kHz) warps at reduced intensity so
-    //                         the disproportionately long adult-male pharynx
-    //                         shifts F2/F3 more than F1; identity at neutral.
-    //   excitation_shaper_[k] — spectral tilt (clamped to +-8 dB) times H1
-    //                         harmonic emphasis (gated strictly off DC). Kills
-    //                         the buzzy/pinched quality on upward shifts and
-    //                         dullness on downward shifts.
+    //   vtln_warp_bin_[k]   — piecewise-linear knee VTLN warp bucket (source
+    //                         bin -> destination position). Formants shift
+    //                         linearly below kVtlnKneeHz (4.5 kHz, where
+    //                         formant correction matters most) and compress
+    //                         smoothly to Nyquist above it, avoiding the
+    //                         "talking through a pipe" resonance of bilinear
+    //                         allpass warping. The F1 region (< 1 kHz) warps
+    //                         at reduced intensity so the disproportionately
+    //                         long adult-male pharynx shifts F2/F3 more than
+    //                         F1; identity at neutral.
+    //   excitation_shaper_[k] — logarithmic (dB/octave) spectral tilt anchored
+    //                         at 1 kHz, clamped to +-10 dB. Human spectral
+    //                         slope is logarithmic in octaves, not linear in
+    //                         Hz, so this keeps the tilt audible in the
+    //                         1-3 kHz speech-intelligence band.
     // Depends only on gender_morph_ / sr_; rebuilt on param or rate change.
     void recompute_tables() {
-        const float alpha_base = gender_morph_ * 0.25f;
         const float bin_hz = sr_ / static_cast<float>(kFFT);
+        // Warp ratio: +1 (feminine) => ~+3 st tract shortening (upward
+        // formant shift), -1 (masculine) => ~-3 st tract lengthening.
+        const float warp_ratio = std::pow(2.0f, gender_morph_ * 0.25f);
+        const float f_nyq = sr_ * 0.5f;
+        // Compression slope above the knee keeps the map monotonic and
+        // Nyquist-preserving: f_knee_target = knee*ratio, then linear to Nyq.
+        const float knee_target = kVtlnKneeHz * warp_ratio;
+        const float hf_slope = (f_nyq - knee_target) / (f_nyq - kVtlnKneeHz);
+        // Gender morph: +1 (fem) adds -2.5 dB/oct (softer, leaking glottal
+        // source), -1 (masc) adds +2.5 dB/oct (sharper, buzzy closure).
+        const float tilt_db_per_oct = -gender_morph_ * 2.5f;
 
         for (int k = 0; k < kHalf; ++k) {
             const float f_hz = static_cast<float>(k) * bin_hz;
 
-            // 1. Asymmetric multi-band VTLN warp table.
-            if (alpha_base == 0.0f) {
+            // 1. Piecewise-linear knee VTLN warp table.
+            if (warp_ratio == 1.0f) {
                 vtln_warp_bin_[k] = static_cast<float>(k);
             } else {
-                float alpha = alpha_base;
-                if (f_hz < 1000.0f) {
-                    alpha *= (0.6f + 0.4f * (f_hz / 1000.0f));
+                // F1 decoupling taper: milder warp below 1 kHz.
+                float r = warp_ratio;
+                if (f_hz < 1000.0f)
+                    r = 1.0f + (warp_ratio - 1.0f)
+                              * (0.6f + 0.4f * (f_hz / 1000.0f));
+                float f_warped;
+                if (f_hz <= kVtlnKneeHz) {
+                    f_warped = f_hz * r;
+                } else {
+                    const float knee_r =
+                        1.0f + (warp_ratio - 1.0f);  // taper is unity >= 1 kHz
+                    f_warped = kVtlnKneeHz * knee_r
+                             + hf_slope * (f_hz - kVtlnKneeHz);
+                    if (f_warped < f_hz) f_warped = f_hz;   // keep monotonic
+                    if (f_warped > f_nyq) f_warped = f_nyq;
                 }
-                const float w = kPi * static_cast<float>(k) / static_cast<float>(kHalf - 1);
-                const float wp = w + 2.0f * std::atan(
-                    -alpha * std::sin(w) / (1.0f + alpha * std::cos(w)));
-                float b = wp / kPi * static_cast<float>(kHalf - 1);
+                float b = f_warped / bin_hz;
                 if (b < 0.0f) b = 0.0f;
-                if (b > static_cast<float>(kHalf - 1)) b = static_cast<float>(kHalf - 1);
+                if (b > static_cast<float>(kHalf - 1))
+                    b = static_cast<float>(kHalf - 1);
                 vtln_warp_bin_[k] = b;
             }
 
-            // 2. Precomputed spectral tilt & H1 harmonic emphasis.
-            float tilt_db = -gender_morph_ * 6.0f * (f_hz / 8000.0f);
-            if (tilt_db > 8.0f) tilt_db = 8.0f;
-            if (tilt_db < -8.0f) tilt_db = -8.0f;
-            const float tilt_gain = std::pow(10.0f, tilt_db / 20.0f);
-
-            float h1_gain = 1.0f;
-            if (gender_morph_ > 0.0f && k > 0 && f_hz < 350.0f) {
-                h1_gain += 0.75f * gender_morph_ * (1.0f - f_hz / 350.0f);
+            // 2. Logarithmic (dB/octave) spectral tilt, 1 kHz anchor.
+            float tilt_db = 0.0f;
+            if (f_hz > 0.0f) {
+                const float octaves = std::log2(std::max(f_hz, 50.0f) / 1000.0f);
+                tilt_db = std::max(-10.0f, std::min(10.0f,
+                                                    octaves * tilt_db_per_oct));
             }
-
-            excitation_shaper_[k] = tilt_gain * h1_gain;
+            excitation_shaper_[k] = std::pow(10.0f, tilt_db / 20.0f);
         }
     }
 
@@ -365,7 +405,7 @@ private:
             A[k] = std::log(mag_[k] + 1e-9f);
 
         for (int it = 0; it < kIters; ++it) {
-            // Real, EVEN 1024-pt spectrum from A -> IFFT -> real cepstrum.
+            // Real, EVEN 2048-pt spectrum from A -> IFFT -> real cepstrum.
             for (int k = 0; k < kHalf; ++k) { fft_re_[k] = A[k]; fft_im_[k] = 0.0f; }
             for (int k = 1; k < kHalf - 1; ++k) {
                 fft_re_[kFFT - k] = A[k];
@@ -380,12 +420,12 @@ private:
             // Adaptive lifter cutoff: feminine morphs (gender_morph_ > 0) have
             // higher acoustic wall/radiation losses relative to vocal-tract
             // volume, broadening formant bandwidths (lower Q). Shorten the
-            // cutoff toward 18 (broader peaks) as gender_morph_ -> 1; retain
-            // the full 32-quefrency resolution (sharp peaks) at =< 0.
+            // cutoff toward 36 (broader peaks) as gender_morph_ -> 1; retain
+            // the full 48-quefrency resolution (sharp peaks) at =< 0.
             int eff_lifter = kLifter;
             if (gender_morph_ > 0.0f) {
                 eff_lifter = static_cast<int>(kLifter - gender_morph_ * 12.0f);
-                if (eff_lifter < 18) eff_lifter = 18;
+                if (eff_lifter < 36) eff_lifter = 36;
             }
             apply_symmetric_lifter(fft_re_, kFFT, eff_lifter);
 
@@ -455,10 +495,19 @@ private:
     }
 
     int find_peaks() {
+        // Prominence-gated peak picking: a candidate must be a local maximum
+        // over a 5-bin span AND stand at least 30% above the local spectral
+        // envelope. In noisy speech, plain 3-bin maxima declare 80-150 false
+        // peaks per frame, tearing the phase vocoder's rigid peak locking and
+        // causing random phase diffusion in low-energy regions.
         int n = 0;
-        for (int k = 1; k < kHalf - 1; ++k) {
-            if (mag_[k] > mag_[k - 1] && mag_[k] >= mag_[k + 1] && mag_[k] > 1e-6f)
+        for (int k = 2; k < kHalf - 2; ++k) {
+            if (mag_[k] > mag_[k - 1] && mag_[k] >= mag_[k + 1] &&
+                mag_[k] > mag_[k - 2] && mag_[k] > mag_[k + 2] &&
+                mag_[k] > envelope_[k] * 0.3f && mag_[k] > 1e-4f) {
                 peak_bins_[n++] = k;
+                if (n >= kHalf) break;
+            }
         }
         // Assign each source bin to its nearest peak (-1 when unvoiced).
         int pi = 0;
@@ -498,9 +547,29 @@ private:
         }
 
         // Magnitudes: replaced envelope x (fine excitation x precomputed
-        // excitation shaper — spectral tilt and H1 harmonic emphasis).
+        // excitation shaper — log-octave spectral tilt).
         for (int k = 0; k < kHalf; ++k)
             synth_mag_[k] = envelope_[k] * (excitation_[k] * excitation_shaper_[k]);
+
+        // True H1-H2 glottal shaping for feminine morphs: boost the DOMINANT
+        // first detected spectral peak (F0) with a smooth 3-bin-raised-cosine
+        // bell, instead of statically boosting everything below 350 Hz (which
+        // also lifts H2/H3 of a low-pitched male voice, defeating the intent).
+        if (gender_morph_ > 0.0f && num_peaks > 0) {
+            const float bin_hz = sr_ / static_cast<float>(kFFT);
+            const int h1_bin = peak_bins_[0];   // lowest-frequency peak (F0)
+            if (static_cast<float>(h1_bin) * bin_hz < kH1MaxHz) {
+                const float boost = 1.0f + 0.8f * gender_morph_;  // up to +5 dB
+                for (int d = -2; d <= 2; ++d) {
+                    const int kb = h1_bin + d;
+                    if (kb >= 1 && kb < kHalf) {
+                        const float w =
+                            0.5f * (1.0f + std::cos(kPi * static_cast<float>(d) / 3.0f));
+                        synth_mag_[kb] *= (1.0f + (boost - 1.0f) * w);
+                    }
+                }
+            }
+        }
 
         // Update phase history for the next frame.
         for (int k = 0; k < kHalf; ++k) {
@@ -509,25 +578,57 @@ private:
         }
     }
 
+    // Spectral-flatness voiced/unvoiced detector: the ratio of geometric to
+    // arithmetic mean magnitude. Voiced (harmonic) frames have deep spectral
+    // valleys -> flatness near 0; unvoiced (fricative) frames are noise-like
+    // -> flatness near 0.5+. Computed in the log domain to avoid overflow.
+    float compute_voiced_prob() const {
+        float log_sum = 0.0f;
+        float lin_sum = 0.0f;
+        int n = 0;
+        for (int k = 1; k < kHalf; ++k) {
+            const float m = mag_[k];
+            log_sum += std::log(m + 1e-9f);
+            lin_sum += m;
+            ++n;
+        }
+        if (n == 0 || lin_sum <= 0.0f) return 0.0f;
+        const float geo = std::exp(log_sum / static_cast<float>(n));
+        const float flatness = geo / (lin_sum / static_cast<float>(n));
+        // flatness ~0 => fully voiced; >= 0.4 => fully unvoiced.
+        float v = 1.0f - flatness / 0.4f;
+        return std::max(0.0f, std::min(1.0f, v));
+    }
+
     void reconstruct() {
-        // Sibilant crossfade gain + complex-bin blending of the BAND-LIMITED,
-        // tract-shaped aspiration noise, then rebuild the full conjugate-
-        // symmetric spectrum and invert. NEVER interpolate phase angles:
-        // (1-g)*Y_voc + g*X_orig avoids +-pi branch-cut cancellation.
+        // Voiced/unvoiced-gated sibilant crossfade + complex-bin blending of
+        // the BAND-LIMITED, tract-shaped aspiration noise, then rebuild the
+        // full conjugate-symmetric spectrum and invert. NEVER interpolate
+        // phase angles: (1-g)*Y_voc + g*X_orig avoids +-pi branch-cut
+        // cancellation.
         const float bin_hz = sr_ / static_cast<float>(kFFT);
 
-        // Tract-shaped aspiration: normalize the final envelope peak so the
-        // breath gain follows the frame's formant shape, then inject the
-        // deterministic xorshift32 noise into complex bins ONLY in the
-        // 1.5-7 kHz band where real glottal aspiration energy lives
-        // (DC and Nyquist strictly skipped).
+        // Dynamic V/UV detection: sibilant dry-bin mixing is active ONLY on
+        // unvoiced frames. A static 3.5 kHz crossover comb-filtered vowels
+        // (F3/F4 live at 2.5-4.5 kHz) by blending two pitch-shifted spectra.
+        const float voiced_prob = compute_voiced_prob();
+        const float unvoiced_weight = (1.0f - voiced_prob) * sibilant_mix_;
+
+        // Tract-shaped aspiration: the noise gain follows the spectral
+        // ENVELOPE (not the harmonic magnitudes), so breath energy fills the
+        // valleys BETWEEN harmonics as continuous glottal turbulence instead
+        // of an amplitude-modulated buzz on top of discrete harmonics. The
+        // 1/max_env normalization keeps the level signal-proportional and
+        // bounded. Injected into complex bins ONLY in the 1.5-7 kHz band
+        // where real glottal aspiration energy lives (DC and Nyquist
+        // strictly skipped).
         float max_env = 1e-9f;
         for (int k = 0; k < kHalf; ++k) {
             if (envelope_[k] > max_env) max_env = envelope_[k];
         }
         const int k_low = static_cast<int>(1500.0f * (kFFT / sr_));
         const int k_high = static_cast<int>(7000.0f * (kFFT / sr_));
-        const float breath_scale = breathiness_ * 0.08f;
+        const float breath_scale = breathiness_ * 0.02f;
 
         for (int kd = 0; kd < kHalf; ++kd) {
             float vr = synth_mag_[kd] * std::cos(synth_phase_[kd]);
@@ -549,7 +650,7 @@ private:
                     (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
 
                 const float env_norm = envelope_[kd] / max_env;
-                const float noise_gain = breath_scale * env_norm * synth_mag_[kd];
+                const float noise_gain = breath_scale * env_norm;
                 vr += n_re * noise_gain;
                 vi += n_im * noise_gain;
             }
@@ -562,7 +663,11 @@ private:
                 const float mu = (f_hz - kXoverLowHz) / (kXoverHighHz - kXoverLowHz);
                 band_gain = 0.5f * (1.0f - std::cos(kPi * mu));
             }
-            const float g = sibilant_mix_ * band_gain;
+            // Gate the dry sibilant blend by unvoiced-ness: during vowels
+            // (voiced_prob ~ 1) the bypass is fully disengaged, eliminating
+            // dual-pitch comb filtering on high formants; on unvoiced frames
+            // the original consonant spectrum passes through unshifted.
+            const float g = unvoiced_weight * band_gain;
 
             float yr = (1.0f - g) * vr + g * spec_re_[kd];
             float yi = (1.0f - g) * vi + g * spec_im_[kd];

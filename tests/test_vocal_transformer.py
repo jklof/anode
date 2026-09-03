@@ -9,7 +9,7 @@ import torch
 import plugin_system
 from base import BLOCK_SIZE, CHANNELS, DTYPE, SAMPLE_RATE
 
-LATENCY = 4608                                 # native kLatency (fixed emission delay)
+LATENCY = 9216                                 # native kLatency (fixed emission delay)
 SETTLE_BLOCKS = (LATENCY // BLOCK_SIZE) + 2    # 11 blocks: fully flush the pipeline
 NFFT = 16384                                   # zero-padded FFT for peak interpolation
 
@@ -112,7 +112,34 @@ def test_vocal_transformer_registration():
     assert node.params["pitch_shift"].meta.get("min") == -24.0
     assert node.params["pitch_shift"].meta.get("max") == 24.0
     assert node.params["gender_morph"].meta.get("min") == -1.0
-    assert node.get_telemetry()["latency_samples"] == 4608
+    assert node.get_telemetry()["latency_samples"] == 9216
+
+
+def test_vocal_transformer_presets():
+    """Every declared preset must reference existing parameters with values
+    inside the parameter ranges, and every value must be stagable + accepted
+    by the native DSP (applied via the standard set/sync path)."""
+    plugin_system.load_plugins("plugins")
+    cls = plugin_system.NODE_REGISTRY.get("VocalTransformer")
+    assert cls is not None
+    assert "Male -> Female" in cls.PRESETS
+    assert "Female -> Male" in cls.PRESETS
+    node = make_node()
+    for preset_name, values in cls.PRESETS.items():
+        assert values, f"preset '{preset_name}' is empty"
+        for pname, value in values.items():
+            assert pname in node.params, \
+                f"preset '{preset_name}' references unknown param '{pname}'"
+            p = node.params[pname]
+            lo = p.meta.get("min")
+            hi = p.meta.get("max")
+            assert lo is None or value >= lo, \
+                f"preset '{preset_name}': {pname}={value} below min {lo}"
+            assert hi is None or value <= hi, \
+                f"preset '{preset_name}': {pname}={value} above max {hi}"
+        # Apply the whole preset through the canonical staging path.
+        set_params(node, **values)
+        assert node.error_msg is None
 
 
 def test_vocal_transformer_mix_zero_bit_exact():
@@ -459,10 +486,10 @@ def test_vocal_transformer_tract_shaped_breathiness():
 
 def test_vocal_transformer_mid_mix_blends_latency_aligned_dry():
     """out(mix) must equal (1-mix)*dry + mix*wet where `dry` is the input
-    delayed by the fixed 4608-sample latency — i.e. (0, 1) mix values
+    delayed by the fixed 9216-sample latency — i.e. (0, 1) mix values
     crossfade without comb filtering. Regression: any mix > 0 emitted 100%
     wet, making the mix knob a binary bypass switch."""
-    blocks = tone_blocks(220.0, 14)
+    blocks = tone_blocks(220.0, 34)
     flat_in = torch.cat(blocks, dim=1)
 
     def run(mix):

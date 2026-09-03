@@ -18,7 +18,7 @@ clamped to +-8 dB) plus H1 harmonic emphasis (0-350 Hz, gated off DC) to
 avoid a buzzy/pinched sound when shifting up, and broaden formant bandwidths
 via an adaptive cepstral lifter cutoff.
 
-Latency: FIXED 4608 samples (96 ms @ 48 kHz) across the whole pitch range —
+Latency: FIXED 9216 samples (192 ms @ 48 kHz) across the whole pitch range —
 see get_telemetry(). The 'mix' parameter is NOT latency-compensated: below
 1.0 it is a comb-filtering special effect, matching the RubberbandPitchShifter
 disclosure.
@@ -41,7 +41,7 @@ class VocalTransformer(FFINode):
         "spectral-tilt and H1 harmonic shaping to eliminate the buzzy/pinched "
         "quality on upward shifts and dullness on downward shifts, plus "
         "tract-filtered 1.5-7 kHz aspiration noise. Fixed algorithmic latency "
-        "of 4608 samples (96 ms at 48 kHz) across the full pitch range; mix "
+        "of 9216 samples (192 ms at 48 kHz) across the full pitch range; mix "
         "below 1.0 is a comb-filtering effect, not a compensated crossfade."
     )
 
@@ -54,6 +54,47 @@ class VocalTransformer(FFINode):
         "breathiness": 3,
         "sibilant_bypass": 4,
         "mix": 5,
+    }
+
+    # Gender-transformation macro presets (surfaced in the node's
+    # right-click "Presets" context menu; see ui_system.NodeItem).
+    #
+    # The acoustics they encode:
+    #   - pitch: F0 relocation (male 85-155 Hz <-> female 165-255 Hz)
+    #   - formant_shift: vocal-tract length difference (17 cm vs ~14 cm,
+    #     ~15-20%), expressed in semitones
+    #   - gender_morph: glottal-source shaping — feminine needs a steeper
+    #     HF tilt + dominant fundamental (H1 >> H2); masculine needs a
+    #     flatter tilt for chest resonance
+    #   - breathiness: incomplete posterior glottal closure (female) vs
+    #     tight closure (male)
+    #   - sibilant_bypass: unvoiced-consonant dry blend (V/UV-gated in the
+    #     native DSP, so vowels never comb-filter against it)
+    PRESETS = {
+        "Male -> Female": {
+            "pitch_shift": 9.5,      # e.g. 110 Hz -> ~190 Hz
+            "formant_shift": 3.2,    # ~20% tract shortening
+            "gender_morph": 0.85,    # HF tilt + H1 glottal emphasis
+            "breathiness": 0.20,     # natural vocal-cord leakage
+            "sibilant_bypass": 0.6,
+            "mix": 1.0,
+        },
+        "Female -> Male": {
+            "pitch_shift": -9.0,     # e.g. 220 Hz -> ~130 Hz
+            "formant_shift": -2.8,   # ~17% tract lengthening
+            "gender_morph": -0.80,   # flatter tilt, richer chest resonance
+            "breathiness": 0.05,     # tighter glottal closure
+            "sibilant_bypass": 0.8,
+            "mix": 1.0,
+        },
+        "Neutral (Reset)": {
+            "pitch_shift": 0.0,
+            "formant_shift": 0.0,
+            "gender_morph": 0.0,
+            "breathiness": 0.0,
+            "sibilant_bypass": 0.8,
+            "mix": 1.0,
+        },
     }
 
     def __init__(self, name=""):
@@ -176,11 +217,11 @@ class VocalTransformer(FFINode):
         self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
 
     def get_telemetry(self) -> dict:
-        # Fixed emission latency (see cpp kLatency): frames span 1024*ratio
+        # Fixed emission latency (see cpp kLatency): frames span 2048*ratio
         # input samples (ratio <= 4 at +-24 st) and the read pointer trails the
-        # input stream by L = 512 + 1024*4 = 4608 samples so every emitted
+        # input stream by L = 1024 + 2048*4 = 9216 samples so every emitted
         # sample is fully accumulated.
-        latency_samples = 4608
+        latency_samples = 9216
         return {
             "latency_samples": latency_samples,
             "latency_ms": round(latency_samples / float(SAMPLE_RATE) * 1000.0, 2),
