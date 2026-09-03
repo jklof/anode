@@ -44,7 +44,7 @@ constexpr int   kFFT = 2048;              // 42.7 ms window: resolves male harmo
 constexpr int   kHop = 256;               // 87.5% overlap
 constexpr int   kHalf = 1025;             // real frequency bins incl. DC + Nyquist
 constexpr int   kLifter = 48;             // wider cepstral lifter for 2048 bins
-constexpr int   kIters = 3;
+constexpr int   kIters = 4;
 constexpr int   kMaxChannels = 2;
 constexpr int   kRingSize = 16384;        // input history + OLA ring (power of 2;
                                           // must exceed kLatency + kFFT)
@@ -227,6 +227,7 @@ private:
     float log_mag_[kHalf];         // running log-envelope A_i(k)
     float envelope_[kHalf];        // original envelope -> final warped envelope
     float warped_envelope_[kHalf]; // formant-resampled stage
+    float analysis_envelope_[kHalf]; // unwarped analysis envelope snapshot for peak gating
     float excitation_[kHalf];      // fine excitation H(k), from ORIGINAL envelope
     float synth_mag_[kHalf];       // destination grid
     float synth_phase_[kHalf];     // destination grid
@@ -393,6 +394,10 @@ private:
         // its own true envelope, not the warped target envelope.
         const int num_peaks = find_peaks();
 
+        // Snapshot the unwarped analysis envelope so peak-locking in synthesize()
+        // compares mag_ against its original envelope rather than the warped target.
+        std::memcpy(analysis_envelope_, envelope_, kHalf * sizeof(float));
+
         // 6. Formant-preserving envelope replacement + formant/VTLN warp.
         replace_envelope(ratio);
 
@@ -516,33 +521,24 @@ private:
     }
 
     // Formant-preserving envelope replacement + formant/VTLN warp.
-    // The frame read at stride `ratio` moved every formant up by `ratio`;
-    // V_base(k) = V_ana(k*ratio) undoes that, then formant_shift/VTLN apply.
+    // Single-pass formant-preserving envelope replacement + formant/VTLN warp.
+    // Composes all three coordinate warps algebraically:
+    //   Stage (a): pos_a = k * ratio
+    //   Stage (b): pos_b = (k / rf) * ratio = k * (ratio / rf)
+    //   Stage (c): pos_c = vtln_warp_bin_[k] * (ratio / rf)
+    // Evaluating this in a single pass directly against the original continuous envelope_
+    // eliminates intermediate discrete grid quantization and cascading linear-interpolation
+    // low-pass filtering, preserving sharp formant peak definition and amplitude.
     void replace_envelope(float ratio) {
-        // (a) Undo the resampler's formant shift (edge-clamped interpolation).
+        const float rf = std::pow(2.0f, formant_st_ / 12.0f);
+        const float scale = ratio / rf;
         for (int k = 0; k < kHalf; ++k) {
-            float pos = static_cast<float>(k) * ratio;
+            float pos = vtln_warp_bin_[k] * scale;
+            if (pos < 0.0f) pos = 0.0f;
             if (pos > static_cast<float>(kHalf - 1))
                 pos = static_cast<float>(kHalf - 1);
             warped_envelope_[k] = interp(envelope_, pos);
         }
-
-        // (b) Formant scaling: evaluate V_base at k / R_F (edge-clamped,
-        //     no zero fill — broadband gain must be preserved).
-        const float rf = std::pow(2.0f, formant_st_ / 12.0f);
-        for (int k = 0; k < kHalf; ++k) {
-            float pos = static_cast<float>(k) / rf;
-            if (pos < 0.0f) pos = 0.0f;
-            if (pos > static_cast<float>(kHalf - 1))
-                pos = static_cast<float>(kHalf - 1);
-            envelope_[k] = interp(warped_envelope_, pos);
-        }
-
-        // (c) VTLN bilinear allpass warp (omega'(0)=0, omega'(pi)=pi preserved),
-        //     via the precomputed warp-bucket table (rebuilt on gender_morph
-        //     change). Table is identity when gender_morph_ = 0.
-        for (int k = 0; k < kHalf; ++k)
-            warped_envelope_[k] = interp(envelope_, vtln_warp_bin_[k]);
         std::memcpy(envelope_, warped_envelope_, kHalf * sizeof(float));
     }
 
@@ -588,13 +584,14 @@ private:
         }
 
         // Peak-locking restricted to the main lobe of detected peaks:
-        // Lock bin k to peak kp ONLY if |k - kp| <= 2 bins and mag_[k] is within prominence.
+        // Lock bin k to peak kp ONLY if |k - kp| <= 2 bins and mag_[k] is within prominence
+        // against the unwarped analysis_envelope_.
         // This prevents spectral valleys and high-frequency noise from locking to harmonic peaks
         // (which turns breath/noise into a metallic, robotic buzz).
         if (num_peaks > 0) {
             for (int k = 0; k < kHalf; ++k) {
                 const int kp = peak_bins_[peak_owner_[k]];
-                if (std::abs(k - kp) <= 2 && mag_[k] > envelope_[k] * 0.15f) {
+                if (std::abs(k - kp) <= 2 && mag_[k] > analysis_envelope_[k] * 0.15f) {
                     synth_phase_[k] = wrap_phase(synth_phase_[kp]
                                                  + phase_[k] - phase_[kp]);
                 }
@@ -610,7 +607,31 @@ private:
         // (creating the characteristic female H1 >> H2 balance).
         if (gender_morph_ > 0.0f && num_peaks > 0) {
             const float bin_hz = sr_ / static_cast<float>(kFFT);
-            const int h1_bin = peak_bins_[0];   // lowest-frequency peak (F0)
+
+            // Harmonic-confirmation check for F0 / H1:
+            // Verify peak_bins_[0] has an overtone near 2 * peak_bins_[0].
+            // If peak 0 is stray rumble/hum and peak 1 has an overtone at 2 * peak 1,
+            // select peak 1 as true F0.
+            int h1_bin = peak_bins_[0];
+            int h2_bin = -1;
+            if (num_peaks >= 2) {
+                for (int p = 1; p < num_peaks; ++p) {
+                    if (std::abs(peak_bins_[p] - 2 * peak_bins_[0]) <= 3) {
+                        h2_bin = peak_bins_[p];
+                        break;
+                    }
+                }
+                if (h2_bin < 0 && num_peaks >= 3) {
+                    for (int p = 2; p < num_peaks; ++p) {
+                        if (std::abs(peak_bins_[p] - 2 * peak_bins_[1]) <= 3) {
+                            h1_bin = peak_bins_[1];
+                            h2_bin = peak_bins_[p];
+                            break;
+                        }
+                    }
+                }
+            }
+
             if (static_cast<float>(h1_bin) * bin_hz < kH1MaxHz) {
                 const float boost = 1.0f + 1.2f * gender_morph_;  // up to +6.8 dB
                 for (int d = -2; d <= 2; ++d) {
@@ -622,17 +643,8 @@ private:
                     }
                 }
 
-                // Locate H2 peak (~ 2 * h1_bin) and attenuate it for feminine morphs
-                int h2_bin = -1;
-                int min_dist = 999;
-                for (int p = 1; p < num_peaks; ++p) {
-                    int dist = std::abs(peak_bins_[p] - 2 * h1_bin);
-                    if (dist < min_dist) {
-                        min_dist = dist;
-                        h2_bin = peak_bins_[p];
-                    }
-                }
-                if (h2_bin > 0 && min_dist <= 3) {
+                // If H2 was located, attenuate it for feminine morphs
+                if (h2_bin > 0) {
                     const float cut = 1.0f - 0.4f * gender_morph_; // down to -4.5 dB
                     for (int d = -2; d <= 2; ++d) {
                         const int kb = h2_bin + d;
