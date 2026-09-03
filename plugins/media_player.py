@@ -388,6 +388,11 @@ class MediaPlayerNode(Node):
         self.current_title = "No Media"
         self.status_msg = "Idle"
         self.eof = False
+        # One-shot guard for the audio-thread EOF stop request: process()
+        # hits the EOF branch every block once playback ends; without this,
+        # the command queue would flood with duplicate ("param", ...,
+        # "playing", False) commands (one per 512-sample block).
+        self._eof_reported = False
 
     def _drain_events(self):
         if self._event_queue is None:
@@ -451,6 +456,7 @@ class MediaPlayerNode(Node):
 
                 self.playback_frames = int(target_time * SAMPLE_RATE)
                 self.eof = False
+                self._eof_reported = False
                 self.params["seek_ratio"].set(-1.0)
                 self.params["seek_ratio"].sync()
 
@@ -515,6 +521,7 @@ class MediaPlayerNode(Node):
         self.playback_frames = result["start_frames"]
         self.total_duration = 0.0
         self.eof = False
+        self._eof_reported = False
         if result["deps_missing"]:
             self.status_msg = "Dependencies Missing"
 
@@ -542,6 +549,7 @@ class MediaPlayerNode(Node):
         elif type == "seeked":
             self.playback_frames = int(data * SAMPLE_RATE)
             self.eof = False
+            self._eof_reported = False
 
     def process(self):
         self._drain_events()
@@ -562,9 +570,19 @@ class MediaPlayerNode(Node):
                 if self.status_msg != "Buffering...":
                     self.status_msg = "Buffering..."
             elif self.eof:
-                # Actual end of song
-                if self.params["playing"].value:
-                    self.params["playing"].set(False)
+                # Actual end of song: request the stop through the engine's
+                # command queue instead of mutating the param directly from
+                # the audio thread (AGENTS.md §5 — param staging). The
+                # _eof_reported one-shot guard prevents a duplicate command
+                # per block; reset to False wherever playback restarts.
+                if self.params["playing"].value and not self._eof_reported:
+                    self._eof_reported = True
+                    if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
+                        self.graph.engine.push_command(
+                            ("param", self.id, "playing", False)
+                        )
+                    else:
+                        self.params["playing"].set(False)
 
     def get_telemetry(self) -> dict:
         self._drain_events()

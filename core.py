@@ -217,7 +217,9 @@ class Graph:
         if src_node and dst_node and src_port in src_node.outputs and dst_port in dst_node.inputs:
             output_slot = src_node.outputs[src_port]
             dst_node.inputs[dst_port].disconnect(target=output_slot)
-            self.recalculate_order()
+            # Topology changed, not just execution order: mark both flags so
+            # plan recompilation and snapshot invalidation trigger (AGENTS.md §8).
+            self.mark_dirty()
 
     def set_master_clock(self, node: Node):
         if not isinstance(node, IClockProvider):
@@ -352,6 +354,19 @@ class NRTExecutor:
         self._pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="anode-nrt"
         )
+        # Nodes removed from the graph that may still have in-flight or
+        # undelivered NRT results. Without tracking, their inboxes are never
+        # drained by _drain_nrt_all() (it only walks graph.nodes), so
+        # on_nrt_discarded() never runs and native handles / descriptors /
+        # stream threads leak. These are strong references held only until
+        # the node is quiescent (bounded).
+        self._discarded_nodes = set()
+        # Node -> count of submitted jobs that have not yet been drained.
+        # Only mutated from submit()/drain()/drain_discarded(), all of which
+        # run on the engine/control thread (see the class docstring), so no
+        # lock is needed. An empty inbox alone does NOT imply quiescence:
+        # a job still executing in the pool has not put its result yet.
+        self._in_flight = {}
 
     def submit(self, node, fn, args, tag=None):
         node._nrt_epoch += 1
@@ -359,6 +374,8 @@ class NRTExecutor:
         if node._nrt_inbox is None:
             node._nrt_inbox = queue.SimpleQueue()
         inbox = node._nrt_inbox
+
+        self._in_flight[node] = self._in_flight.get(node, 0) + 1
 
         def _run():
             try:
@@ -377,6 +394,10 @@ class NRTExecutor:
                 epoch, tag, ok, payload = inbox.get_nowait()
             except queue.Empty:
                 return
+            if node in self._in_flight:
+                self._in_flight[node] -= 1
+                if self._in_flight[node] <= 0:
+                    del self._in_flight[node]
             if epoch != node._nrt_epoch:
                 # Superseded by a newer submit(): the payload is never
                 # delivered to on_nrt_complete(), so give the node a chance
@@ -393,6 +414,28 @@ class NRTExecutor:
         """Invalidate any in-flight results for this node. O(1), never blocks.
         Call this when a node is deleted."""
         node._nrt_epoch += 1
+        # Only track nodes that can still produce a result. Nodes with no
+        # pending work need no further draining.
+        if self._in_flight.get(node, 0) > 0 or (
+            node._nrt_inbox is not None and not node._nrt_inbox.empty()
+        ):
+            self._discarded_nodes.add(node)
+
+    def drain_discarded(self):
+        """Drain results for nodes already removed from the graph, and retire
+        tracking once a node is quiescent: ALL in-flight pool jobs have
+        returned AND its inbox is empty. Never blocks; runs on the
+        engine/control thread between blocks."""
+        quiescent = []
+        for node in list(self._discarded_nodes):
+            self.drain(node)
+            if self._in_flight.get(node, 0) == 0 and (
+                node._nrt_inbox is None or node._nrt_inbox.empty()
+            ):
+                quiescent.append(node)
+        for node in quiescent:
+            self._discarded_nodes.discard(node)
+            self._in_flight.pop(node, None)
 
     def spawn_stream(self, target, *args):
         """For long-running producers that shouldn't occupy a pool slot."""
@@ -449,6 +492,10 @@ class Engine:
         if self.nrt:
             for node in self.graph.nodes:
                 self.nrt.drain(node)
+            # Nodes removed from the graph with in-flight/undelivered results
+            # still need their on_nrt_discarded() callback so native handles
+            # and streams are released (AGENTS.md §6).
+            self.nrt.drain_discarded()
 
     def tick(self):
         self._tick_semaphore.release()
@@ -681,7 +728,7 @@ class Engine:
                     except Exception:
                         pass
 
-            # --- NEW: Restore Command for robust Undo ---
+            # --- Restore Command for robust Undo ---
             elif op == "restore":
                 _, n_data_payload = cmd
                 if isinstance(n_data_payload, tuple):
@@ -689,27 +736,53 @@ class Engine:
                 else:
                     node_data, node_instance = n_data_payload, None
 
-                cls = plugin_system.NODE_REGISTRY.get(node_data["type"])
-                if cls:
-                    node = node_instance if node_instance else cls(node_data["name"])
-                    node.id = node_data["id"]
-                    # Fix: Add node first so load_state has a valid graph reference to submit background tasks
-                    self.graph.add_node(node)
-                    # This restores everything: pos, params, internal meta.
-                    # Always call load_state here (AFTER graph attachment) —
-                    # pre-instantiated undo/restore nodes arrive bare and nodes
-                    # that spawn NRT work in load_state() need self.graph set.
-                    node.load_state(node_data)
-                    if self.running:
+                # DeleteNodeCommand.undo() passes the authoritative holder
+                # dict ({"node": ..., "connections": [...]}) instead of a
+                # bare node memento; FIFO ordering guarantees the 'del' has
+                # populated it by the time this runs. Unwrap it here so the
+                # implicit connections are restored atomically with the node.
+                connections_to_restore = []
+                if isinstance(node_data, dict) and "node" in node_data:
+                    connections_to_restore = node_data.get("connections", [])
+                    node_data = node_data.get("node")
+
+                if node_data:
+                    cls = plugin_system.NODE_REGISTRY.get(node_data["type"])
+                    if cls:
+                        node = node_instance if node_instance else cls(node_data["name"])
+                        node.id = node_data["id"]
+                        # Add node first so load_state has a valid graph reference
+                        # to submit background tasks
+                        self.graph.add_node(node)
+                        # This restores everything: pos, params, internal meta.
+                        # Always call load_state here (AFTER graph attachment) —
+                        # pre-instantiated undo/restore nodes arrive bare and nodes
+                        # that spawn NRT work in load_state() need self.graph set.
+                        node.load_state(node_data)
+                        if self.running:
+                            try:
+                                node.start()
+                            except Exception as e:
+                                logging.exception(f"Error starting restored node {node.name}")
+                                node.error_msg = f"Start Error: {e}"
                         try:
-                            node.start()
-                        except Exception as e:
-                            logging.exception(f"Error starting restored node {node.name}")
-                            node.error_msg = f"Start Error: {e}"
-                    try:
-                        self.output_queue.put_nowait({"type": "node_added", "node": self.graph._get_node_data(node)})
-                    except Exception:
-                        pass
+                            self.output_queue.put_nowait({"type": "node_added", "node": self.graph._get_node_data(node)})
+                        except Exception:
+                            pass
+                        for c in connections_to_restore:
+                            if self.graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]):
+                                # Announce the wire to the UI (mirrors the
+                                # "conn" opcode): when running, no full
+                                # snapshot follows this command, so without
+                                # this event the restored node comes back
+                                # with invisible wires until an unrelated
+                                # action triggers a snapshot.
+                                try:
+                                    self.output_queue.put_nowait(
+                                        {"type": "connected", "src_id": c["src_id"], "src_port": c["src_port"], "dst_id": c["dst_id"], "dst_port": c["dst_port"]}
+                                    )
+                                except Exception:
+                                    pass
             # --------------------------------------------
 
             elif op == "clear":
@@ -899,11 +972,18 @@ class Engine:
                 if plan.clock_source:
                     # Step A (Non-blocking check)
                     acquired = self._tick_semaphore.acquire(blocking=False)
-                    # Step B (If NOT acquired)
                     if not acquired:
-                        # This means the semaphore count is 0. The engine has filled all buffers and is waiting on hardware. This is our "Safety Window".
-                        # Now call self._tick_semaphore.acquire(blocking=True) to wait for the actual hardware tick.
-                        self._tick_semaphore.acquire(blocking=True)
+                        # Step B: bounded wait for the hardware tick. A dead
+                        # or stalled device callback must not hang this
+                        # thread forever — command draining and engine
+                        # shutdown depend on this loop staying responsive.
+                        if not self._tick_semaphore.acquire(blocking=True, timeout=0.2):
+                            if not self.running or self.abort_flag:
+                                break
+                            # Clock provider stalled; fall back to a timed
+                            # sleep so stop/abort and queued commands are
+                            # still processed while the failure persists.
+                            time.sleep(BLOCK_SIZE / SAMPLE_RATE)
                     # If acquired, we proceed directly (already decremented)
                 else:
                     # Fallback sleep if no clock source is defined to prevent 100% CPU usage

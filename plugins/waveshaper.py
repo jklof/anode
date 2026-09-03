@@ -71,28 +71,28 @@ class WaveShaper(Node):
         if mode == 0:      # Tanh (tape)
             self._shaped.copy_(self._driven).tanh_()
         elif mode == 1:    # Soft clip: x - x^3/3 for |x|<=1, else sign(x)*2/3
+            # Branch-free form with no boolean mask and no implicit sync:
+            # clamping first makes the cubic identity exact for |x| > 1 too,
+            # since clamp(±x, -1, 1) = ±1 -> ±1 - (±1)³/3 = ±2/3. The old
+            # form used torch.gt(..., out=bool_mask) + .any() + torch.where,
+            # which allocated a mask tensor and forced a host sync per block.
             self._shaped.copy_(self._driven).clamp_(-1.0, 1.0)
             torch.pow(self._shaped, 3, out=self._tmp)
             self._shaped.sub_(self._tmp.mul_(1.0 / 3.0))
-            torch.abs(self._driven, out=self._tmp2)
-            torch.gt(self._tmp2, 1.0, out=self._maskb)
-            if self._maskb.any():
-                torch.sign(self._driven, out=self._tmp2).mul_(2.0 / 3.0)
-                torch.where(self._maskb, self._tmp2, self._shaped, out=self._sel)
-                self._shaped.copy_(self._sel)
         elif mode == 2:    # Hard clip
             self._shaped.copy_(self._driven).clamp_(-1.0, 1.0)
         elif mode == 3:    # Foldback / wavefolder
             self._shaped.copy_(self._driven).sin_()
         else:              # Asymmetric tube
             # Positive branch: x / (1 + x)   (denominator >= 1 for x >= 0)
-            # Negative branch: x / (1 - x) - 0.1 x^2
+            # Negative branch: x / (1 - x) - 0.1 x^2  — clamped so the
+            # denominator never reaches 0 at x = 1 (division blow-up).
             torch.gt(self._driven, 0.0, out=self._maskb)
             self._tmp.copy_(self._driven)
             self._tmp2.copy_(self._driven).add_(1.0)
             torch.div(self._tmp, self._tmp2, out=self._tmp)
             self._sel.copy_(self._driven)
-            self._tmp2.copy_(self._driven).neg_().add_(1.0)
+            self._tmp2.copy_(self._driven).neg_().add_(1.0).clamp_(min=0.25)
             torch.div(self._sel, self._tmp2, out=self._sel)
             torch.pow(self._driven, 2, out=self._tmp2)
             self._sel.sub_(self._tmp2.mul_(0.1))

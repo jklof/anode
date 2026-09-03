@@ -1,3 +1,4 @@
+import math
 import torch
 import numpy as np
 from base import Node, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
@@ -29,6 +30,15 @@ class SineOscillator(Node):
         self.sr_recip = 1.0 / SAMPLE_RATE
         self.phase = 0.0
         self._phase_buffer = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
+
+    def start(self):
+        # AGENTS.md §7: transport restarts must not leak stale audio. The
+        # oscillator is a pure function of phase (no delay lines), so the
+        # only resets are the phase accumulator and the output buffer (the
+        # process() path fully rewrites channel 0 every block; the zero
+        # here covers the interval between start() and the first block).
+        self.phase = 0.0
+        self.out_sig.buffer.zero_()
 
     def process(self):
         freq_sig = self.in_freq.get_tensor()[0]
@@ -74,9 +84,10 @@ class MonoToStereo(Node):
     category = "Utilities"
     label = "Mono to Stereo"
     description = (
-        "Upmixes mono (or stereo) input to stereo with a linear pan law: "
-        "L = in * (1 - pan) / 2 and R = in * (1 + pan) / 2. At pan = 0 both "
-        "channels receive equal, attenuated copies of the input."
+        "Upmixes mono (or stereo) input to stereo with an equal-power pan law: "
+        "L = in * cos((pan + 1) * pi / 4) and R = in * sin((pan + 1) * pi / 4). "
+        "At pan = 0 both channels receive equal copies of the input at -3 dB "
+        "and constant perceived loudness is maintained across the pan sweep."
     )
 
     def __init__(self, name=""):
@@ -89,8 +100,10 @@ class MonoToStereo(Node):
     def process(self):
         t = self.inp.get_tensor()
         pan = self.params["pan"].value
-        left_gain = (1 - pan) / 2
-        right_gain = (1 + pan) / 2
+        # Equal-power law: pan [-1, +1] maps to angle [0, pi/2].
+        angle = (pan + 1.0) * (math.pi / 4.0)
+        left_gain = math.cos(angle)
+        right_gain = math.sin(angle)
         torch.mul(t[0], left_gain, out=self.out.buffer[0])
         torch.mul(t[0], right_gain, out=self.out.buffer[1])
 

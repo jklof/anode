@@ -246,7 +246,12 @@ class ScriptNode(Node):
                     val = execution_scope[name]
                     if isinstance(val, torch.Tensor):
                         v = val
-                        if v.ndim == 1:
+                        if v.ndim == 0:
+                            # Scalar: broadcast into a (1, B) frame; the
+                            # existing copy path below then fans it out to
+                            # the output's full channel count.
+                            v = v.reshape(1, 1).expand(1, out.buffer.shape[1])
+                        elif v.ndim == 1:
                             v = v.unsqueeze(0)  # (B,) -> (1, B)
                         out_c, out_f = out.buffer.shape[0], out.buffer.shape[1]
                         if v.shape[0] <= out_c and v.shape[1] == out_f:

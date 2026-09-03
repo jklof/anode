@@ -96,8 +96,12 @@ class TelemetryDictRingBuffer:
         if h == t:
             return None
         latest_idx = (h - 1) % self.capacity
+        # Copy BEFORE advancing tail: advancing tail frees the slot to the
+        # producer (push() reuses it via clear()/update()), so the snapshot
+        # must be taken while the slot is still consumer-owned.
+        result = dict(self.slots[latest_idx])
         self.tail = h
-        return dict(self.slots[latest_idx])
+        return result
 
     def try_pop(self):
         """Consumer thread: attempt to pop. Returns (item, True) or (None, False)."""
@@ -106,8 +110,10 @@ class TelemetryDictRingBuffer:
         if h == t:
             return None, False
         latest_idx = (h - 1) % self.capacity
+        # Copy BEFORE advancing tail (see pop_latest).
+        result = dict(self.slots[latest_idx])
         self.tail = h
-        return dict(self.slots[latest_idx]), True
+        return result, True
 
 
 class SPSCRingBuffer:

@@ -122,6 +122,8 @@ Lifecycle contract: `on_ui_param_change(name)` observes a synchronized parameter
 
 Because the engine has already committed the value, `on_ui_param_change()` implementations must not defensively call `param.sync()` on the changed parameter — it is redundant and only masks contract violations. A deliberate re-stage followed by `sync()` (e.g. resetting a transient parameter like `seek_ratio` back to its neutral value) is fine.
 
+Audio-thread nodes must never call `param.set()`/`param.sync()` directly on their own parameters (except the documented deliberate re-stage pattern in `on_ui_param_change`); request the change through the engine command queue instead: `self.graph.engine.push_command(("param", self.id, name, value))`. Guard one-shot side effects (e.g. EOF auto-stop) with a flag so a per-block event does not flood the command queue with duplicate commands.
+
 Audio-rate modulation is allowed where a node explicitly defines such an input.
 
 ---
@@ -152,7 +154,7 @@ prepare new resource
 
 Avoid loading or destroying large native DSP objects inside the audio processing function. This includes retirement of replaced resources: large native object destruction (e.g. NAM neural models) must be submitted back to NRT for background deallocation rather than run on the engine/audio thread.
 
-`on_nrt_complete()` is invoked by `Engine._drain_nrt_all()`, which runs at periodic telemetry intervals (~100 ms) and at command execution boundaries (and from the UI poll timer when the engine is stopped) — not inside `Node.sync()` per block. Treat it as an engine/control-thread callback between blocks.
+`on_nrt_complete()` is invoked by `Engine._drain_nrt_all()`, which runs at periodic telemetry intervals (~100 ms) and at command execution boundaries (and from the UI poll timer when the engine is stopped) — not inside `Node.sync()` per block. Treat it as an engine/control-thread callback between blocks. It must NEVER block: no `thread.join()`, no device I/O, no `port.close()`. To retire a running worker thread or stream, detach the handle synchronously and hand the teardown to `NRTExecutor.stop_stream(node, close_fn, thread)`, which performs the stop/join/close on the NRT pool. Nodes deleted from the graph while results are in flight are tracked by `NRTExecutor.discard()` and drained via `drain_discarded()`, so `on_nrt_discarded()` still runs and resources are released; implement that callback for any node that submits tagged NRT work carrying open resources.
 
 Epoch/version checks may be used to discard stale asynchronous results.
 
@@ -249,7 +251,7 @@ Such nodes may be used for prototyping, but this limitation must remain explicit
 
 `ScriptNode` dynamically alters its own port topology (inputs/outputs) in response to script changes. These topology changes bypass the command/undo history system: they are applied directly to the node and surfaced via graph-structure dirty marking, and are not individually undoable.
 
-`ScriptNode` applies the standard channel-adaptation rule to its script outputs: a mono `(1, B)` value assigned to a wider output is broadcast across all output channels (via `copy_`, which never resizes the destination); values that are too wide are copied into the leading channels; and any output that is unassigned, non-tensor, or has leftover channels is zero-filled every block so stale audio never survives.
+`ScriptNode` applies the standard channel-adaptation rule to its script outputs: a scalar (0-D) value is broadcast into a full block, a mono `(1, B)` value assigned to a wider output is broadcast across all output channels (via `copy_`, which never resizes the destination); values that are too wide are copied into the leading channels; and any output that is unassigned, non-tensor, or has leftover channels is zero-filled every block so stale audio never survives.
 
 ---
 

@@ -89,42 +89,53 @@ public:
             power_sidechain[i] = max_val * max_val;
         }
 
-        // 4. Envelope & Gain Calc (Downsampled)
-        float current_linear_gain = 1.0f;
+        // 4. Envelope & Gain Calc (Downsampled, linearly interpolated)
+        // The gain curve is computed every SIDECHAIN_DOWNSAMPLE_FACTOR
+        // frames and linearly ramped within each sub-block, eliminating the
+        // sample-and-hold zipper noise the previous per-sample hold
+        // exhibited on low-frequency program material.
+        float prev_gain = _prev_linear_gain;
         float slope = 1.0f / _ratio - 1.0f;
         float knee_start = _threshold_db - _knee_db / 2.0f;
         float knee_end = _threshold_db + _knee_db / 2.0f;
         float makeup_linear = std::pow(10.0f, _makeup_gain_db / 20.0f);
 
-        for (int i = 0; i < frames; ++i) {
-            if (i % SIDECHAIN_DOWNSAMPLE_FACTOR == 0) {
-                float avg_power = 0.0f;
-                int end_idx = std::min(i + SIDECHAIN_DOWNSAMPLE_FACTOR, frames);
-                for (int j = i; j < end_idx; ++j) avg_power += power_sidechain[j];
-                avg_power /= static_cast<float>(end_idx - i);
+        for (int i = 0; i < frames; i += SIDECHAIN_DOWNSAMPLE_FACTOR) {
+            int end_idx = std::min(i + SIDECHAIN_DOWNSAMPLE_FACTOR, frames);
+            float avg_power = 0.0f;
+            for (int j = i; j < end_idx; ++j) avg_power += power_sidechain[j];
+            avg_power /= static_cast<float>(end_idx - i);
 
-                float target = avg_power; // Power is already squared logic
-                // Simple RMS-like ballistic
-                float coeff = (target > _envelope) ? _attack_coeff : _release_coeff;
-                _envelope = target + coeff * (_envelope - target);
+            float target = avg_power; // Power is already squared logic
+            // Simple RMS-like ballistic
+            float coeff = (target > _envelope) ? _attack_coeff : _release_coeff;
+            _envelope = target + coeff * (_envelope - target);
 
-                float envelope_db = 10.0f * std::log10(_envelope + EPSILON);
-                float gr_db = 0.0f;
+            float envelope_db = 10.0f * std::log10(_envelope + EPSILON);
+            float gr_db = 0.0f;
 
-                if (envelope_db > knee_end) {
-                    gr_db = (envelope_db - _threshold_db) * slope;
-                } else if (envelope_db > knee_start) {
-                    float x = envelope_db - knee_start;
-                    gr_db = (slope / (2.0f * std::max(EPSILON, _knee_db))) * x * x;
-                }
-
-                current_linear_gain = std::pow(10.0f, gr_db / 20.0f);
+            if (envelope_db > knee_end) {
+                gr_db = (envelope_db - _threshold_db) * slope;
+            } else if (envelope_db > knee_start) {
+                float x = envelope_db - knee_start;
+                gr_db = (slope / (2.0f * std::max(EPSILON, _knee_db))) * x * x;
             }
-            gain_reduction_linear[i] = current_linear_gain;
+
+            float target_linear_gain = std::pow(10.0f, gr_db / 20.0f);
+
+            // Linear ramp across the sub-block (inclusive of endpoints, so
+            // consecutive sub-blocks connect without discontinuities).
+            int chunk_len = end_idx - i;
+            for (int j = 0; j < chunk_len; ++j) {
+                float alpha = static_cast<float>(j + 1) / static_cast<float>(chunk_len);
+                gain_reduction_linear[i + j] = prev_gain + alpha * (target_linear_gain - prev_gain);
+            }
+            prev_gain = target_linear_gain;
         }
-        
-        // Store last GR for UI
-        _last_gr = current_linear_gain;
+
+        // Store interpolated state across blocks and for the UI meter.
+        _prev_linear_gain = prev_gain;
+        _last_gr = prev_gain;
 
         // 5. Apply Gain + Delay + Makeup
         for (int i = 0; i < frames; ++i) {
@@ -158,6 +169,7 @@ public:
     // cannot leak stale gain-reduction values or residual delayed audio.
     void reset() {
         _envelope = 0.0f;
+        _prev_linear_gain = 1.0f;
         _last_gr = 1.0f;
         _write_head = 0;
         std::fill(_delay_buffer.begin(), _delay_buffer.end(), 0.0f);
@@ -192,6 +204,7 @@ private:
     float _attack_coeff;
     float _release_coeff;
     float _envelope;
+    float _prev_linear_gain = 1.0f;
     float _last_gr = 1.0f;
 
     std::vector<float*> _in_ptrs;

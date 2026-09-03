@@ -326,22 +326,29 @@ class AudioDeviceInput(BaseAudioDeviceNode):
         self._start_stream(sd.InputStream, self._callback)
 
     def _callback(self, indata, frames, time, status):
-        # Handle Mono -> Stereo upmix if necessary. Zero-allocation: the
-        # PortAudio callback thread must not allocate per block.
-        if indata.shape[1] == self.ring_buffer.channels:
-            self.ring_buffer.write(indata)
-        elif indata.shape[1] == 1 and self.ring_buffer.channels == 2:
-            self._cb_scratch[:frames, 0] = indata[:, 0]
-            self._cb_scratch[:frames, 1] = indata[:, 0]
-            self.ring_buffer.write(self._cb_scratch[:frames])
+        # PortAudio normally delivers exactly BLOCK_SIZE frames, but guard
+        # against variable frame counts: the ring buffer is block-granular
+        # (write() always consumes one full block), so a partial block would
+        # permanently misalign it. Copy m frames into the callback-owned
+        # scratch, zero the tail, and always write a full block.
+        # Zero-allocation: the PortAudio callback thread must not allocate.
+        m = min(frames, BLOCK_SIZE)
+        rb_ch = self.ring_buffer.channels
+        if indata.shape[1] == rb_ch:
+            self._cb_scratch[:m] = indata[:m]
+        elif indata.shape[1] == 1 and rb_ch == 2:
+            self._cb_scratch[:m, 0] = indata[:m, 0]
+            self._cb_scratch[:m, 1] = indata[:m, 0]
         else:
-            min_ch = min(indata.shape[1], self.ring_buffer.channels)
-            self._cb_scratch[:frames, :min_ch] = indata[:, :min_ch]
+            min_ch = min(indata.shape[1], rb_ch)
+            self._cb_scratch[:m, :min_ch] = indata[:m, :min_ch]
             # Stale samples from a previous callback must not leak into the
             # unused channels of the reused scratch buffer.
-            if self.ring_buffer.channels > min_ch:
-                self._cb_scratch[:frames, min_ch:] = 0.0
-            self.ring_buffer.write(self._cb_scratch[:frames])
+            if rb_ch > min_ch:
+                self._cb_scratch[:m, min_ch:] = 0.0
+        if m < BLOCK_SIZE:
+            self._cb_scratch[m:] = 0.0
+        self.ring_buffer.write(self._cb_scratch)
 
     def process(self):
         if self.ring_buffer.read(self._numpy_scratch):
@@ -396,18 +403,25 @@ class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
             return
 
         hw_channels = outdata.shape[1]
+        # Guard against PortAudio delivering frames != BLOCK_SIZE: every
+        # branch must respect the actual callback frame count, and any
+        # trailing frames must still be written (anti-ghosting).
+        m = min(frames, BLOCK_SIZE)
 
         if hw_channels == CHANNELS:
-            outdata[:] = self._cb_scratch
+            outdata[:m, :] = self._cb_scratch[:m, :]
         elif hw_channels == 1:
-            outdata[:, 0] = (self._cb_scratch[:, 0] + self._cb_scratch[:, 1]) * 0.5
+            outdata[:m, 0] = (self._cb_scratch[:m, 0] + self._cb_scratch[:m, 1]) * 0.5
         else:
             k = min(hw_channels, CHANNELS)
-            outdata[:, :k] = self._cb_scratch[:, :k]
+            outdata[:m, :k] = self._cb_scratch[:m, :k]
             # Anti-ghosting: channels beyond the engine format must still be
             # written every callback; PortAudio buffers are not zeroed.
             if hw_channels > k:
-                outdata[:, k:] = 0.0
+                outdata[:m, k:] = 0.0
+
+        if frames > m:
+            outdata[m:, :] = 0.0
 
     def process(self):
         # 1. Get Tensor (on CPU)

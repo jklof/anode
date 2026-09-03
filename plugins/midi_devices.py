@@ -104,12 +104,12 @@ class MIDIInputNode(Node):
                         except Exception:
                             pass
                     return
-                self._close_port_sync()
+                self._close_port_non_blocking()
                 self._inport = new_port
                 self._status = status_str
                 self.error_msg = None
             else:
-                self._close_port_sync()
+                self._close_port_non_blocking()
                 self._status = "Error"
                 self.error_msg = str(result)
 
@@ -135,17 +135,37 @@ class MIDIInputNode(Node):
                 pass
             self._inport = None
 
+    def _close_port_non_blocking(self):
+        """Non-blocking port teardown for use from on_nrt_complete(), which
+        runs on the engine/audio thread (AGENTS.md §4: no blocking work on
+        the audio path). The port handle is detached synchronously; the
+        native close() runs on the NRT pool."""
+        port = self._inport
+        self._inport = None
+
+        def _teardown():
+            if port is not None:
+                try:
+                    port.close()
+                except Exception:
+                    pass
+
+        if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
+            self.graph.engine.nrt.submit(self, _teardown, (), tag="close_input")
+        else:
+            _teardown()
+
     def start(self):
         self._request_port_restart()
 
     def stop(self):
         self._device_epoch += 1
-        self._close_port_sync()
+        self._close_port_non_blocking()
         self._status = "Stopped"
 
     def remove(self):
         self._device_epoch += 1
-        self._close_port_sync()
+        self._close_port_non_blocking()
 
     def process(self):
         self.msg_out.packet.messages.clear()
@@ -216,7 +236,7 @@ class MIDIOutputNode(Node):
                         except Exception:
                             pass
                     return
-                self._close_port_sync()
+                self._close_port_non_blocking()
                 self._outport = new_port
                 self._status = status_str
                 self.error_msg = None
@@ -227,7 +247,7 @@ class MIDIOutputNode(Node):
                     self._worker_thread = threading.Thread(target=self._writer_loop, daemon=True)
                     self._worker_thread.start()
             else:
-                self._close_port_sync()
+                self._close_port_non_blocking()
                 self._status = "Error"
                 self.error_msg = str(result)
 
@@ -266,17 +286,54 @@ class MIDIOutputNode(Node):
                 pass
             self._outport = None
 
+    def _close_port_non_blocking(self):
+        """Non-blocking teardown for use from on_nrt_complete(), which runs on
+        the engine/audio thread (AGENTS.md §4/§6: no thread.join() or device
+        I/O on the audio path). Handles are detached synchronously; the
+        writer-thread stop/join and the native port.close() run on the NRT
+        pool via NRTExecutor.stop_stream. The writer loop re-reads
+        self._outport every iteration, so nulling it here first guarantees
+        the (still-running) writer never touches the port being closed."""
+        self._stop_event.set()
+        worker = self._worker_thread
+        port = self._outport
+        self._worker_thread = None
+        self._outport = None
+
+        def _teardown():
+            if port is not None:
+                try:
+                    port.close()
+                except Exception:
+                    pass
+
+        if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
+            if worker is not None:
+                # stop_stream(): stop+join happens on a pool thread, not the caller.
+                self.graph.engine.nrt.stop_stream(self, _teardown, worker)
+            else:
+                # No writer thread to stop (startup failed or never spawned):
+                # stop_stream() early-returns when thread is None, so submit
+                # the close directly or the port handle would leak.
+                self.graph.engine.nrt.submit(self, _teardown, (), tag="close_output")
+        else:
+            # No engine (node construction/removal outside a running engine):
+            # synchronous fallback is acceptable on the control thread.
+            if worker is not None:
+                worker.join(timeout=0.5)
+            _teardown()
+
     def start(self):
         self._request_port_restart()
 
     def stop(self):
         self._device_epoch += 1
-        self._close_port_sync()
+        self._close_port_non_blocking()
         self._status = "Stopped"
 
     def remove(self):
         self._device_epoch += 1
-        self._close_port_sync()
+        self._close_port_non_blocking()
 
     def process(self):
         packet = self.midi_in.get_packet()

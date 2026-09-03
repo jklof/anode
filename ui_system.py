@@ -789,8 +789,16 @@ class NodeItem(QGraphicsObject):
         """
         widget = self.widget
         if widget is not None:
-            timer = getattr(widget, "timer", None)
-            if timer is not None:
+            # Stop every QTimer reachable from this widget subtree. Only
+            # plugin widgets that deliberately expose `widget.timer` were
+            # handled before; a timer reachable only through findChildren()
+            # (indirect ownership, dynamically created timers) would survive
+            # and later be killed by cyclic GC on the audio/gc thread — the
+            # exact cross-thread QTimers-are-not-thread-safe segfault this
+            # method exists to prevent.
+            from PySide6.QtCore import QTimer
+
+            for timer in widget.findChildren(QTimer):
                 timer.stop()
         self.widget = None
         self.proxy_obj = None
@@ -1643,6 +1651,12 @@ class GraphView(QGraphicsView):
 
         svg_bytes = create_colored_logo("white")
         self._logo_renderer = QSvgRenderer(svg_bytes)
+        # drawBackground() runs on every repaint; rasterizing the SVG each
+        # frame (even at 4% opacity, several hundred vector paths) is pure
+        # waste. Pre-rasterize the watermark once into a pixmap cache and
+        # blit that instead. Invalidated on device pixel ratio changes.
+        self._cached_logo_pixmap = None
+        self._logo_pixmap_dpr = 0.0
 
         self._generate_grid_texture()
 
@@ -1793,7 +1807,24 @@ class GraphView(QGraphicsView):
             h = self._logo_renderer.defaultSize().height() * scale
             logo_rect = QRectF(-w / 2, -h / 2, w, h)
             if rect.intersects(logo_rect):
+                # Rasterize once per device-pixel-ratio; drawBackground is a
+                # per-frame hot path and must not re-render the full SVG.
+                dpr = self.devicePixelRatioF()
+                if (
+                    self._cached_logo_pixmap is None
+                    or self._logo_pixmap_dpr != dpr
+                ):
+                    pw = max(1, int(w * dpr))
+                    ph = max(1, int(h * dpr))
+                    pm = QPixmap(pw, ph)
+                    pm.fill(Qt.transparent)
+                    pm_painter = QPainter(pm)
+                    self._logo_renderer.render(pm_painter, QRectF(0, 0, pw, ph))
+                    pm_painter.end()
+                    pm.setDevicePixelRatio(dpr)
+                    self._cached_logo_pixmap = pm
+                    self._logo_pixmap_dpr = dpr
                 painter.save()
                 painter.setOpacity(0.04)
-                self._logo_renderer.render(painter, logo_rect)
+                painter.drawPixmap(logo_rect.topLeft(), self._cached_logo_pixmap)
                 painter.restore()

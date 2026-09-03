@@ -371,6 +371,17 @@ class AppController(QObject):
 
     def connect_nodes(self, src_id, src_port, dst_id, dst_port):
         """Connect two nodes."""
+        # Duplicate-connection guard: if the wire already exists, executing
+        # the command is a no-op (Graph.connect dedups), but pushing it to
+        # history would make Undo remove the pre-existing edge. Check the
+        # authoritative graph before doing anything.
+        if not self.engine.running:
+            src = self.engine.graph.node_map.get(src_id)
+            dst = self.engine.graph.node_map.get(dst_id)
+            if src and dst and dst_port in dst.inputs and src_port in src.outputs:
+                if src.outputs[src_port] in dst.inputs[dst_port].connected_outputs:
+                    return  # Duplicate connection; nothing to do.
+
         cmd = ConnectCommand(self, src_id, src_port, dst_id, dst_port)
         cmd.execute()
         if not self.engine.running:
