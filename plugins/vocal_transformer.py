@@ -19,9 +19,8 @@ avoid a buzzy/pinched sound when shifting up, and broaden formant bandwidths
 via an adaptive cepstral lifter cutoff.
 
 Latency: FIXED 9216 samples (192 ms @ 48 kHz) across the whole pitch range —
-see get_telemetry(). The 'mix' parameter is NOT latency-compensated: below
-1.0 it is a comb-filtering special effect, matching the RubberbandPitchShifter
-disclosure.
+see get_telemetry(). The 'mix' parameter is latency-compensated: intermediate
+values crossfade cleanly with the dry path without comb filtering.
 """
 
 import ctypes
@@ -42,7 +41,7 @@ class VocalTransformer(FFINode):
         "quality on upward shifts and dullness on downward shifts, plus "
         "tract-filtered 1.5-7 kHz aspiration noise. Fixed algorithmic latency "
         "of 9216 samples (192 ms at 48 kHz) across the full pitch range; mix "
-        "below 1.0 is a comb-filtering effect, not a compensated crossfade."
+        "crossfades cleanly with the latency-aligned dry path."
     )
 
     LIB_NAME = "vocal_transformer"
@@ -61,11 +60,10 @@ class VocalTransformer(FFINode):
     #
     # The acoustics they encode:
     #   - pitch: F0 relocation (male 85-155 Hz <-> female 165-255 Hz)
-    #   - formant_shift: vocal-tract length difference (17 cm vs ~14 cm,
-    #     ~15-20%), expressed in semitones
-    #   - gender_morph: glottal-source shaping — feminine needs a steeper
-    #     HF tilt + dominant fundamental (H1 >> H2); masculine needs a
-    #     flatter tilt for chest resonance
+    #   - formant_shift: fine vocal-tract length trim on top of gender_morph VTLN
+    #   - gender_morph: vocal-tract length warp + glottal-source shaping —
+    #     feminine needs a steeper HF tilt + dominant fundamental (H1 >> H2);
+    #     masculine needs a flatter tilt for chest resonance
     #   - breathiness: incomplete posterior glottal closure (female) vs
     #     tight closure (male)
     #   - sibilant_bypass: unvoiced-consonant dry blend (V/UV-gated in the
@@ -73,18 +71,18 @@ class VocalTransformer(FFINode):
     PRESETS = {
         "Male -> Female": {
             "pitch_shift": 9.5,      # e.g. 110 Hz -> ~190 Hz
-            "formant_shift": 3.2,    # ~20% tract shortening
-            "gender_morph": 0.85,    # HF tilt + H1 glottal emphasis
+            "formant_shift": 1.0,    # fine trim on top of gender_morph VTLN (+3.5 st net)
+            "gender_morph": 0.85,    # asymmetric VTLN, H1>>H2, glottal tilt, bandwidth broadening
             "breathiness": 0.20,     # natural vocal-cord leakage
-            "sibilant_bypass": 0.6,
+            "sibilant_bypass": 0.85,
             "mix": 1.0,
         },
         "Female -> Male": {
             "pitch_shift": -9.0,     # e.g. 220 Hz -> ~130 Hz
-            "formant_shift": -2.8,   # ~17% tract lengthening
+            "formant_shift": -0.8,   # fine trim on top of gender_morph VTLN (-3.2 st net)
             "gender_morph": -0.80,   # flatter tilt, richer chest resonance
             "breathiness": 0.05,     # tighter glottal closure
-            "sibilant_bypass": 0.8,
+            "sibilant_bypass": 0.85,
             "mix": 1.0,
         },
         "Neutral (Reset)": {

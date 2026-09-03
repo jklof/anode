@@ -511,3 +511,84 @@ def test_vocal_transformer_mid_mix_blends_latency_aligned_dry():
     assert torch.allclose(mid, expected, atol=1e-4), \
         "mix=0.5 must blend the latency-aligned dry signal with the wet path"
 
+
+def test_vocal_transformer_vtln_warp_direction():
+    """Verify that gender_morph = +1.0 (feminine) shifts formant resonances UP
+    in frequency (shortening vocal tract), and gender_morph = -1.0 shifts them
+    DOWN (lengthening vocal tract). Regression test for the inverted VTLN warp bug."""
+    node = make_node()
+    n_blocks = SETTLE_BLOCKS + 10
+    n_total = n_blocks * BLOCK_SIZE
+    n = np.arange(n_total, dtype=np.float64)
+
+    # 50 Hz harmonic stack with a sharp resonance at 2000 Hz
+    t = np.zeros_like(n)
+    for h in range(1, int(SAMPLE_RATE / 2 / 50)):
+        f = h * 50
+        resp = 1.0 / (1.0 + ((f - 2000.0) / 100.0) ** 2)
+        t += resp * np.sin(2.0 * np.pi * f * n / SAMPLE_RATE)
+    t = (t / np.max(np.abs(t)) * 0.4).astype(np.float32)
+    blocks = [torch.from_numpy(np.tile(t[i * BLOCK_SIZE:(i + 1) * BLOCK_SIZE], (CHANNELS, 1)))
+              for i in range(n_blocks)]
+
+    def measure_com(gender):
+        node.start()
+        set_params(node, pitch_shift=0.0, formant_shift=0.0, gender_morph=gender,
+                   mix=1.0, breathiness=0.0, sibilant_bypass=0.0)
+        for b in blocks:
+            process_block(node, b)
+        out = node.out.buffer[0].numpy().astype(np.float64)
+        spec = np.abs(np.fft.rfft(out * np.hanning(len(out)), NFFT))
+        freqs = np.fft.rfftfreq(NFFT, 1.0 / SAMPLE_RATE)
+        m = (freqs >= 1200) & (freqs <= 3000)
+        return float(np.sum(freqs[m] * spec[m]) / np.sum(spec[m]))
+
+    com_neut = measure_com(0.0)
+    com_fem = measure_com(1.0)
+    com_masc = measure_com(-1.0)
+
+    assert abs(com_neut - 2000.0) < 50.0, f"neutral COM off: {com_neut:.1f}"
+    assert com_fem > com_neut + 200.0, \
+        f"gender=+1 must shift formants UP (neutral {com_neut:.1f}, fem {com_fem:.1f})"
+    assert com_masc < com_neut - 200.0, \
+        f"gender=-1 must shift formants DOWN (neutral {com_neut:.1f}, masc {com_masc:.1f})"
+
+
+def test_vocal_transformer_sibilant_bypass_unvoiced():
+    """Verify that unvoiced high-frequency fricatives (4-8 kHz sibilant /s/)
+    engage sibilant bypass and preserve the unshifted dry consonant spectrum
+    without pitch shifting."""
+    node = make_node()
+    n_blocks = SETTLE_BLOCKS + 12
+    rng = np.random.default_rng(123)
+    white = rng.standard_normal(n_blocks * BLOCK_SIZE).astype(np.float32)
+
+    # Bandpass 4-8 kHz (sibilant /s/ energy)
+    spec = np.fft.rfft(white)
+    freqs = np.fft.rfftfreq(len(white), 1.0 / SAMPLE_RATE)
+    bp = (freqs >= 4000) & (freqs <= 8000)
+    spec[~bp] = 0.0
+    sibilant = np.fft.irfft(spec).astype(np.float32) * 0.4
+    blocks = [torch.from_numpy(np.tile(sibilant[i * BLOCK_SIZE:(i + 1) * BLOCK_SIZE], (CHANNELS, 1)))
+              for i in range(n_blocks)]
+
+    def run_sibilant(bypass_val, pitch=12.0):
+        node.start()
+        set_params(node, pitch_shift=pitch, formant_shift=0.0, gender_morph=0.0,
+                   breathiness=0.0, sibilant_bypass=bypass_val, mix=1.0)
+        outs = [process_block(node, b) for b in blocks]
+        out = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy().astype(np.float64)
+        spec_out = np.abs(np.fft.rfft(out * np.hanning(len(out)), NFFT))
+        f_out = np.fft.rfftfreq(NFFT, 1.0 / SAMPLE_RATE)
+        # Power in original 4-8 kHz band
+        m_orig = (f_out >= 4000) & (f_out <= 8000)
+        return float(np.sum(spec_out[m_orig] ** 2))
+
+    p_bypass = run_sibilant(1.0)
+    p_no_bypass = run_sibilant(0.0)
+
+    # Bypass should preserve significantly more in-band dry sibilant energy than pitched-up vocoding
+    assert p_bypass > p_no_bypass * 10.0, \
+        f"Sibilant bypass must preserve dry unvoiced energy (bypass {p_bypass:.2e}, no-bypass {p_no_bypass:.2e})"
+
+

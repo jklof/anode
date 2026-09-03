@@ -232,6 +232,10 @@ private:
     float synth_phase_[kHalf];     // destination grid
     int   peak_bins_[kHalf];
     int   peak_owner_[kHalf];      // source bin -> nearest peak index
+    float dry_time_[kFFT];         // unshifted dry frame for unvoiced sibilant bypass
+    float dry_spec_re_[kHalf];
+    float dry_spec_im_[kHalf];
+    int   raw_peak_bins_[kHalf];   // peak detection work buffer for upper hull
     unsigned int rng_state_;
 
     void reset_transient() {
@@ -294,9 +298,10 @@ private:
         const float warp_ratio = std::pow(2.0f, gender_morph_ * 0.25f);
         const float f_nyq = sr_ * 0.5f;
         // Compression slope above the knee keeps the map monotonic and
-        // Nyquist-preserving: f_knee_target = knee*ratio, then linear to Nyq.
-        const float knee_target = kVtlnKneeHz * warp_ratio;
-        const float hf_slope = (f_nyq - knee_target) / (f_nyq - kVtlnKneeHz);
+        // Nyquist-preserving: to shift formants UP by warp_ratio (e.g. 1.189 for +1.0),
+        // destination frequency f must sample source frequency f_source = f / warp_ratio.
+        const float f_source_knee = kVtlnKneeHz / warp_ratio;
+        const float hf_slope = (f_nyq - f_source_knee) / (f_nyq - kVtlnKneeHz);
         // Gender morph: +1 (fem) adds -2.5 dB/oct (softer, leaking glottal
         // source), -1 (masc) adds +2.5 dB/oct (sharper, buzzy closure).
         const float tilt_db_per_oct = -gender_morph_ * 2.5f;
@@ -313,18 +318,13 @@ private:
                 if (f_hz < 1000.0f)
                     r = 1.0f + (warp_ratio - 1.0f)
                               * (0.6f + 0.4f * (f_hz / 1000.0f));
-                float f_warped;
+                float f_source;
                 if (f_hz <= kVtlnKneeHz) {
-                    f_warped = f_hz * r;
+                    f_source = f_hz / r;
                 } else {
-                    const float knee_r =
-                        1.0f + (warp_ratio - 1.0f);  // taper is unity >= 1 kHz
-                    f_warped = kVtlnKneeHz * knee_r
-                             + hf_slope * (f_hz - kVtlnKneeHz);
-                    if (f_warped < f_hz) f_warped = f_hz;   // keep monotonic
-                    if (f_warped > f_nyq) f_warped = f_nyq;
+                    f_source = f_source_knee + hf_slope * (f_hz - kVtlnKneeHz);
                 }
-                float b = f_warped / bin_hz;
+                float b = f_source / bin_hz;
                 if (b < 0.0f) b = 0.0f;
                 if (b > static_cast<float>(kHalf - 1))
                     b = static_cast<float>(kHalf - 1);
@@ -346,7 +346,7 @@ private:
 
     void process_frame(int c, float ratio) {
         // 1. Analysis frame: read from the input ring at stride `ratio`
-        //    (linear interpolation). Frame m starts at input position 256*m;
+        //    (4-point cubic Hermite interpolation). Frame m starts at input position 256*m;
         //    the pitch shift happens right here in the frame read.
         //    fpos grows without bound over a long session, so wrap it into
         //    ring range BEFORE the double->int cast — an out-of-range cast is
@@ -354,10 +354,20 @@ private:
         const double fpos = std::fmod(256.0 * (double)frame_index_[c], (double)kRingSize);
         for (int i = 0; i < kFFT; ++i) {
             const double pos = fpos + (double)i * (double)ratio;
-            const int i0 = (int)std::floor(pos) & kRingMask;
-            const float frac = (float)(pos - std::floor(pos));
-            const float v = in_ring_[c][i0] * (1.0f - frac)
-                          + in_ring_[c][(i0 + 1) & kRingMask] * frac;
+            const int i0 = (int)std::floor(pos);
+            const float frac = (float)(pos - (double)i0);
+
+            const float ym1 = in_ring_[c][(i0 - 1) & kRingMask];
+            const float y0  = in_ring_[c][i0 & kRingMask];
+            const float y1  = in_ring_[c][(i0 + 1) & kRingMask];
+            const float y2  = in_ring_[c][(i0 + 2) & kRingMask];
+
+            const float c0 = y0;
+            const float c1 = 0.5f * (y1 - ym1);
+            const float c2 = ym1 - 2.5f * y0 + 2.0f * y1 - 0.5f * y2;
+            const float c3 = 0.5f * (y2 - ym1) + 1.5f * (y0 - y1);
+            const float v  = ((c3 * frac + c2) * frac + c1) * frac + c0;
+
             scratch_time_[i] = v * window_[i];
         }
         forward_real(scratch_time_, spec_re_, spec_im_);
@@ -368,7 +378,7 @@ private:
             phase_[k] = std::atan2(spec_im_[k], spec_re_[k]);
         }
 
-        // 3. True envelope (Roebel-Rodet, symmetric quefrency lifter).
+        // 3. True envelope (Roebel-Rodet with peak-hull pre-interpolation).
         true_envelope();
 
         // 4. Fine excitation from the analysis envelope (before replacement),
@@ -378,17 +388,19 @@ private:
             excitation_[k] = h < 0.0f ? 0.0f : (h > 100.0f ? 100.0f : h);
         }
 
-        // 5. Formant-preserving envelope replacement + formant/VTLN warp.
-        replace_envelope(ratio);
-
-        // 6. Spectral peaks (same grid as synthesis — no bin mapping).
+        // 5. Spectral peaks on the analysis grid BEFORE envelope replacement!
+        // Prominence gating mag_[k] > envelope_[k] * 0.3f compares mag_ against
+        // its own true envelope, not the warped target envelope.
         const int num_peaks = find_peaks();
+
+        // 6. Formant-preserving envelope replacement + formant/VTLN warp.
+        replace_envelope(ratio);
 
         // 7. Peak-locked phases (time-stretch propagation) + magnitudes.
         synthesize(c, num_peaks, ratio);
 
         // 8. Sibilant complex-bin blend + reconstruction into scratch_time_.
-        reconstruct();
+        reconstruct(c, fpos, num_peaks);
 
         // 9. Synthesis window, accumulate into the OLA ring at this frame's
         //     output position (256*m). Emission is handled by the trailing
@@ -400,9 +412,44 @@ private:
     }
 
     void true_envelope() {
+        // Step 1: Detect local peaks in mag_ to construct an upper hull in the log
+        // magnitude domain. This bridges the 50 dB inter-harmonic valleys before
+        // cepstral liftering, preventing the envelope from dipping between harmonics
+        // and causing comb notches when shifting.
+        int num_raw_peaks = 0;
+        raw_peak_bins_[num_raw_peaks++] = 0;
+        for (int k = 1; k < kHalf - 1; ++k) {
+            if (mag_[k] >= mag_[k - 1] && mag_[k] >= mag_[k + 1] && mag_[k] > 1e-6f) {
+                raw_peak_bins_[num_raw_peaks++] = k;
+                if (num_raw_peaks >= kHalf - 1) break;
+            }
+        }
+        raw_peak_bins_[num_raw_peaks++] = kHalf - 1;
+
         float* A = log_mag_;
-        for (int k = 0; k < kHalf; ++k)
-            A[k] = std::log(mag_[k] + 1e-9f);
+        if (num_raw_peaks > 2) {
+            int p_idx = 0;
+            for (int k = 0; k < kHalf; ++k) {
+                while (p_idx + 1 < num_raw_peaks && raw_peak_bins_[p_idx + 1] < k) {
+                    ++p_idx;
+                }
+                const int p0 = raw_peak_bins_[p_idx];
+                const int p1 = (p_idx + 1 < num_raw_peaks) ? raw_peak_bins_[p_idx + 1] : p0;
+                const float y0 = std::log(mag_[p0] + 1e-9f);
+                const float y1 = std::log(mag_[p1] + 1e-9f);
+                float h;
+                if (p1 > p0) {
+                    h = y0 + (y1 - y0) * (static_cast<float>(k - p0) / static_cast<float>(p1 - p0));
+                } else {
+                    h = y0;
+                }
+                const float lmag = std::log(mag_[k] + 1e-9f);
+                A[k] = std::max(h, lmag);
+            }
+        } else {
+            for (int k = 0; k < kHalf; ++k)
+                A[k] = std::log(mag_[k] + 1e-9f);
+        }
 
         for (int it = 0; it < kIters; ++it) {
             // Real, EVEN 2048-pt spectrum from A -> IFFT -> real cepstrum.
@@ -427,7 +474,7 @@ private:
                 eff_lifter = static_cast<int>(kLifter - gender_morph_ * 12.0f);
                 if (eff_lifter < 36) eff_lifter = 36;
             }
-            apply_symmetric_lifter(fft_re_, kFFT, eff_lifter);
+            apply_symmetric_lifter(fft_re_, kFFT, eff_lifter, gender_morph_);
 
             // Forward FFT of the liftered (real, even) cepstrum.
             for (int i = 0; i < kFFT; ++i) fft_im_[i] = 0.0f;
@@ -442,11 +489,16 @@ private:
             envelope_[k] = std::exp(std::min(A[k], a_max));
     }
 
-    static void apply_symmetric_lifter(float* cep, int n, int cutoff) {
+    static void apply_symmetric_lifter(float* cep, int n, int cutoff, float gender_morph) {
+        // Radial exponential damping for feminine morphs (broadens formant bandwidths / lowers Q):
+        // c[q] *= gamma^q where gamma = 1.0 - 0.02 * gender_morph
+        const float gamma = (gender_morph > 0.0f) ? (1.0f - 0.02f * gender_morph) : 1.0f;
+        float gamma_pow = 1.0f;
         for (int q = 0; q < cutoff; ++q) {
-            const float w = std::cos(0.5f * kPi * static_cast<float>(q) / cutoff);
+            const float w = std::cos(0.5f * kPi * static_cast<float>(q) / cutoff) * gamma_pow;
             cep[q] *= w;
             if (q > 0) cep[n - q] *= w;   // mirror quefrency (q = 0 applied once)
+            gamma_pow *= gamma;
         }
         std::memset(cep + cutoff, 0,
                     static_cast<size_t>(n - 2 * cutoff + 1) * sizeof(float));
@@ -535,14 +587,17 @@ private:
                                          + omega_k * kHop + dphi * ratio);
         }
 
-        // Rigid peak-locking: every bin inherits its nearest peak's propagated
-        // phase plus the (stationary) source phase offsets. With no peaks
-        // (unvoiced frames) the propagated values stand.
+        // Peak-locking restricted to the main lobe of detected peaks:
+        // Lock bin k to peak kp ONLY if |k - kp| <= 2 bins and mag_[k] is within prominence.
+        // This prevents spectral valleys and high-frequency noise from locking to harmonic peaks
+        // (which turns breath/noise into a metallic, robotic buzz).
         if (num_peaks > 0) {
             for (int k = 0; k < kHalf; ++k) {
                 const int kp = peak_bins_[peak_owner_[k]];
-                synth_phase_[k] = wrap_phase(synth_phase_[kp]
-                                             + phase_[k] - phase_[kp]);
+                if (std::abs(k - kp) <= 2 && mag_[k] > envelope_[k] * 0.15f) {
+                    synth_phase_[k] = wrap_phase(synth_phase_[kp]
+                                                 + phase_[k] - phase_[kp]);
+                }
             }
         }
 
@@ -551,21 +606,41 @@ private:
         for (int k = 0; k < kHalf; ++k)
             synth_mag_[k] = envelope_[k] * (excitation_[k] * excitation_shaper_[k]);
 
-        // True H1-H2 glottal shaping for feminine morphs: boost the DOMINANT
-        // first detected spectral peak (F0) with a smooth 3-bin-raised-cosine
-        // bell, instead of statically boosting everything below 350 Hz (which
-        // also lifts H2/H3 of a low-pitched male voice, defeating the intent).
+        // Glottal source reshaping: H1 boost and H2 attenuation for feminine morphs
+        // (creating the characteristic female H1 >> H2 balance).
         if (gender_morph_ > 0.0f && num_peaks > 0) {
             const float bin_hz = sr_ / static_cast<float>(kFFT);
             const int h1_bin = peak_bins_[0];   // lowest-frequency peak (F0)
             if (static_cast<float>(h1_bin) * bin_hz < kH1MaxHz) {
-                const float boost = 1.0f + 0.8f * gender_morph_;  // up to +5 dB
+                const float boost = 1.0f + 1.2f * gender_morph_;  // up to +6.8 dB
                 for (int d = -2; d <= 2; ++d) {
                     const int kb = h1_bin + d;
                     if (kb >= 1 && kb < kHalf) {
                         const float w =
                             0.5f * (1.0f + std::cos(kPi * static_cast<float>(d) / 3.0f));
                         synth_mag_[kb] *= (1.0f + (boost - 1.0f) * w);
+                    }
+                }
+
+                // Locate H2 peak (~ 2 * h1_bin) and attenuate it for feminine morphs
+                int h2_bin = -1;
+                int min_dist = 999;
+                for (int p = 1; p < num_peaks; ++p) {
+                    int dist = std::abs(peak_bins_[p] - 2 * h1_bin);
+                    if (dist < min_dist) {
+                        min_dist = dist;
+                        h2_bin = peak_bins_[p];
+                    }
+                }
+                if (h2_bin > 0 && min_dist <= 3) {
+                    const float cut = 1.0f - 0.4f * gender_morph_; // down to -4.5 dB
+                    for (int d = -2; d <= 2; ++d) {
+                        const int kb = h2_bin + d;
+                        if (kb >= 1 && kb < kHalf) {
+                            const float w =
+                                0.5f * (1.0f + std::cos(kPi * static_cast<float>(d) / 3.0f));
+                            synth_mag_[kb] *= (1.0f + (cut - 1.0f) * w);
+                        }
                     }
                 }
             }
@@ -578,65 +653,99 @@ private:
         }
     }
 
-    // Spectral-flatness voiced/unvoiced detector: the ratio of geometric to
-    // arithmetic mean magnitude. Voiced (harmonic) frames have deep spectral
-    // valleys -> flatness near 0; unvoiced (fricative) frames are noise-like
-    // -> flatness near 0.5+. Computed in the log domain to avoid overflow.
-    float compute_voiced_prob() const {
+    // Composite voiced/unvoiced detector: low-to-high frequency energy ratio
+    // combined with speech-band spectral flatness.
+    float compute_voiced_prob(int num_peaks) const {
+        const float bin_hz = sr_ / static_cast<float>(kFFT);
+        const int k_1500 = static_cast<int>(1500.0f / bin_hz);
+        const int k_3500 = static_cast<int>(3500.0f / bin_hz);
+
+        float e_lf = 0.0f;
+        for (int k = 1; k < k_1500 && k < kHalf; ++k)
+            e_lf += mag_[k] * mag_[k];
+
+        float e_hf = 0.0f;
+        for (int k = k_3500; k < kHalf; ++k)
+            e_hf += mag_[k] * mag_[k];
+
+        const float ratio = (e_lf + 1e-7f) / (e_hf + 1e-7f);
+        const float ratio_db = 10.0f * std::log10(ratio);
+
+        const int k_300 = static_cast<int>(300.0f / bin_hz);
+        const int k_3000 = static_cast<int>(3000.0f / bin_hz);
         float log_sum = 0.0f;
         float lin_sum = 0.0f;
-        int n = 0;
-        for (int k = 1; k < kHalf; ++k) {
-            const float m = mag_[k];
-            log_sum += std::log(m + 1e-9f);
-            lin_sum += m;
-            ++n;
+        int n_sub = 0;
+        for (int k = k_300; k < k_3000 && k < kHalf; ++k) {
+            log_sum += std::log(mag_[k] + 1e-9f);
+            lin_sum += mag_[k];
+            ++n_sub;
         }
-        if (n == 0 || lin_sum <= 0.0f) return 0.0f;
-        const float geo = std::exp(log_sum / static_cast<float>(n));
-        const float flatness = geo / (lin_sum / static_cast<float>(n));
-        // flatness ~0 => fully voiced; >= 0.4 => fully unvoiced.
-        float v = 1.0f - flatness / 0.4f;
-        return std::max(0.0f, std::min(1.0f, v));
+        float flatness = 0.5f;
+        if (n_sub > 0 && lin_sum > 0.0f) {
+            const float geo = std::exp(log_sum / static_cast<float>(n_sub));
+            flatness = geo / (lin_sum / static_cast<float>(n_sub));
+        }
+
+        int lf_peaks = 0;
+        for (int p = 0; p < num_peaks; ++p) {
+            if (peak_bins_[p] < k_1500) ++lf_peaks;
+        }
+
+        float v_ratio = (ratio_db + 12.0f) / 20.0f;
+        if (v_ratio < 0.0f) v_ratio = 0.0f;
+        if (v_ratio > 1.0f) v_ratio = 1.0f;
+
+        float v_flat = 1.0f - flatness / 0.35f;
+        if (v_flat < 0.0f) v_flat = 0.0f;
+        if (v_flat > 1.0f) v_flat = 1.0f;
+
+        float prob = (lf_peaks >= 2) ? (0.65f * v_ratio + 0.35f * v_flat)
+                                     : (0.85f * v_ratio + 0.15f * v_flat);
+        if (prob < 0.0f) prob = 0.0f;
+        if (prob > 1.0f) prob = 1.0f;
+        return prob;
     }
 
-    void reconstruct() {
+    void reconstruct(int c, double fpos, int num_peaks) {
         // Voiced/unvoiced-gated sibilant crossfade + complex-bin blending of
         // the BAND-LIMITED, tract-shaped aspiration noise, then rebuild the
-        // full conjugate-symmetric spectrum and invert. NEVER interpolate
-        // phase angles: (1-g)*Y_voc + g*X_orig avoids +-pi branch-cut
-        // cancellation.
+        // full conjugate-symmetric spectrum and invert.
         const float bin_hz = sr_ / static_cast<float>(kFFT);
 
         // Dynamic V/UV detection: sibilant dry-bin mixing is active ONLY on
-        // unvoiced frames. A static 3.5 kHz crossover comb-filtered vowels
-        // (F3/F4 live at 2.5-4.5 kHz) by blending two pitch-shifted spectra.
-        const float voiced_prob = compute_voiced_prob();
+        // unvoiced frames.
+        const float voiced_prob = compute_voiced_prob(num_peaks);
         const float unvoiced_weight = (1.0f - voiced_prob) * sibilant_mix_;
 
-        // Tract-shaped aspiration: the noise gain follows the spectral
-        // ENVELOPE (not the harmonic magnitudes), so breath energy fills the
-        // valleys BETWEEN harmonics as continuous glottal turbulence instead
-        // of an amplitude-modulated buzz on top of discrete harmonics. The
-        // 1/max_env normalization keeps the level signal-proportional and
-        // bounded. Injected into complex bins ONLY in the 1.5-7 kHz band
-        // where real glottal aspiration energy lives (DC and Nyquist
-        // strictly skipped).
-        float max_env = 1e-9f;
-        for (int k = 0; k < kHalf; ++k) {
-            if (envelope_[k] > max_env) max_env = envelope_[k];
+        // If unvoiced sibilant bypass is active, read the true UNSHIFTED dry frame
+        // from in_ring_ at stride 1.0 and compute its FFT for blending.
+        bool has_dry_spec = false;
+        if (unvoiced_weight > 0.01f) {
+            for (int i = 0; i < kFFT; ++i) {
+                const double pos = fpos + static_cast<double>(i);
+                const int i0 = static_cast<int>(std::floor(pos));
+                const float frac = static_cast<float>(pos - static_cast<double>(i0));
+                const float v = in_ring_[c][i0 & kRingMask] * (1.0f - frac)
+                              + in_ring_[c][(i0 + 1) & kRingMask] * frac;
+                dry_time_[i] = v * window_[i];
+            }
+            forward_real(dry_time_, dry_spec_re_, dry_spec_im_);
+            has_dry_spec = true;
         }
+
+        // Tract-shaped aspiration: signal-proportional noise scaled by the vocal tract
+        // envelope and gated by voicing (natural vocal cord leakage occurs during phonation).
         const int k_low = static_cast<int>(1500.0f * (kFFT / sr_));
         const int k_high = static_cast<int>(7000.0f * (kFFT / sr_));
-        const float breath_scale = breathiness_ * 0.02f;
+        const float breath_scale = breathiness_ * 0.04f * voiced_prob;
 
         for (int kd = 0; kd < kHalf; ++kd) {
             float vr = synth_mag_[kd] * std::cos(synth_phase_[kd]);
             float vi = synth_mag_[kd] * std::sin(synth_phase_[kd]);
 
             // Complex tract-filtered breath injection (1.5-7 kHz band).
-            if (breathiness_ > 0.0f && kd >= k_low && kd <= k_high
-                && kd < kHalf - 1) {
+            if (breath_scale > 0.0f && kd >= k_low && kd <= k_high && kd < kHalf - 1) {
                 rng_state_ ^= rng_state_ << 13;
                 rng_state_ ^= rng_state_ >> 17;
                 rng_state_ ^= rng_state_ << 5;
@@ -649,8 +758,7 @@ private:
                 const float n_im =
                     (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
 
-                const float env_norm = envelope_[kd] / max_env;
-                const float noise_gain = breath_scale * env_norm;
+                const float noise_gain = breath_scale * envelope_[kd];
                 vr += n_re * noise_gain;
                 vi += n_im * noise_gain;
             }
@@ -664,13 +772,19 @@ private:
                 band_gain = 0.5f * (1.0f - std::cos(kPi * mu));
             }
             // Gate the dry sibilant blend by unvoiced-ness: during vowels
-            // (voiced_prob ~ 1) the bypass is fully disengaged, eliminating
-            // dual-pitch comb filtering on high formants; on unvoiced frames
-            // the original consonant spectrum passes through unshifted.
+            // (voiced_prob ~ 1) the bypass is fully disengaged; on unvoiced frames
+            // the true unshifted dry consonant spectrum passes through cleanly.
             const float g = unvoiced_weight * band_gain;
 
-            float yr = (1.0f - g) * vr + g * spec_re_[kd];
-            float yi = (1.0f - g) * vi + g * spec_im_[kd];
+            float yr, yi;
+            if (g > 0.0f && has_dry_spec) {
+                yr = (1.0f - g) * vr + g * dry_spec_re_[kd];
+                yi = (1.0f - g) * vi + g * dry_spec_im_[kd];
+            } else {
+                yr = vr;
+                yi = vi;
+            }
+
             if (!std::isfinite(yr)) yr = 0.0f;   // NaN/Inf -> 0 guard
             if (!std::isfinite(yi)) yi = 0.0f;
             fft_re_[kd] = yr;
