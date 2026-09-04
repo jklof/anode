@@ -168,6 +168,48 @@ def test_vocal_transformer_native_mono_bypass_writes_stereo():
         "bypass with channels=1 must write both output channels"
 
 
+def test_vocal_transformer_downward_shift_dry_sibilant_no_future_read():
+    """Regression: for downward pitch shifts (ratio < 1), frame dispatch must
+    wait for the FULL 2048-sample input window because the dry sibilant path
+    in reconstruct() reads stride 1.0 (unshifted). Dispatching on 2048*ratio
+    alone read not-yet-received future samples as stale ring data, corrupting
+    the dry sibilant spectrum on every unvoiced frame. With white noise
+    (unvoiced) starting from a freshly reset pipeline the stale ring content
+    is either zeros or long-past (uncorrelated) audio, so the 4-5.5 kHz output
+    band must still correlate with the latency-aligned dry input."""
+    node = make_node()
+    set_params(node, pitch_shift=-12.0, formant_shift=0.0, gender_morph=0.0,
+               mix=1.0, sibilant_bypass=1.0, breathiness=0.0)
+    rng = np.random.default_rng(7)
+    n_blocks = 24
+    blocks = [torch.from_numpy(np.tile(
+        (rng.standard_normal(BLOCK_SIZE) * 0.2).astype(np.float32), (CHANNELS, 1)))
+        for _ in range(n_blocks)]
+    flat_in = torch.cat(blocks, dim=1)
+    out = torch.cat([process_block(node, b) for b in blocks], dim=1)
+
+    # Stream alignment (see test_vocal_transformer_mid_mix_blends_latency_aligned_dry):
+    # output sample j corresponds to input sample j - (LATENCY - BLOCK_SIZE).
+    align = LATENCY - BLOCK_SIZE
+    seg_len = 4 * BLOCK_SIZE
+    dry = flat_in[:, :seg_len].numpy().astype(np.float64)
+    wet = out[:, align:align + seg_len].numpy().astype(np.float64)
+
+    # Isolate the 4-5.5 kHz raised-cosine sibilant bypass band.
+    freqs = np.fft.rfftfreq(seg_len, 1.0 / SAMPLE_RATE)
+    band = (freqs >= 4000.0) & (freqs <= 5500.0)
+    def band_signal(x):
+        X = np.fft.rfft(x, axis=1)
+        X[:, ~band] = 0.0
+        return np.fft.irfft(X, axis=1)
+    dry_band = band_signal(dry)
+    wet_band = band_signal(wet)
+    corr = float(np.corrcoef(dry_band[0], wet_band[0])[0, 1])
+    assert corr > 0.4, \
+        f"dry sibilant band lost on downward shift (corr {corr:.3f}); " \
+        "frame dispatch must wait for the full 2048-sample dry window"
+
+
 def test_vocal_transformer_zero_shift_spectrum():
     """mix=1, all shifts neutral: COLA-normalized identity mapping. Compare
     magnitude spectra (a phase vocoder cannot be waveform-accurate)."""

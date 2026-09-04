@@ -61,11 +61,20 @@ constexpr float kXoverHighHz = 5500.0f;
 constexpr float kVtlnKneeHz = 4500.0f;    // piecewise-linear VTLN knee
 constexpr float kH1MaxHz = 400.0f;        // dynamic H1 boost applies below this
 constexpr unsigned int kRngSeed = 0x1D872B41u;
+// RT burst guard: frames processed per process() call, per channel. In steady
+// state the pipeline needs exactly 2 frames per 512-sample block; the cap only
+// engages when a large downward pitch-modulation step suddenly shrinks the
+// frame span, leaving frame_index_ up to ~30 frames behind. Without the cap a
+// single audio callback would run hundreds of 2048-pt FFTs and blow the RT
+// deadline; with it the backlog drains over the following blocks (the lag
+// stays far below the 16384-sample input ring, so no frame data is lost).
+constexpr int kMaxFramesPerCall = 4;
 
 inline float wrap_phase(float x) {
-    while (x > kPi) x -= kTwoPi;
-    while (x <= -kPi) x += kTwoPi;
-    return x;
+    // Branchless reduction (a data-dependent while-loop could spin for a very
+    // long time on a non-finite / huge upstream value). NaN propagates and is
+    // caught by the isfinite clamps in synthesize().
+    return x - kTwoPi * std::floor((x + kPi) / kTwoPi);
 }
 
 class VocalTransformerProcessor {
@@ -155,9 +164,20 @@ public:
             // Process every frame whose input span is fully available.
             // Frame m starts at input position 256*m and spans 2048*ratio
             // input samples — the pitch shift happens in the frame read.
-            while (256.0 * (double)frame_index_[c] + 2048.0 * (double)ratio
-                   <= (double)total_received_[c] + 1e-6) {
+            // The dry sibilant frame in reconstruct() reads stride 1.0, i.e.
+            // the FULL 2048-sample window, so dispatch must wait for
+            // 2048*max(ratio, 1) input samples. For downward shifts
+            // (ratio < 1) the pitch-shifted frame is available earlier than
+            // the dry frame; dispatching on 2048*ratio alone would read
+            // not-yet-received future samples as stale ring data and corrupt
+            // the dry sibilant spectrum on every unvoiced frame.
+            const double span = 2048.0 * (double)std::max(ratio, 1.0f);
+            int frames_this_call = 0;
+            while (256.0 * (double)frame_index_[c] + span
+                       <= (double)total_received_[c] + 1e-6
+                   && frames_this_call < kMaxFramesPerCall) {
                 process_frame(c, ratio);
+                ++frames_this_call;
             }
 
             // Emit this block's output from the fixed latency L behind the
@@ -236,6 +256,7 @@ private:
     float dry_time_[kFFT];         // unshifted dry frame for unvoiced sibilant bypass
     float dry_spec_re_[kHalf];
     float dry_spec_im_[kHalf];
+    float log_mag_in_[kHalf];      // precomputed log(mag_) input for the hull
     int   raw_peak_bins_[kHalf];   // peak detection work buffer for upper hull
     unsigned int rng_state_;
 
@@ -431,6 +452,12 @@ private:
         }
         raw_peak_bins_[num_raw_peaks++] = kHalf - 1;
 
+        // Precompute the input log-magnitudes once: the hull loop below needs
+        // log(mag_[k]) at every bin plus log() at both bracketing peaks —
+        // recomputing them inline triples the log() count per frame.
+        for (int k = 0; k < kHalf; ++k)
+            log_mag_in_[k] = std::log(mag_[k] + 1e-9f);
+
         float* A = log_mag_;
         if (num_raw_peaks > 2) {
             int p_idx = 0;
@@ -440,20 +467,19 @@ private:
                 }
                 const int p0 = raw_peak_bins_[p_idx];
                 const int p1 = (p_idx + 1 < num_raw_peaks) ? raw_peak_bins_[p_idx + 1] : p0;
-                const float y0 = std::log(mag_[p0] + 1e-9f);
-                const float y1 = std::log(mag_[p1] + 1e-9f);
+                const float y0 = log_mag_in_[p0];
+                const float y1 = log_mag_in_[p1];
                 float h;
                 if (p1 > p0) {
                     h = y0 + (y1 - y0) * (static_cast<float>(k - p0) / static_cast<float>(p1 - p0));
                 } else {
                     h = y0;
                 }
-                const float lmag = std::log(mag_[k] + 1e-9f);
-                A[k] = std::max(h, lmag);
+                A[k] = std::max(h, log_mag_in_[k]);
             }
         } else {
             for (int k = 0; k < kHalf; ++k)
-                A[k] = std::log(mag_[k] + 1e-9f);
+                A[k] = log_mag_in_[k];
         }
 
         for (int it = 0; it < kIters; ++it) {
@@ -734,14 +760,12 @@ private:
         // from in_ring_ at stride 1.0 and compute its FFT for blending.
         bool has_dry_spec = false;
         if (unvoiced_weight > 0.01f) {
-            for (int i = 0; i < kFFT; ++i) {
-                const double pos = fpos + static_cast<double>(i);
-                const int i0 = static_cast<int>(std::floor(pos));
-                const float frac = static_cast<float>(pos - static_cast<double>(i0));
-                const float v = in_ring_[c][i0 & kRingMask] * (1.0f - frac)
-                              + in_ring_[c][(i0 + 1) & kRingMask] * frac;
-                dry_time_[i] = v * window_[i];
-            }
+            // fpos is always an exact integer (256*m mod kRingSize), so the
+            // stride-1.0 dry read needs no floor/interpolation — frac is
+            // identically zero and linear interpolation here is dead math.
+            const int fp = static_cast<int>(fpos);
+            for (int i = 0; i < kFFT; ++i)
+                dry_time_[i] = in_ring_[c][(fp + i) & kRingMask] * window_[i];
             forward_real(dry_time_, dry_spec_re_, dry_spec_im_);
             has_dry_spec = true;
         }

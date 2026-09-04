@@ -147,6 +147,12 @@ class VocalTransformer(FFINode):
         # FFINode dispatch so block-rate CV can be pushed BETWEEN staged
         # parameter sync and the native process() call.
         if not self.lib or not self.dsp_handle:
+            # Anti-ghosting: never leave stale audio in the output buffer
+            # (AGENTS.md §2 — every audio output must be fully written every
+            # processed block), even when the native backend is unavailable.
+            out_slot = self.outputs.get("out")
+            if out_slot:
+                out_slot.buffer.zero_()
             return
 
         # 1. Sync staged parameters (canonical path)
