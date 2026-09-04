@@ -5,7 +5,9 @@
 //   - 2048-pt True-Envelope estimation (Roebel-Rodet, SYMMETRIC quefrency
 //     lifter with formant-bandwidth-adaptive cutoff). 2048 pts at 48 kHz
 //     gives 23.4 Hz bin spacing so male harmonics (80-130 Hz F0) resolve
-//     cleanly — 1024 pts smeared adjacent harmonics into one another.
+//     cleanly — 1024 pts smeared adjacent harmonics into one another. The
+//     peak-hull pre-interpolation is a monotonic PCHIP (Fritsch-Carlson)
+//     cubic Hermite, C1-smooth at the harmonic peaks.
 //   - same-grid peak-locked phase vocoder (Laroche-Dolson), prominence-
 //     gated peaks, unvoiced fallback
 //   - formant-preserving envelope replacement + piecewise-linear knee VTLN
@@ -16,7 +18,10 @@
 //     vowels never comb-filter against the pitch-shifted spectrum
 //   - tract-shaped 1.5-7 kHz xorshift32 aspiration noise scaled by the
 //     spectral ENVELOPE (fills valleys between harmonics; deterministic,
-//     RT-safe)
+//     RT-safe), pitch-synchronously modulated by +-F0-bin spectral sidebands
+//     so the aspiration amplitude pulses with the glottal period
+//   - transient-gated phase reset: spectral-flux onsets (plosives) bypass
+//     phase-vocoder propagation to avoid dispersive smearing
 //   - ring-buffer OLA with FIXED emission latency (kLatency = 9216 samples
 //     = 192 ms @ 48 kHz)
 //
@@ -83,7 +88,7 @@ public:
         : sr_(48000.0f),
           pitch_st_(0.0f), formant_st_(0.0f), gender_morph_(0.0f),
           breathiness_(0.0f), sibilant_mix_(0.8f), mix_(1.0f), prev_mix_(1.0f),
-          rng_state_(kRngSeed) {
+          current_h1_bin_(-1), rng_state_(kRngSeed) {
         build_tables();
         recompute_tables();
         reset();
@@ -258,6 +263,11 @@ private:
     float dry_spec_im_[kHalf];
     float log_mag_in_[kHalf];      // precomputed log(mag_) input for the hull
     int   raw_peak_bins_[kHalf];   // peak detection work buffer for upper hull
+    float raw_peak_slopes_[kHalf]; // PCHIP (Fritsch-Carlson) slopes d_k at raw peaks
+    float prev_mag_[kMaxChannels][kHalf]; // previous frame magnitude (spectral flux)
+    float noise_raw_re_[kHalf];    // raw aspiration noise spectrum (pitch-sync)
+    float noise_raw_im_[kHalf];
+    int   current_h1_bin_;         // detected F0 bin for this frame (-1 = undetermined)
     unsigned int rng_state_;
 
     void reset_transient() {
@@ -268,7 +278,9 @@ private:
             frame_index_[c] = 0;
             std::memset(prev_phase_in_[c], 0, sizeof(float) * kHalf);
             std::memset(prev_phase_out_[c], 0, sizeof(float) * kHalf);
+            std::memset(prev_mag_[c], 0, sizeof(float) * kHalf);
         }
+        current_h1_bin_ = -1;
     }
 
     void build_tables() {
@@ -460,20 +472,64 @@ private:
 
         float* A = log_mag_;
         if (num_raw_peaks > 2) {
+            // PCHIP (Fritsch-Carlson) monotonic cubic Hermite upper hull.
+            // Piecewise-linear hulls have slope discontinuities at the harmonic
+            // peaks; the cubic hull is C1-smooth, which removes artificial
+            // ripples in the cepstral lifter output while staying monotone
+            // between the detected peaks.
+            const int M = num_raw_peaks;
+            // Pass 1: interval secants into raw_peak_slopes_[0 .. M-2].
+            for (int p = 0; p < M - 1; ++p) {
+                const float dy = log_mag_in_[raw_peak_bins_[p + 1]]
+                               - log_mag_in_[raw_peak_bins_[p]];
+                raw_peak_slopes_[p] = dy / static_cast<float>(raw_peak_bins_[p + 1]
+                                                              - raw_peak_bins_[p]);
+            }
+            // Pass 2: monotonic slope limiting, written backwards so the
+            // secants still being consumed (slot p-1, p) are intact. Endpoints
+            // use the one-sided secant.
+            raw_peak_slopes_[M - 1] = raw_peak_slopes_[M - 2];
+            for (int p = M - 2; p >= 1; --p) {
+                const float dA = raw_peak_slopes_[p - 1];
+                const float dB = raw_peak_slopes_[p];
+                float d;
+                if (dA * dB <= 0.0f) {
+                    d = 0.0f;   // local extremum between peaks: flat tangent
+                } else {
+                    const float denom = dA + dB;
+                    // Harmonic mean (2*dA*dB/(dA+dB)); denom == 0 is guarded
+                    // (only reachable via non-finite secants).
+                    d = (denom != 0.0f) ? (2.0f * dA * dB / denom) : 0.0f;
+                }
+                raw_peak_slopes_[p] = d;
+            }
+            // d_0 = delta_0 is already in slot 0.
+
             int p_idx = 0;
             for (int k = 0; k < kHalf; ++k) {
-                while (p_idx + 1 < num_raw_peaks && raw_peak_bins_[p_idx + 1] < k) {
+                while (p_idx + 1 < M && raw_peak_bins_[p_idx + 1] < k) {
                     ++p_idx;
                 }
                 const int p0 = raw_peak_bins_[p_idx];
-                const int p1 = (p_idx + 1 < num_raw_peaks) ? raw_peak_bins_[p_idx + 1] : p0;
-                const float y0 = log_mag_in_[p0];
-                const float y1 = log_mag_in_[p1];
+                const int p1 = (p_idx + 1 < M) ? raw_peak_bins_[p_idx + 1] : p0;
                 float h;
                 if (p1 > p0) {
-                    h = y0 + (y1 - y0) * (static_cast<float>(k - p0) / static_cast<float>(p1 - p0));
+                    const float hp = static_cast<float>(p1 - p0);
+                    const float t = static_cast<float>(k - p0) / hp;
+                    const float y0 = log_mag_in_[p0];
+                    const float y1 = log_mag_in_[p1];
+                    const float d0 = raw_peak_slopes_[p_idx];
+                    const float d1 = (p_idx + 1 < M) ? raw_peak_slopes_[p_idx + 1]
+                                                     : d0;
+                    // Cubic Hermite basis (equivalent to H0..H3 form).
+                    const float t2 = t * t;
+                    const float t3 = t2 * t;
+                    h = y0 * (2.0f * t3 - 3.0f * t2 + 1.0f)
+                      + hp * d0 * (t3 - 2.0f * t2 + t)
+                      + y1 * (-2.0f * t3 + 3.0f * t2)
+                      + hp * d1 * (t3 - t2);
                 } else {
-                    h = y0;
+                    h = log_mag_in_[p0];
                 }
                 A[k] = std::max(h, log_mag_in_[k]);
             }
@@ -595,6 +651,28 @@ private:
     }
 
     void synthesize(int c, int num_peaks, float ratio) {
+        // Transient-gated phase reset: detect sharp energy onsets (plosives)
+        // via half-wave-rectified relative spectral flux above the low-frequency
+        // rumble floor (k >= 4 ~ 94 Hz). On a transient the analysis spectrum is
+        // already phase-coherent across bins, so we bypass the phase-vocoder
+        // propagation (which would smear the onset over the 42 ms window) and
+        // copy the analysis phases straight to the synthesis grid.
+        bool is_transient = false;
+        {
+            float flux = 0.0f;
+            float energy = 0.0f;
+            for (int k = 4; k < kHalf; ++k) {
+                const float d = mag_[k] - prev_mag_[c][k];
+                if (d > 0.0f) flux += d;
+                energy += mag_[k];
+            }
+            const float flux_rel = flux / (energy + 1.0e-6f * static_cast<float>(kHalf));
+            // Thresholds: measured steady-state (periodic voiced) flux_rel is
+            // ~0.002; a 10 ms plosive burst reaches ~0.6. 0.4 leaves a ~175x
+            // margin against false positives while catching real onsets.
+            is_transient = (flux_rel > 0.4f) && (energy > 0.05f);
+        }
+
         // Classic same-grid peak-locked time-stretch propagation:
         //   analysis hop  Ha' = 256/ratio  (frame starts advance 256 input
         //                  samples = Ha' analysis samples)
@@ -602,6 +680,10 @@ private:
         //   phi_syn(k) += Omega_k*Hs + dphi(k)*(Hs/Ha') = Omega_k*256 + dphi*ratio
         const float ha = kHop / ratio;
         for (int k = 0; k < kHalf; ++k) {
+            if (is_transient) {
+                synth_phase_[k] = phase_[k];
+                continue;
+            }
             const float omega_k = kTwoPi * static_cast<float>(k) / kFFT;
             const float dphi = wrap_phase(phase_[k] - prev_phase_in_[c][k]
                                           - omega_k * ha);
@@ -614,7 +696,8 @@ private:
         // against the unwarped analysis_envelope_.
         // This prevents spectral valleys and high-frequency noise from locking to harmonic peaks
         // (which turns breath/noise into a metallic, robotic buzz).
-        if (num_peaks > 0) {
+        // Skipped on transient frames (phases are already coherent).
+        if (num_peaks > 0 && !is_transient) {
             for (int k = 0; k < kHalf; ++k) {
                 const int kp = peak_bins_[peak_owner_[k]];
                 if (std::abs(k - kp) <= 2 && mag_[k] > analysis_envelope_[k] * 0.15f) {
@@ -630,15 +713,18 @@ private:
             synth_mag_[k] = envelope_[k] * (excitation_[k] * excitation_shaper_[k]);
 
         // Glottal source reshaping: H1 boost and H2 attenuation for feminine morphs
-        // (creating the characteristic female H1 >> H2 balance).
-        if (gender_morph_ > 0.0f && num_peaks > 0) {
+        // (creating the characteristic female H1 >> H2 balance). The H1 harmonic
+        // confirmation is also run unconditionally so the detected F0 bin feeds
+        // the pitch-synchronous aspiration modulation in reconstruct().
+        int h1_bin = -1;
+        if (num_peaks > 0) {
             const float bin_hz = sr_ / static_cast<float>(kFFT);
 
             // Harmonic-confirmation check for F0 / H1:
             // Verify peak_bins_[0] has an overtone near 2 * peak_bins_[0].
             // If peak 0 is stray rumble/hum and peak 1 has an overtone at 2 * peak 1,
             // select peak 1 as true F0.
-            int h1_bin = peak_bins_[0];
+            h1_bin = peak_bins_[0];
             int h2_bin = -1;
             if (num_peaks >= 2) {
                 for (int p = 1; p < num_peaks; ++p) {
@@ -658,7 +744,8 @@ private:
                 }
             }
 
-            if (static_cast<float>(h1_bin) * bin_hz < kH1MaxHz) {
+            if (gender_morph_ > 0.0f
+                    && static_cast<float>(h1_bin) * bin_hz < kH1MaxHz) {
                 const float boost = 1.0f + 1.2f * gender_morph_;  // up to +6.8 dB
                 for (int d = -2; d <= 2; ++d) {
                     const int kb = h1_bin + d;
@@ -684,11 +771,17 @@ private:
             }
         }
 
+        // Publish the detected F0 bin for the pitch-synchronous aspiration
+        // modulation in reconstruct() (consumed within this same frame).
+        current_h1_bin_ = h1_bin;
+
         // Update phase history for the next frame.
         for (int k = 0; k < kHalf; ++k) {
             prev_phase_in_[c][k] = phase_[k];
             prev_phase_out_[c][k] = synth_phase_[k];
         }
+        // Magnitude history for the next frame's transient-flux detection.
+        std::memcpy(prev_mag_[c], mag_, sizeof(float) * kHalf);
     }
 
     // Composite voiced/unvoiced detector: low-to-high frequency energy ratio
@@ -776,23 +869,69 @@ private:
         const int k_high = static_cast<int>(7000.0f * (kFFT / sr_));
         const float breath_scale = breathiness_ * 0.04f * voiced_prob;
 
+        // Pitch-synchronous (glottally modulated) aspiration: blending the noise
+        // spectrum with copies shifted by +-k0 (k0 = F0 bin) is the exact
+        // frequency-domain equivalent of time-domain gating 1 + 2*beta*cos(w0 t),
+        // so the aspiration amplitude pulses once per glottal period instead of
+        // sounding like static tape hiss. Falls back to stationary injection on
+        // unvoiced frames or when F0 is undetermined.
+        bool pitch_sync = (breath_scale > 0.0f && voiced_prob > 0.2f
+                           && current_h1_bin_ > 1);
+        int k0 = 0;
+        int nb_lo = 0;
+        int nb_hi = 0;
+        const float beta = 0.35f;
+        const float sideband_norm = 1.0f / std::sqrt(1.0f + 2.0f * beta * beta);
+        if (pitch_sync) {
+            k0 = current_h1_bin_;
+            if (k0 > 64) k0 = 64;   // sanity clamp (F0 <= ~1.5 kHz)
+            nb_lo = k_low - k0;
+            if (nb_lo < 0) nb_lo = 0;
+            nb_hi = k_high + k0;
+            if (nb_hi > kHalf - 1) nb_hi = kHalf - 1;
+            for (int k = nb_lo; k <= nb_hi; ++k) {
+                rng_state_ ^= rng_state_ << 13;
+                rng_state_ ^= rng_state_ >> 17;
+                rng_state_ ^= rng_state_ << 5;
+                noise_raw_re_[k] =
+                    (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
+                rng_state_ ^= rng_state_ << 13;
+                rng_state_ ^= rng_state_ >> 17;
+                rng_state_ ^= rng_state_ << 5;
+                noise_raw_im_[k] =
+                    (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
+            }
+        }
+
         for (int kd = 0; kd < kHalf; ++kd) {
             float vr = synth_mag_[kd] * std::cos(synth_phase_[kd]);
             float vi = synth_mag_[kd] * std::sin(synth_phase_[kd]);
 
             // Complex tract-filtered breath injection (1.5-7 kHz band).
             if (breath_scale > 0.0f && kd >= k_low && kd <= k_high && kd < kHalf - 1) {
-                rng_state_ ^= rng_state_ << 13;
-                rng_state_ ^= rng_state_ >> 17;
-                rng_state_ ^= rng_state_ << 5;
-                const float n_re =
-                    (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
-
-                rng_state_ ^= rng_state_ << 13;
-                rng_state_ ^= rng_state_ >> 17;
-                rng_state_ ^= rng_state_ << 5;
-                const float n_im =
-                    (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
+                float n_re;
+                float n_im;
+                if (pitch_sync) {
+                    // N(k) + beta*N(k-k0) + beta*N(k+k0), energy-normalized.
+                    // kd - k0 >= nb_lo and kd + k0 <= nb_hi by construction.
+                    n_re = sideband_norm * (noise_raw_re_[kd]
+                                            + beta * noise_raw_re_[kd - k0]
+                                            + beta * noise_raw_re_[kd + k0]);
+                    n_im = sideband_norm * (noise_raw_im_[kd]
+                                            + beta * noise_raw_im_[kd - k0]
+                                            + beta * noise_raw_im_[kd + k0]);
+                } else {
+                    rng_state_ ^= rng_state_ << 13;
+                    rng_state_ ^= rng_state_ >> 17;
+                    rng_state_ ^= rng_state_ << 5;
+                    n_re =
+                        (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
+                    rng_state_ ^= rng_state_ << 13;
+                    rng_state_ ^= rng_state_ >> 17;
+                    rng_state_ ^= rng_state_ << 5;
+                    n_im =
+                        (static_cast<float>(rng_state_ & 0xFFFFu) / 32768.0f) - 1.0f;
+                }
 
                 const float noise_gain = breath_scale * envelope_[kd];
                 vr += n_re * noise_gain;

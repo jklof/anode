@@ -634,3 +634,165 @@ def test_vocal_transformer_sibilant_bypass_unvoiced():
         f"Sibilant bypass must preserve dry unvoiced energy (bypass {p_bypass:.2e}, no-bypass {p_no_bypass:.2e})"
 
 
+def _blocks_from_mono(x, n_blocks):
+    """Split a float32 mono signal into (CHANNELS, BLOCK_SIZE) blocks."""
+    return [torch.from_numpy(np.tile(x[i * BLOCK_SIZE:(i + 1) * BLOCK_SIZE],
+                                     (CHANNELS, 1)).copy())
+            for i in range(n_blocks)]
+
+
+def test_vocal_transformer_transient_onset_phase_coherence():
+    """Transient-gated phase reset: a sharp plosive-like onset must pass
+    through the wet path without being dispersed by the phase-vocoder
+    accumulator — the impulse peak is preserved and the response stays
+    compact (no long smeared tail), and processing stays finite."""
+    node = make_node()
+    set_params(node, mix=1.0, pitch_shift=0.0, formant_shift=0.0,
+               gender_morph=0.0, breathiness=0.0, sibilant_bypass=0.0)
+
+    silence = torch.zeros(BLOCK_SIZE, CHANNELS)
+    for _ in range(SETTLE_BLOCKS):
+        process_block(node, silence)
+
+    imp = torch.zeros(BLOCK_SIZE, CHANNELS)
+    imp[0, 0] = 0.9
+    outs = [process_block(node, imp)]
+    outs += [process_block(node, silence) for _ in range(SETTLE_BLOCKS)]
+    out = torch.cat(outs, dim=1)[0].numpy()
+
+    assert np.isfinite(out).all()
+    peak = float(np.max(np.abs(out)))
+    # The impulse must survive at substantial amplitude (phase incoherence
+    # would cancel the onset across the overlapping synthesis frames).
+    assert peak >= 0.7 * 0.9, f"impulse peak attenuated: {peak:.3f}"
+    # Response must be compact: at most a handful of samples above 10% of
+    # the peak (a dispersed/smeared transient spreads over many samples).
+    n_above = int(np.sum(np.abs(out) > 0.1 * peak))
+    assert n_above <= 8, f"transient smeared across {n_above} samples"
+
+    # Plosive burst superimposed on a steady vowel: output must stay finite
+    # and bounded (the gate skips phase propagation on onset frames).
+    rng = np.random.default_rng(3)
+    n_total = (SETTLE_BLOCKS + 40) * BLOCK_SIZE
+    n = np.arange(n_total, dtype=np.float64)
+    saw = np.zeros(n.shape)
+    for h in range(1, 31):
+        saw += (1.0 / h) * np.sin(2.0 * np.pi * 220.0 * h * n / SAMPLE_RATE)
+    saw = saw / np.max(np.abs(saw)) * 0.3
+    start = n_total // 2
+    saw[start:start + 480] += 0.5 * rng.standard_normal(480) * np.hanning(480)
+    blocks = _blocks_from_mono(saw.astype(np.float32), SETTLE_BLOCKS + 40)
+    node.start()
+    outs = [process_block(node, b) for b in blocks]
+    out = torch.cat(outs, dim=1).numpy()
+    assert torch.isfinite(torch.from_numpy(out)).all()
+    assert float(np.max(np.abs(out))) < 2.0
+
+
+def test_vocal_transformer_pchip_hull_monotonicity():
+    """PCHIP upper hull: the true-envelope pre-interpolation is a monotonic
+    cubic Hermite hull. Regression guard: the synthesized spectrum must keep
+    harmonic peaks dominant over the inter-harmonic valleys (the upper hull
+    must not dip between harmonics nor ripple above the peaks), and extreme
+    formant morphs must stay finite and bounded."""
+    node = make_node()
+    blocks = saw_blocks(220.0, SETTLE_BLOCKS + 8, amp=0.4)
+    set_params(node, breathiness=0.0, mix=1.0, pitch_shift=0.0,
+               formant_shift=0.0, gender_morph=0.0, sibilant_bypass=0.0)
+    for b in blocks[:SETTLE_BLOCKS]:
+        process_block(node, b)
+    out = process_block(node, blocks[-1])[0].numpy()
+
+    assert np.isfinite(out).all()
+    spec = np.abs(np.fft.rfft(out * np.hanning(len(out)), NFFT))
+    freqs = np.fft.rfftfreq(NFFT, 1.0 / SAMPLE_RATE)
+    contrasts = []
+    for h in range(9, 23):  # 1980 .. 5060 Hz
+        fc = 220.0 * h
+        m = (freqs > fc - 15.0) & (freqs < fc + 15.0)
+        v = (freqs > fc + 30.0) & (freqs < fc + 90.0)
+        contrasts.append(spec[m].max() / max(spec[v].min(), 1e-12))
+    median_contrast_db = 20.0 * float(np.log10(np.median(contrasts)))
+    # Harmonic peaks must dominate the valleys between them: a hull that
+    # dips between harmonics (or ripples) collapses this contrast.
+    assert median_contrast_db > 3.0, \
+        f"harmonic-to-valley contrast too low: {median_contrast_db:.2f} dB"
+
+    # Extreme morph must remain finite and bounded.
+    node.start()
+    set_params(node, breathiness=0.0, mix=1.0, pitch_shift=0.0,
+               formant_shift=12.0, gender_morph=1.0, sibilant_bypass=0.0)
+    for b in blocks[:SETTLE_BLOCKS]:
+        process_block(node, b)
+    out = process_block(node, blocks[-1])
+    assert torch.isfinite(out).all()
+    assert float(out.abs().max()) < 2.0
+
+
+def _sideband_bin_correlation(diff, k0):
+    """Correlation between spectral bins k and k+k0 of the aspiration-noise
+    difference signal, measured on frame-grid-aligned 2048-pt STFT columns.
+
+    The pitch-synchronous aspiration blends each noise bin with its +-k0
+    neighbours (the frequency-domain equivalent of glottal gating
+    1 + 2*beta*cos(w0 t)), which forces a positive bin correlation of
+    approximately beta / (1 + 2*beta^2) ~= 0.28 for beta = 0.35. Stationary
+    (unmodulated) noise has approximately zero bin correlation."""
+    d = diff[LATENCY:]
+    d = d[:((len(d)) // 2048) * 2048]
+    w = np.hanning(2048)
+    cols = np.array([np.fft.rfft(d[i * 2048:(i + 1) * 2048] * w)
+                     for i in range(len(d) // 2048 - 1)])
+    freqs = np.fft.rfftfreq(2048, 1.0 / SAMPLE_RATE)
+    band = (freqs >= 1600.0) & (freqs <= 6900.0)
+    ks = np.where(band)[0]
+    ks = ks[(ks - k0 >= 0) & (ks + k0 < cols.shape[1])]
+    a = cols[:, ks]
+    b = cols[:, ks + k0]
+    a = a - a.mean(axis=0)
+    b = b - b.mean(axis=0)
+    num = float(np.mean(a * np.conj(b)).real)
+    den = float(np.sqrt(np.mean(np.abs(a) ** 2) * np.mean(np.abs(b) ** 2)))
+    return num / (den + 1e-30)
+
+
+def test_vocal_transformer_breathiness_pitch_modulation():
+    """Pitch-synchronous aspiration: on voiced frames the injected noise
+    spectrum must carry the +-F0 sideband structure (glottal gating), while
+    on unvoiced frames the stationary fallback must not."""
+    f0_hz = 220.0
+    k0 = int(round(f0_hz / (SAMPLE_RATE / 2048.0)))  # F0 bin (~9)
+    n_blocks = SETTLE_BLOCKS + 64
+
+    def breath_diff(sig):
+        outs = {}
+        for breath in (0.0, 0.5):
+            node = make_node()
+            set_params(node, breathiness=breath, mix=1.0, pitch_shift=0.0,
+                       formant_shift=0.0, gender_morph=0.0, sibilant_bypass=0.0)
+            outs[breath] = torch.cat(
+                [process_block(node, b) for b in sig[:n_blocks]],
+                dim=1)[0].numpy()
+        m = min(len(outs[0.0]), len(outs[0.5]))
+        return outs[0.5][:m] - outs[0.0][:m]
+
+    # Voiced: harmonic stack -> pitch-sync sidebands must appear.
+    n = np.arange(n_blocks * BLOCK_SIZE, dtype=np.float64)
+    saw = np.zeros(n.shape)
+    for h in range(1, 31):
+        saw += (1.0 / h) * np.sin(2.0 * np.pi * f0_hz * h * n / SAMPLE_RATE)
+    saw = (saw / np.max(np.abs(saw)) * 0.3).astype(np.float32)
+    rho_voiced = _sideband_bin_correlation(
+        breath_diff(_blocks_from_mono(saw, n_blocks)), k0)
+    assert 0.15 < rho_voiced < 0.45, \
+        f"voiced aspiration sideband correlation out of range: {rho_voiced:.3f}"
+
+    # Unvoiced: white noise -> stationary fallback, no sidebands.
+    rng = np.random.default_rng(7)
+    noise = (0.25 * rng.standard_normal(n_blocks * BLOCK_SIZE)).astype(np.float32)
+    rho_unvoiced = _sideband_bin_correlation(
+        breath_diff(_blocks_from_mono(noise, n_blocks)), k0)
+    assert abs(rho_unvoiced) < 0.1, \
+        f"unvoiced aspiration must be stationary (corr {rho_unvoiced:.3f})"
+
+
