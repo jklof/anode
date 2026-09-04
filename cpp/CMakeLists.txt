@@ -84,3 +84,9 @@ copy_target_to_directory(neural_amp "${PROJECT_SOURCE_DIR}/../plugins")
 add_library(vocal_transformer SHARED vocal_transformer.cpp)
 target_compile_features(vocal_transformer PRIVATE cxx_std_17)
 copy_target_to_directory(vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
+
+# --- Target: Studio Vocal Transformer (real-time pitch correction + retune on
+#     top of the VocalTransformer spectral core) ---
+add_library(studio_vocal_transformer SHARED studio_vocal_transformer.cpp)
+target_compile_features(studio_vocal_transformer PRIVATE cxx_std_17)
+copy_target_to_directory(studio_vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
