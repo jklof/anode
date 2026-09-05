@@ -4,33 +4,33 @@ and acoustic gender transformation (Effects).
 
 Thin FFINode wrapper over libstudio_vocal_transformer
 (cpp/studio_vocal_transformer.cpp). The native side unites a real-time retune
-front end with a low-latency single-timeline TD-PSOLA engine:
+front end with a spectral vocal pipeline (true-envelope phase vocoder with
+VTLN formant warp):
 
 Retune front end:
   - Anti-aliased (2-pole Butterworth lowpass, fc = 1.2 kHz) NSDF real-time pitch
-    tracker with McLeod Pitch Method (MPM) octave-jump guard and parabolic peak
-    refinement on a 12 kHz analysis buffer (sub-cent F0).
+    tracker with continuity scoring, fundamental-preference harmonic
+    unwinding, octave-jump guard, and parabolic peak refinement on a 12 kHz
+    analysis buffer.
   - Dual-mode retune: scale snapping (12-bit pitch-class bitmask rotated to a
     root) or live MIDI note targeting via the `midi_in` port. An exponential
     target-approach glide governs retune speed (0 ms hard T-Pain snap .. 100 ms
     transparent studio correction).
   - Synthesized vibrato (depth / rate) summed on top of the retune shift.
 
-TD-PSOLA core (single shared timeline):
-  - Waveform-domain pitch-synchronous overlap-add. Source grains are always
-    read from *near the synthesis time* in the input history, so upward
-    shifts reuse source periods and downward shifts skip them; the
-    input/output lag stays locked at the fixed emission latency instead of
-    diverging per block.
-  - Positive-lobe GCI search (polarity-consistent) with cubic interpolation.
-  - OLA weight normalization so changing F0/pitch ratio cannot create amplitude
-    pumping or gaps at the grain boundaries.
-  - Latency-aligned dry/wet mixing with unvoiced consonant preservation.
-  - Conservative broad spectral coloration for formant/gender controls; avoids
-    unstable high-Q LPC pole relocation.
-  - Very-low-level band-limited aspiration ("air") rather than full-band noise.
-  - Algorithmic latency of 768 samples (16.0 ms @ 48 kHz); `mix`
-    crossfades cleanly with the dry path.
+Spectral core:
+  - Resampled-frame pitch shifting (the shift happens in the frame read),
+    so pitch and formants stay decoupled (no chipmunk effect).
+  - 2048-pt True-Envelope estimation (PCHIP peak hull + symmetric cepstral
+    liftering) with same-grid peak-locked phase vocoding.
+  - Piecewise-linear knee VTLN warp with F1 decoupling, log-octave spectral
+    tilt, and dynamic H1 harmonic shaping for the gender morph.
+  - Voiced/unvoiced-gated sibilant bypass (dry consonants pass through
+    untouched) and transient-gated phase reset (plosives never smear).
+  - Tract-shaped 1.5-7 kHz aspiration noise with pitch-synchronous
+    glottal modulation.
+  - Algorithmic latency of 9216 samples (192.0 ms @ 48 kHz); `mix`
+    crossfades cleanly with the latency-aligned dry path.
 
 Threading / RT notes (AGENTS.md):
   - Node construction (including native library load) happens off the audio
@@ -73,7 +73,7 @@ class StudioVocalTransformer(FFINode):
         "(hard-tune to natural glide), scale snapping, MIDI note targeting, "
         "advanced vocal timbre and gender coloration, "
         "gentle aspiration, and "
-        "low-latency TD-PSOLA pitch shifting."
+        "spectral pitch shifting with independent formant control."
     )
 
     LIB_NAME = "studio_vocal_transformer"
@@ -134,6 +134,29 @@ class StudioVocalTransformer(FFINode):
             "gender_morph": 0.1,
             "breathiness": 0.08,
             "sibilant_bypass": 0.95,
+            "mix": 1.0,
+        },
+        # Speech conversion: pitch correction stays OFF (scale snapping
+        # warbles prosody). Pitch + formants do the gender work; the VTLN
+        # warp and H1 shaping inside gender_morph carry the timbre.
+        "Male -> Female Speech": {
+            "correction_enable": 0.0,
+            "retune_speed": 20.0,
+            "pitch_shift": 9.0,
+            "formant_shift": 1.0,
+            "gender_morph": 0.85,
+            "breathiness": 0.20,
+            "sibilant_bypass": 0.85,
+            "mix": 1.0,
+        },
+        "Female -> Male Speech": {
+            "correction_enable": 0.0,
+            "retune_speed": 20.0,
+            "pitch_shift": -9.0,
+            "formant_shift": -1.0,
+            "gender_morph": -0.80,
+            "breathiness": 0.05,
+            "sibilant_bypass": 0.85,
             "mix": 1.0,
         },
     }
@@ -343,7 +366,7 @@ class StudioVocalTransformer(FFINode):
         self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
 
     def get_telemetry(self) -> dict:
-        latency_samples = 768
+        latency_samples = 9216
         return {
             "latency_samples": latency_samples,
             "latency_ms": round(latency_samples / float(SAMPLE_RATE) * 1000.0, 2),
