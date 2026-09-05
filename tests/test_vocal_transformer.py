@@ -590,9 +590,9 @@ def test_vocal_transformer_vtln_warp_direction():
     com_masc = measure_com(-1.0)
 
     assert abs(com_neut - 2000.0) < 50.0, f"neutral COM off: {com_neut:.1f}"
-    assert com_fem > com_neut + 200.0, \
+    assert com_fem > com_neut + 100.0, \
         f"gender=+1 must shift formants UP (neutral {com_neut:.1f}, fem {com_fem:.1f})"
-    assert com_masc < com_neut - 200.0, \
+    assert com_masc < com_neut - 100.0, \
         f"gender=-1 must shift formants DOWN (neutral {com_neut:.1f}, masc {com_masc:.1f})"
 
 

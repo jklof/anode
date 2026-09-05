@@ -66,7 +66,9 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr float kXoverLowHz = 3500.0f;    // sibilant bypass raised-cosine band
 constexpr float kXoverHighHz = 5500.0f;
-constexpr float kVtlnKneeHz = 4500.0f;    // piecewise-linear VTLN knee
+constexpr float kZoneF1Hz = 1000.0f;    // Zone 1/2 boundary (F1 aperture vs F2)
+constexpr float kZoneF2Hz = 2500.0f;    // Zone 2/3 boundary (tongue vs throat)
+constexpr float kZoneF3Hz = 5000.0f;    // Zone 3 end; linear compress to Nyquist above
 constexpr float kH1MaxHz = 400.0f;        // dynamic H1 boost applies below this
 constexpr unsigned int kRngSeed = 0x1D872B41u;
 // RT burst guard: frames processed per process() call, per channel. In steady
@@ -632,16 +634,30 @@ private:
     }
 
     // Precompute every parameter-dependent spectral table:
-    //   vtln_warp_bin_[k]   — piecewise-linear knee VTLN warp bucket (source
-    //                         bin -> destination position). Formants shift
-    //                         linearly below kVtlnKneeHz (4.5 kHz, where
-    //                         formant correction matters most) and compress
-    //                         smoothly to Nyquist above it, avoiding the
-    //                         "talking through a pipe" resonance of bilinear
-    //                         allpass warping. The F1 region (< 1 kHz) warps
-    //                         at reduced intensity so the disproportionately
-    //                         long adult-male pharynx shifts F2/F3 more than
-    //                         F1; identity at neutral.
+    //   vtln_warp_bin_[k]   — 3-zone anatomical VTLN warp (destination bin k
+    //                         -> source position). Male/female tracts do not
+    //                         scale uniformly (the male pharynx is ~20-25%
+    //                         longer, the oral cavity only ~8-10%), and the
+    //                         legacy 1 kHz anchor dominates absolute peak
+    //                         positions, so zone rates are tuned for absolute
+    //                         band shifts (measured on a two-resonance assay):
+    //                         Zone 1 (< 1 kHz, F1/vowel aperture): legacy
+    //                         reduced-intensity taper, kept verbatim to
+    //                         protect vowel intelligibility;
+    //                         Zone 2 (1-2.5 kHz, F2/tongue position): 0.30x
+    //                         the base shift — mid peak lands ~+2.1 st
+    //                         (+13.0%, inside the +10-14% oral band);
+    //                         Zone 3 (2.5-5 kHz, F3/F4 throat length and sex
+    //                         identity): 1.50x the base shift — high peak
+    //                         lands ~+2.75 st (+17.2%, inside the +15-20%
+    //                         throat band).
+    //                         Above 5 kHz the map compresses linearly to
+    //                         Nyquist (sibilance/air band, no formants).
+    //                         Closed-form piecewise segments share knot
+    //                         values, so the map is C0-continuous and strictly
+    //                         monotonic by construction (all C1 slope jumps
+    //                         stay within the legacy roughness); identity at
+    //                         neutral.
     //   excitation_shaper_[k] — logarithmic (dB/octave) spectral tilt anchored
     //                         at 1 kHz, clamped to +-10 dB. Human spectral
     //                         slope is logarithmic in octaves, not linear in
@@ -650,15 +666,20 @@ private:
     // Depends only on gender_morph_ / sr_; rebuilt on param or rate change.
     void recompute_tables() {
         const float bin_hz = sr_ / static_cast<float>(kFFT);
-        // Warp ratio: +1 (feminine) => ~+3 st tract shortening (upward
-        // formant shift), -1 (masculine) => ~-3 st tract lengthening.
-        const float warp_ratio = std::pow(2.0f, gender_morph_ * 0.25f);
+        // Base tract shift: +1 (feminine) => +3 st shortening (upward
+        // formant shift), -1 (masculine) => -3 st lengthening.
+        const float base_st = gender_morph_ * 3.0f;
         const float f_nyq = sr_ * 0.5f;
-        // Compression slope above the knee keeps the map monotonic and
-        // Nyquist-preserving: to shift formants UP by warp_ratio (e.g. 1.189 for +1.0),
-        // destination frequency f must sample source frequency f_source = f / warp_ratio.
-        const float f_source_knee = kVtlnKneeHz / warp_ratio;
-        const float hf_slope = (f_nyq - f_source_knee) / (f_nyq - kVtlnKneeHz);
+        // Zone rates (destination f -> source f_s = f / r within a zone).
+        const float w_full = std::pow(2.0f, base_st / 12.0f);
+        const float r_zone2 = std::pow(2.0f, base_st * 0.30f / 12.0f);
+        const float r_zone3 = std::pow(2.0f, base_st * 1.50f / 12.0f);
+        // Knot values: F1000 matches the legacy taper exactly at 1 kHz
+        // (the taper factor is 0.6 + 0.4 * 1.0 = 1.0 there).
+        const float F1000 = 1000.0f / w_full;
+        const float F2500 = F1000 + (kZoneF2Hz - kZoneF1Hz) / r_zone2;
+        const float F5000 = F2500 + (kZoneF3Hz - kZoneF2Hz) / r_zone3;
+        const float hi_slope = (f_nyq - F5000) / (f_nyq - kZoneF3Hz);
         // Gender morph: +1 (fem) adds -2.5 dB/oct (softer, leaking glottal
         // source), -1 (masc) adds +2.5 dB/oct (sharper, buzzy closure).
         const float tilt_db_per_oct = -gender_morph_ * 2.5f;
@@ -666,27 +687,27 @@ private:
         for (int k = 0; k < kHalf; ++k) {
             const float f_hz = static_cast<float>(k) * bin_hz;
 
-            // 1. Piecewise-linear knee VTLN warp table.
-            if (warp_ratio == 1.0f) {
-                vtln_warp_bin_[k] = static_cast<float>(k);
+            // 1. Three-zone anatomical VTLN warp table.
+            float f_source;
+            if (base_st == 0.0f) {
+                f_source = f_hz;
+            } else if (f_hz <= kZoneF1Hz) {
+                // Zone 1: legacy F1 decoupling taper, verbatim.
+                const float r = 1.0f + (w_full - 1.0f)
+                                      * (0.6f + 0.4f * (f_hz / 1000.0f));
+                f_source = f_hz / r;
+            } else if (f_hz <= kZoneF2Hz) {
+                f_source = F1000 + (f_hz - kZoneF1Hz) / r_zone2;
+            } else if (f_hz <= kZoneF3Hz) {
+                f_source = F2500 + (f_hz - kZoneF2Hz) / r_zone3;
             } else {
-                // F1 decoupling taper: milder warp below 1 kHz.
-                float r = warp_ratio;
-                if (f_hz < 1000.0f)
-                    r = 1.0f + (warp_ratio - 1.0f)
-                              * (0.6f + 0.4f * (f_hz / 1000.0f));
-                float f_source;
-                if (f_hz <= kVtlnKneeHz) {
-                    f_source = f_hz / r;
-                } else {
-                    f_source = f_source_knee + hf_slope * (f_hz - kVtlnKneeHz);
-                }
-                float b = f_source / bin_hz;
-                if (b < 0.0f) b = 0.0f;
-                if (b > static_cast<float>(kHalf - 1))
-                    b = static_cast<float>(kHalf - 1);
-                vtln_warp_bin_[k] = b;
+                f_source = F5000 + hi_slope * (f_hz - kZoneF3Hz);
             }
+            float b = f_source / bin_hz;
+            if (b < 0.0f) b = 0.0f;
+            if (b > static_cast<float>(kHalf - 1))
+                b = static_cast<float>(kHalf - 1);
+            vtln_warp_bin_[k] = b;
 
             // 2. Logarithmic (dB/octave) spectral tilt, 1 kHz anchor.
             float tilt_db = 0.0f;
