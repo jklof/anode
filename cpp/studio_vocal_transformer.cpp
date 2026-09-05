@@ -369,6 +369,8 @@ private:
     float noise_raw_re_[kHalf];    // raw aspiration noise spectrum (pitch-sync)
     float noise_raw_im_[kHalf];
     int   current_h1_bin_;         // detected F0 bin for this frame (-1 = undetermined)
+    int   last_h1_bin_[kMaxChannels]; // last overtone-confirmed H1 per channel
+    int   h1_hangover_[kMaxChannels]; // frames of continuity fallback remaining
     unsigned int rng_state_;
 
     void reset_transient() {
@@ -380,6 +382,8 @@ private:
             std::memset(prev_phase_in_[c], 0, sizeof(float) * kHalf);
             std::memset(prev_phase_out_[c], 0, sizeof(float) * kHalf);
             std::memset(prev_mag_[c], 0, sizeof(float) * kHalf);
+            last_h1_bin_[c] = -1;
+            h1_hangover_[c] = 0;
             mix_smooth_[c] = mix_;
         }
         std::memset(pitch_downsample_buf_, 0, sizeof(pitch_downsample_buf_));
@@ -1035,33 +1039,57 @@ private:
         // (creating the characteristic female H1 >> H2 balance). The H1 harmonic
         // confirmation is also run unconditionally so the detected F0 bin feeds
         // the pitch-synchronous aspiration modulation in reconstruct().
+        //
+        // H1 identification is deliberately conservative: the first spectral
+        // peak is frequently sub-rumble, breath, or a plosive (< 80 Hz), and
+        // boosting THAT instead of the fundamental puts +6.8 dB on mud. So:
+        //   1. candidates are restricted to the biological H1 window 80-400 Hz
+        //      (above it the boost is gated off by kH1MaxHz anyway);
+        //   2. a candidate wins only with an overtone at 2k (+-2 bins);
+        //   3. brief dropouts hold the last confirmed bin (~21 ms hangover)
+        //      instead of snapping onto rumble; longer gaps report -1.
         int h1_bin = -1;
+        int h2_bin = -1;
         if (num_peaks > 0) {
             const float bin_hz = sr_ / static_cast<float>(kFFT);
+            const int kMin = std::max(1, static_cast<int>(80.0f / bin_hz));
+            const int kMax = static_cast<int>(400.0f / bin_hz) + 1;
 
-            // Harmonic-confirmation check for F0 / H1:
-            // Verify peak_bins_[0] has an overtone near 2 * peak_bins_[0].
-            // If peak 0 is stray rumble/hum and peak 1 has an overtone at 2 * peak 1,
-            // select peak 1 as true F0.
-            h1_bin = peak_bins_[0];
-            int h2_bin = -1;
-            if (num_peaks >= 2) {
-                for (int p = 1; p < num_peaks; ++p) {
-                    if (std::abs(peak_bins_[p] - 2 * peak_bins_[0]) <= 3) {
-                        h2_bin = peak_bins_[p];
+            int confirmed = -1;
+            for (int p = 0; p < num_peaks; ++p) {
+                const int k = peak_bins_[p];
+                if (k < kMin || k > kMax) continue;
+                for (int q = 0; q < num_peaks; ++q) {
+                    if (std::abs(peak_bins_[q] - 2 * k) <= 2) {
+                        confirmed = k;
                         break;
                     }
                 }
-                if (h2_bin < 0 && num_peaks >= 3) {
-                    for (int p = 2; p < num_peaks; ++p) {
-                        if (std::abs(peak_bins_[p] - 2 * peak_bins_[1]) <= 3) {
-                            h1_bin = peak_bins_[1];
-                            h2_bin = peak_bins_[p];
-                            break;
-                        }
-                    }
-                }
+                if (confirmed > 0) break;
             }
+            if (confirmed > 0) {
+                h1_bin = confirmed;
+                int bestd = 1 << 28;
+                for (int p = 0; p < num_peaks; ++p) {
+                    const int d = std::abs(peak_bins_[p] - 2 * confirmed);
+                    if (d < bestd) { bestd = d; h2_bin = peak_bins_[p]; }
+                }
+                if (bestd > 3) h2_bin = -1;
+                last_h1_bin_[c] = confirmed;
+                h1_hangover_[c] = 4;
+            }
+        }
+        if (h1_bin < 0) {
+            if (h1_hangover_[c] > 0 && last_h1_bin_[c] > 0) {
+                --h1_hangover_[c];
+                h1_bin = last_h1_bin_[c];
+                h2_bin = -1;  // stale H2 location untrusted: skip the cut
+            } else {
+                h1_hangover_[c] = 0;
+            }
+        }
+        if (num_peaks > 0) {
+            const float bin_hz = sr_ / static_cast<float>(kFFT);
 
             if (gender_morph_ > 0.0f
                     && static_cast<float>(h1_bin) * bin_hz < kH1MaxHz) {

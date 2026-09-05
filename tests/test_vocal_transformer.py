@@ -796,3 +796,77 @@ def test_vocal_transformer_breathiness_pitch_modulation():
         f"unvoiced aspiration must be stationary (corr {rho_unvoiced:.3f})"
 
 
+
+
+def _rumble_blocks():
+    """Voice-like stack on exact FFT bins: F0 = 140.625 Hz (2048-bin 6) with
+    harmonics 2..8, plus TWO loud sub-80 Hz interferers — rumble at
+    46.875 Hz (bin 2) and hum at 70.3125 Hz (bin 3). A single rumble is
+    already handled by the peak-1 fallback; the pair defeats it: the old
+    code confirmed the hum (bin 3 has an overtone at bin 6) and boosted the
+    hum while cutting the true fundamental."""
+    f0, fr, fh = 140.625, 46.875, 70.3125
+    n = np.arange((SETTLE_BLOCKS + 6) * BLOCK_SIZE, dtype=np.float64)
+    t = 0.8 * np.sin(2.0 * np.pi * fr * n / SAMPLE_RATE)
+    t += 0.6 * np.sin(2.0 * np.pi * fh * n / SAMPLE_RATE)
+    t += 0.5 * np.sin(2.0 * np.pi * f0 * n / SAMPLE_RATE)
+    for h in range(2, 9):
+        t += (0.5 / h) * np.sin(2.0 * np.pi * f0 * h * n / SAMPLE_RATE)
+    t = (t / np.max(np.abs(t)) * 0.4).astype(np.float32)
+    t2 = np.tile(t, (CHANNELS, 1))
+    return [torch.from_numpy(t2[:, i * BLOCK_SIZE:(i + 1) * BLOCK_SIZE].copy())
+            for i in range(SETTLE_BLOCKS + 6)]
+
+
+def _welch_band(out_blocks, freq_hz, width_hz=15.0):
+    """Max Welch power in a narrow band over the settled tail (last 8 blocks).
+    Deterministic: fixed Hann windows, no randomness anywhere in the path."""
+    full = torch.cat(out_blocks, dim=1)[0].numpy().astype(np.float64)
+    seg = full[-8 * BLOCK_SIZE:]
+    W, hop, N = 2048, 512, 8192
+    acc, n = None, 0
+    for s in range(0, len(seg) - W + 1, hop):
+        X = np.abs(np.fft.rfft(seg[s:s + W] * np.hanning(W), N)) ** 2
+        acc = X if acc is None else acc + X
+        n += 1
+    P = acc / n
+    fr = np.fft.rfftfreq(N, 1.0 / SAMPLE_RATE)
+    m = (fr >= freq_hz - width_hz) & (fr <= freq_hz + width_hz)
+    return float(P[m].max())
+
+
+def test_vocal_transformer_h1_boost_rejects_sub_rumble():
+    """Feminine H1 reshaping must land on the fundamental, not on louder
+    sub-80 Hz rumble/hum. Regression: peak_bins_[0] used to steal the boost
+    (old code amplified 47 Hz rumble x35 while leaving H1 at tilt-only gain
+    and cutting the wrong bin), collapsing H1/H2 instead of building it."""
+    blocks = _rumble_blocks()
+
+    def render(gender):
+        node = make_node()
+        set_params(node, pitch_shift=0.0, formant_shift=0.0,
+                   gender_morph=gender, breathiness=0.0,
+                   sibilant_bypass=0.0, mix=1.0)
+        return [process_block(node, b) for b in blocks]
+
+    outs0 = render(0.0)
+    outs1 = render(1.0)
+
+    def gain(freq, width=15.0):
+        return _welch_band(outs1, freq, width) / (_welch_band(outs0, freq, width) + 1e-12)
+
+    f_h1, f_h2, f_rumble = 140.625, 281.25, 46.875
+    g_h1 = gain(f_h1)
+    g_h2 = gain(f_h2)
+    # H1 gets tilt + H1 boost; rumble/hum get tilt only.
+    assert g_h1 > 4.0, f"H1 boost missing: x{g_h1:.2f}"
+    # H1/H2 balance must build up (boost + cut), never collapse.
+    r0 = _welch_band(outs0, f_h1) / (_welch_band(outs0, f_h2) + 1e-12)
+    r1 = _welch_band(outs1, f_h1) / (_welch_band(outs1, f_h2) + 1e-12)
+    assert r1 / r0 > 3.0, \
+        f"H1/H2 reshape missing (neutral {r0:.2f}, fem {r1:.2f})"
+    # H1 must out-gain the sub-rumble (boost lands on H1, not mud).
+    q0 = _welch_band(outs0, f_h1) / (_welch_band(outs0, f_rumble, 10.0) + 1e-12)
+    q1 = _welch_band(outs1, f_h1) / (_welch_band(outs1, f_rumble, 10.0) + 1e-12)
+    assert q1 / q0 > 0.8, \
+        f"H1 boost landed on rumble instead (neutral {q0:.2f}, fem {q1:.2f})"
