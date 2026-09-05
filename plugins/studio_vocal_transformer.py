@@ -4,27 +4,40 @@ and acoustic gender transformation (Effects).
 
 Thin FFINode wrapper over libstudio_vocal_transformer
 (cpp/studio_vocal_transformer.cpp). The native side unites a real-time retune
-front end with the full VocalTransformer spectral core:
+front end with a low-latency single-timeline TD-PSOLA engine:
 
 Retune front end:
-  - NSDF (Normalized Square Difference Function) real-time pitch tracker with
-    parabolic peak interpolation on a 12 kHz analysis buffer (sub-cent F0).
+  - Anti-aliased (2-pole Butterworth lowpass, fc = 1.2 kHz) NSDF real-time pitch
+    tracker with McLeod Pitch Method (MPM) octave-jump guard and parabolic peak
+    refinement on a 12 kHz analysis buffer (sub-cent F0).
   - Dual-mode retune: scale snapping (12-bit pitch-class bitmask rotated to a
     root) or live MIDI note targeting via the `midi_in` port. An exponential
     target-approach glide governs retune speed (0 ms hard T-Pain snap .. 100 ms
     transparent studio correction).
   - Synthesized vibrato (depth / rate) summed on top of the retune shift.
 
-Spectral core (identical to VocalTransformer):
-  - PCHIP monotonic true-envelope, peak-locked phase vocoder, F1-decoupled VTLN,
-    H1/H2 glottal shaping, pitch-synchronous aspiration, unvoiced sibilant
-    bypass, transient-gated phase reset, and a fixed 9216-sample (192 ms @ 48 kHz)
-    latency-aligned OLA ring buffer; `mix` crossfades cleanly with the dry path.
+TD-PSOLA core (single shared timeline):
+  - Waveform-domain pitch-synchronous overlap-add. Source grains are always
+    read from *near the synthesis time* in the input history, so upward
+    shifts reuse source periods and downward shifts skip them; the
+    input/output lag stays locked at the fixed emission latency instead of
+    diverging per block.
+  - Positive-lobe GCI search (polarity-consistent) with cubic interpolation.
+  - OLA weight normalization so changing F0/pitch ratio cannot create amplitude
+    pumping or gaps at the grain boundaries.
+  - Latency-aligned dry/wet mixing with unvoiced consonant preservation.
+  - Conservative broad spectral coloration for formant/gender controls; avoids
+    unstable high-Q LPC pole relocation.
+  - Very-low-level band-limited aspiration ("air") rather than full-band noise.
+  - Algorithmic latency of 768 samples (16.0 ms @ 48 kHz); `mix`
+    crossfades cleanly with the dry path.
 
-The Python side only marshals pointers, pushes staged parameters once per change,
-forwards block-rate CV from the modulation sockets, and resolves MIDI note
-targets. Block-rate pitch/formant CV and the MIDI path push native parameters
-directly once per block, exactly like the other FFI voice/vocoder nodes.
+Threading / RT notes (AGENTS.md):
+  - Node construction (including native library load) happens off the audio
+    thread. process() performs no I/O, no allocations in steady state, and
+    only pushes staged parameters / block-rate CV via set_param().
+  - Scale and MIDI derived parameters are change-detected in Python so the
+    native side sees no redundant set_param() traffic.
 """
 
 import ctypes
@@ -32,11 +45,10 @@ import ctypes
 from ffi_base import FFINode
 from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE
 
-# Musical scale definitions (bitmasks over 12 semitones: C=0, C#=1, ... B=11).
 SCALES = {
     "Chromatic": 0b111111111111,
-    "Major":     0b101011010101,  # C, D, E, F, G, A, B
-    "Minor":     0b101101011010,  # natural minor
+    "Major":     0b101011010101,
+    "Minor":     0b101101011010,
     "Harmonic Minor": 0b101101011001,
     "Pentatonic": 0b101001010010,
     "Bypass":    0b000000000000,
@@ -47,6 +59,11 @@ ROOT_NOTES = {
     "F#": 6, "G": 7, "G#": 8, "A": 9, "A#": 10, "B": 11,
 }
 
+_ROOT_NAMES = tuple(ROOT_NOTES.keys())
+_SCALE_NAMES = tuple(SCALES.keys())
+_ROOT_VALUES = tuple(float(ROOT_NOTES[k]) for k in _ROOT_NAMES)
+_SCALE_VALUES = tuple(float(SCALES[k]) for k in _SCALE_NAMES)
+
 
 class StudioVocalTransformer(FFINode):
     category = "Effects"
@@ -54,16 +71,12 @@ class StudioVocalTransformer(FFINode):
     description = (
         "Studio-grade vocal processing suite. Real-time pitch correction "
         "(hard-tune to natural glide), scale snapping, MIDI note targeting, "
-        "advanced acoustic gender transformation (F1-decoupled VTLN, H1/H2 "
-        "glottal reshaping, pitch-synchronous aspiration), and "
-        "transient-preserved phase vocoding."
+        "advanced vocal timbre and gender coloration, "
+        "gentle aspiration, and "
+        "low-latency TD-PSOLA pitch shifting."
     )
 
     LIB_NAME = "studio_vocal_transformer"
-    # Matches cpp/studio_vocal_transformer.cpp set_param switch-case. Only the
-    # 1:1 float parameters are listed here; scale_root/scale_mask/midi_mode/
-    # target_midi_note are derived (menu / MIDI packet) and pushed manually so
-    # _sync_params_to_cpp() never dereferences a non-existent parameter.
     PARAM_MAP = {
         "correction_enable": 0,
         "retune_speed": 3,
@@ -77,16 +90,11 @@ class StudioVocalTransformer(FFINode):
         "mix": 11,
     }
 
-    # Derived native IDs (not part of PARAM_MAP; see _sync_scale_parameters /
-    # the MIDI block in process()).
     PARAM_SCALE_ROOT_ID = 1
     PARAM_SCALE_MASK_ID = 2
     PARAM_MIDI_MODE_ID = 12
     PARAM_TARGET_MIDI_NOTE_ID = 13
 
-    # Gender-transformation / FX macro presets. Pitch relocates F0, formant_shift
-    # trims vocal-tract length on top of the gender_morph VTLN, breathiness adds
-    # glottal aspiration, sibilant_bypass preserves consonants.
     PRESETS = {
         "Male -> Female Pop Lead": {
             "correction_enable": 1.0,
@@ -110,7 +118,7 @@ class StudioVocalTransformer(FFINode):
         },
         "Hard-Tune (T-Pain FX)": {
             "correction_enable": 1.0,
-            "retune_speed": 0.0,     # instantaneous snap
+            "retune_speed": 0.0,
             "pitch_shift": 0.0,
             "formant_shift": 0.0,
             "gender_morph": 0.0,
@@ -120,7 +128,7 @@ class StudioVocalTransformer(FFINode):
         },
         "Transparent Vocal Polisher": {
             "correction_enable": 1.0,
-            "retune_speed": 45.0,    # transparent natural glide
+            "retune_speed": 45.0,
             "pitch_shift": 0.0,
             "formant_shift": 0.2,
             "gender_morph": 0.1,
@@ -133,12 +141,15 @@ class StudioVocalTransformer(FFINode):
     def __init__(self, name=""):
         super().__init__(name)
 
-        # Modulation / MIDI disconnect detection (karplus_strong pattern).
         self._was_pitch_mod_connected = False
         self._was_formant_mod_connected = False
         self._active_midi_note = -1.0
         self._last_scale_root = None
         self._last_scale_mask = None
+        # Change-detected MIDI derived params: avoids two redundant native
+        # set_param() calls on every block when nothing changed.
+        self._last_midi_mode = None
+        self._last_midi_target = None
 
         # ---- Ports ----
         self.inp = self.add_input(
@@ -176,44 +187,61 @@ class StudioVocalTransformer(FFINode):
         self.add_float_param("vibrato_rate", 5.5, 2.0, 9.0, unit="Hz",
                              help="Synthesized vibrato modulation rate in Hz.")
         self.add_float_param("breathiness", 0.0, 0.0, 1.0, unit="",
-                             help="Glottally modulated aspiration noise level.")
+                             help="Very subtle band-limited vocal air level.")
         self.add_float_param("sibilant_bypass", 0.85, 0.0, 1.0, unit="",
                              help="High-frequency unvoiced consonant preservation.")
         self.add_float_param("mix", 1.0, 0.0, 1.0,
                              help="Wet/dry mix (latency-aligned dry path).")
 
+    def start(self):
+        super().start()
+        self._was_pitch_mod_connected = False
+        self._was_formant_mod_connected = False
+        self._active_midi_note = -1.0
+        self._last_scale_root = None
+        self._last_scale_mask = None
+        self._last_midi_mode = None
+        self._last_midi_target = None
+
+    def load_state(self, data: dict):
+        super().load_state(data)
+        # Force derived params to re-push on the next block; the active MIDI
+        # note itself is performance state (not saved), so clear it.
+        self._last_scale_root = None
+        self._last_scale_mask = None
+        self._last_midi_mode = None
+        self._last_midi_target = None
+        self._active_midi_note = -1.0
+
     def _sync_scale_parameters(self):
-        """Map the menu params to the native scale_root / scale_mask and push
-        them (only on change, so per-block automation never spams set_param).
-        menu .value is the item index, not the display string."""
         if not self.lib or not self.dsp_handle:
             return
-        root_names = list(ROOT_NOTES.keys())
-        scale_names = list(SCALES.keys())
-        root_val = float(ROOT_NOTES[root_names[int(self.params["scale_root"].value)]])
-        mask_val = float(SCALES[scale_names[int(self.params["scale_type"].value)]])
+
+        root_p = self.params["scale_root"].value
+        if isinstance(root_p, str):
+            root_val = float(ROOT_NOTES.get(root_p, 0))
+        else:
+            idx = int(root_p)
+            root_val = _ROOT_VALUES[idx] if 0 <= idx < len(_ROOT_VALUES) else 0.0
+
+        scale_p = self.params["scale_type"].value
+        if isinstance(scale_p, str):
+            mask_val = float(SCALES.get(scale_p, SCALES["Major"]))
+        else:
+            idx = int(scale_p)
+            mask_val = _SCALE_VALUES[idx] if 0 <= idx < len(_SCALE_VALUES) else float(SCALES["Major"])
+
         if root_val != self._last_scale_root or mask_val != self._last_scale_mask:
             self.lib.set_param(self.dsp_handle, self.PARAM_SCALE_ROOT_ID, root_val)
             self.lib.set_param(self.dsp_handle, self.PARAM_SCALE_MASK_ID, mask_val)
             self._last_scale_root = root_val
             self._last_scale_mask = mask_val
 
-    def process(self):
-        out_slot = self.outputs.get("out")
-        if not self.lib or not self.dsp_handle:
-            # Anti-ghosting: never leave stale audio in the output buffer.
-            if out_slot:
-                out_slot.buffer.zero_()
-            return
-
-        # 1. Sync staged UI parameters (canonical path) + derived scale params.
-        self._sync_params_to_cpp()
-        self._sync_scale_parameters()
-
-        # 2. MIDI note target: track the active note_on; hold until its
-        #    note_off. Push the target note and midi_mode every block.
+    def _sync_midi_parameters(self):
+        # Fold the block's MIDI packet into the latched target note, then
+        # push the derived (mode, target) pair only when it changed. Steady
+        # state with no MIDI traffic performs zero native calls here.
         packet = self.midi_in.get_packet()
-        midi_active = 0.0
         if packet.messages:
             for _, msg in packet.messages:
                 mtype = getattr(msg, "type", "")
@@ -225,11 +253,40 @@ class StudioVocalTransformer(FFINode):
 
         if self._active_midi_note >= 0.0:
             midi_active = 1.0
-            self.lib.set_param(self.dsp_handle, self.PARAM_TARGET_MIDI_NOTE_ID,
-                               self._active_midi_note)
-        self.lib.set_param(self.dsp_handle, self.PARAM_MIDI_MODE_ID, midi_active)
+            midi_target = self._active_midi_note
+        else:
+            midi_active = 0.0
+            # Keep the last target value stable when idle; only the mode
+            # matters to the native side in that state.
+            midi_target = self._last_midi_target if self._last_midi_target is not None else -1.0
 
-        # 3. Block-rate CV with disconnect detection (first sample of block).
+        if midi_active != self._last_midi_mode:
+            self.lib.set_param(self.dsp_handle, self.PARAM_MIDI_MODE_ID, midi_active)
+            self._last_midi_mode = midi_active
+        if self._active_midi_note >= 0.0 and midi_target != self._last_midi_target:
+            self.lib.set_param(self.dsp_handle, self.PARAM_TARGET_MIDI_NOTE_ID, midi_target)
+            self._last_midi_target = midi_target
+        elif self._last_midi_target is None:
+            # First block with no MIDI: publish the idle target once so the
+            # native side starts from a defined state.
+            self.lib.set_param(self.dsp_handle, self.PARAM_TARGET_MIDI_NOTE_ID, -1.0)
+            self._last_midi_target = -1.0
+
+    def process(self):
+        out_slot = self.outputs.get("out")
+        if not self.lib or not self.dsp_handle:
+            if out_slot:
+                out_slot.buffer.zero_()
+            return
+
+        # 1. Sync staged parameters & derived scale parameters
+        self._sync_params_to_cpp()
+        self._sync_scale_parameters()
+
+        # 2. MIDI note targeting (change-detected; silent when idle)
+        self._sync_midi_parameters()
+
+        # 3. Block-rate CV with disconnect detection
         if self.pitch_mod.connected_outputs:
             eff = float(self.pitch_mod.get_tensor()[0, 0].item())
             self.lib.set_param(self.dsp_handle, self.PARAM_MAP["pitch_shift"], eff)
@@ -248,11 +305,14 @@ class StudioVocalTransformer(FFINode):
                                float(self.params["formant_shift"].value))
             self._was_formant_mod_connected = False
 
-        # 4. Channel adaptation + native dispatch (FFINode policy).
+        # 4. Channel adaptation & FFI dispatch (mirrors FFINode policy:
+        #    mono -> stereo duplication; never shrink outputs via out=).
         raw_tensor = self.inp.get_tensor()
         processed_tensor = self._preprocess_input(raw_tensor, self._ffi_in_buffer)
         in_channels = processed_tensor.shape[0]
 
+        if out_slot is None:
+            return
         out_tensor = out_slot.buffer
         out_channels = out_tensor.shape[0]
 
@@ -269,7 +329,6 @@ class StudioVocalTransformer(FFINode):
             processing_tensor = self._ffi_in_buffer
 
         if in_channels == 1 and out_channels == 2:
-            # Mono -> stereo duplication (ffi_base policy).
             self._ffi_in_buffer[0].copy_(processed_tensor[0])
             self._ffi_in_buffer[1].copy_(processed_tensor[0])
             processing_tensor = self._ffi_in_buffer
@@ -284,8 +343,7 @@ class StudioVocalTransformer(FFINode):
         self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
 
     def get_telemetry(self) -> dict:
-        # Fixed emission latency (see cpp kLatency = 9216).
-        latency_samples = 9216
+        latency_samples = 768
         return {
             "latency_samples": latency_samples,
             "latency_ms": round(latency_samples / float(SAMPLE_RATE) * 1000.0, 2),
