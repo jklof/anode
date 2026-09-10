@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
-project(anode_plugins CXX)
+project(anode_plugins C CXX)
+
+# Shared (.so) plugins link a static WORLD below; non-PIC archives fail
+# to link on x86-64, so force PIC globally (harmless for the other targets).
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # --- fetch nam core ----
 if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
@@ -90,3 +94,32 @@ copy_target_to_directory(vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
 add_library(studio_vocal_transformer SHARED studio_vocal_transformer.cpp)
 target_compile_features(studio_vocal_transformer PRIVATE cxx_std_17)
 copy_target_to_directory(studio_vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
+
+# --- Target: WORLD Voice Transformer (ReIm framing/F0 + WORLD analysis/synth) ---
+# WORLD: official vocoder (CheapTrick/D4C/synthesisrealtime), fetched at
+# configure time. ReIm: vendored C99 core in cpp/reim (MIT), used for
+# sample-accurate framing, silence gating, and DIO+IF+SRH F0 tracking.
+set(WORLD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WORLD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/world/CMakeLists.txt")
+    # Offline fallback: vendored WORLD checkout at cpp/world
+    add_subdirectory(world)
+    set(WORLD_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/world/src")
+else()
+    FetchContent_Declare(
+        WORLD_CORE
+        GIT_REPOSITORY https://github.com/mmorise/World.git
+        GIT_TAG        v1.0.1
+    )
+    FetchContent_MakeAvailable(WORLD_CORE)
+    set(WORLD_SRC_DIR "${world_core_SOURCE_DIR}/src")
+endif()
+file(GLOB REIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/reim/src/*.c")
+add_library(world_transformer SHARED world_transformer.cpp ${REIM_SOURCES})
+target_link_libraries(world_transformer PRIVATE world)
+target_include_directories(world_transformer PRIVATE
+    ${WORLD_SRC_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/reim/include
+)
+target_compile_features(world_transformer PRIVATE cxx_std_17)
+copy_target_to_directory(world_transformer "${PROJECT_SOURCE_DIR}/../plugins")

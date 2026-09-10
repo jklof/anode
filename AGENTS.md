@@ -95,7 +95,17 @@ Audio processing must not perform:
 
 Avoid unnecessary allocations in steady-state processing.
 
-Pre-allocate buffers when this is simple and materially useful, but do not treat every PyTorch/backend allocation as a correctness violation.
+Python/host path: avoid allocations in steady-state `process()`.
+Pre-allocated torch scratchpads, `copy_`/`mul_`/`add_` in-place ops,
+no per-block tensor/numpy creation. `tracemalloc` regression tests
+apply to Python only.
+
+C/C++ DSP: may allocate. Avoid pathological rates (per-block
+re-instantiation of large rings/plans/handles, unbounded growth,
+per-sample `new`). Small bounded per-hop allocations from upstream
+DSP (e.g. WORLD `new double[fft_size]`, FFT temps at ~200 hops/s)
+are acceptable. Do not re-engineer upstream allocators preemptively;
+optimize only after profiling shows an RT miss.
 
 Do not use logging or expensive diagnostic formatting as normal audio-path behavior.
 
@@ -269,7 +279,7 @@ Tests should prioritize:
 * important DSP numerical behavior
 * non-blocking I/O behavior
 * mono-input channel adaptation: output buffers must keep their `(CHANNELS, BLOCK_SIZE)` shape (PyTorch `out=` shrinkage regression guard)
-* allocation-free steady-state RT paths (e.g. FileRecorder conversion into the pre-allocated pool)
+* allocation-free Python steady-state paths (e.g. FileRecorder conversion into the pre-allocated pool; native C++ measured by RTF/timing, not tracemalloc)
 * undo/restore graph-attachment ordering for nodes that spawn NRT work in `load_state()`
 
 Real-time allocation tests are regression indicators, not proofs of zero allocation.
