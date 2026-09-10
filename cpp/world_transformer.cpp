@@ -58,12 +58,13 @@ constexpr int   kExcerptLen = 3072;      // WORLD analysis excerpt (last N sampl
 constexpr int   kExcerptCenter = 2048;   // spectrum instant: 1024 samples ago,
                                          // aligned with the ReIm frame center
 constexpr int   kSynthBuf = 240;         // Synthesis2 chunk == 1 hop
-constexpr int   kSynthPointers = 100;      // parameter queue (500 ms @ 5 ms);
+constexpr int   kSynthPointers = 64;       // parameter queue (320 ms @ 5 ms);
                                            // Synthesis2 needs ~5 frames of
                                            // lookahead, so a short queue
                                            // overflows and starves synthesis
-constexpr int   kFrameSlots = 32;        // Sp/Ap slot ring (no pointer aliasing;
-                                         // AddParameters retains our pointers)
+constexpr int   kFrameSlots = 64;        // Sp/Ap slot ring (must be >=
+                                         // kSynthPointers: the synthesizer
+                                         // retains our frame pointers)
 constexpr double kSilenceRms = 1e-4;     // -80 dBFS silence gate
 constexpr double kFoFloor = 71.0;
 constexpr double kFoCeil = 800.0;
@@ -76,6 +77,12 @@ struct FrameSlot {
     double f0 = 0.0;
     std::vector<double> sp;
     std::vector<double> ap;
+    // Persistent pointer cells: AddParameters() RETAINS the double**
+    // (synth->spectrogram[pointer] = spectrogram) and dereferences it in
+    // later Synthesis2() calls, so these addresses must outlive the
+    // push_synth_channel() stack frame. Never pass stack arrays here.
+    double* sp_ptr = nullptr;
+    double* ap_ptr = nullptr;
 };
 
 struct ChannelState {
@@ -104,6 +111,7 @@ struct AnalysisState {
     fo_context_t* fo_ctx = nullptr;
     std::vector<double> reim_waveform;  // fftsize + 1 (frame + 1-sample delay)
     std::vector<double> excerpt;
+    std::vector<double> logsp;  // reused formant-warp workspace (no per-hop alloc)
     std::vector<FrameSlot> slots;
     int slot_idx = 0;
 
@@ -286,6 +294,7 @@ private:
     void setup_analysis() {
         an_.reim_waveform.assign(static_cast<size_t>(fft_size_) + 1, 0.0);
         an_.excerpt.assign(kExcerptLen, 0.0);
+        an_.logsp.assign(static_cast<size_t>(numbins_), 0.0);
         last_ap_.assign(static_cast<size_t>(numbins_), 1.0);
         ap_valid_ = false;
         hop_count_ = 0;
@@ -295,6 +304,8 @@ private:
             s.f0 = 0.0;
             s.sp.assign(static_cast<size_t>(numbins_), 0.0);
             s.ap.assign(static_cast<size_t>(numbins_), 1.0);
+            s.sp_ptr = s.sp.data();
+            s.ap_ptr = s.ap.data();
         }
         an_.slot_idx = 0;
         an_.vocoder = create_vocoder_context(kFramePeriodMs,
@@ -462,13 +473,12 @@ private:
         double target_f0 = (f0 > 0.0)
             ? f0 * std::pow(2.0, static_cast<double>(pitch_st_) / 12.0) : 0.0;
         if (formant_st_ != 0.0f) {
-            std::vector<double> logsp(static_cast<size_t>(numbins_));
             for (int k = 0; k < numbins_; ++k)
-                logsp[static_cast<size_t>(k)] =
+                an_.logsp[static_cast<size_t>(k)] =
                     std::log(slot.sp[static_cast<size_t>(k)] + 1e-12);
             for (int k = 0; k < numbins_; ++k)
                 slot.sp[static_cast<size_t>(k)] =
-                    std::exp(interp_log(logsp, warp_table_[static_cast<size_t>(k)],
+                    std::exp(interp_log(an_.logsp, warp_table_[static_cast<size_t>(k)],
                                         numbins_));
         }
         slot.f0 = target_f0;
@@ -494,12 +504,16 @@ private:
 
     void push_synth_channel(int c, FrameSlot& slot) {
         ChannelState& st = ch_[c];
-        double* sp_ptrs[1] = { slot.sp.data() };
-        double* ap_ptrs[1] = { slot.ap.data() };
+        // Refresh the cells (defensive: vector storage is stable after
+        // setup, but re-taking data() is free) and pass their ADDRESSES:
+        // AddParameters retains these pointers past our return, so stack
+        // arrays here would dangle.
+        slot.sp_ptr = slot.sp.data();
+        slot.ap_ptr = slot.ap.data();
         // A full queue must never wipe queued context (RefreshSynthesizer
-        // is destructive): with 100 pointers it cannot fill in practice;
+        // is destructive): with 64 pointers it cannot fill in practice;
         // if it ever does, skip this frame and keep draining.
-        if (AddParameters(&slot.f0, 1, sp_ptrs, ap_ptrs, &st.synth) != 1) {
+        if (AddParameters(&slot.f0, 1, &slot.sp_ptr, &slot.ap_ptr, &st.synth) != 1) {
             return;
         }
         int guard = 0;
