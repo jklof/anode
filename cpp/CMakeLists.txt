@@ -123,3 +123,8 @@ target_include_directories(world_transformer PRIVATE
 )
 target_compile_features(world_transformer PRIVATE cxx_std_17)
 copy_target_to_directory(world_transformer "${PROJECT_SOURCE_DIR}/../plugins")
+
+# --- Target: De-Esser (split-band dynamic HF attenuator) ---
+add_library(deesser SHARED deesser.cpp)
+target_compile_features(deesser PRIVATE cxx_std_17)
+copy_target_to_directory(deesser "${PROJECT_SOURCE_DIR}/../plugins")
