@@ -71,7 +71,7 @@ constexpr double kFoCeil = 800.0;
 constexpr double kFramePeriodMs = 5.0;
 
 // Param IDs (must match plugins/world_voice_transformer.py PARAM_MAP).
-enum ParamId { kPitch = 0, kFormant = 1, kMix = 2, kGainDb = 3 };
+enum ParamId { kPitch = 0, kFormant = 1, kMix = 2, kGainDb = 3, kGender = 4, kBreathiness = 5 };
 
 struct FrameSlot {
     double f0 = 0.0;
@@ -123,6 +123,7 @@ public:
     WorldTransformerProcessor()
         : sr_(48000.0f), pitch_st_(0.0f), formant_st_(0.0f),
           mix_(1.0f), prev_mix_(1.0f), gain_db_(0.0f),
+          gender_morph_(0.0f), breathiness_(0.0f),
           fft_size_(2048), numbins_(1025),
           profile_(std::getenv("WORLD_PROFILE") != nullptr),
           t_reim_(0), t_ct_(0), t_d4c_(0), t_synth_(0), hops_(0), blocks_(0) {
@@ -133,6 +134,7 @@ public:
         numbins_ = fft_size_ / 2 + 1;
         InitializeD4COption(&d4c_opt_);
         build_warp_table();
+        build_tilt_table();
         setup_analysis();
         for (int c = 0; c < kMaxChannels; ++c) setup_synth(c);
     }
@@ -152,6 +154,7 @@ public:
         numbins_ = fft_size_ / 2 + 1;
         InitializeD4COption(&d4c_opt_);
         build_warp_table();
+        build_tilt_table();
         teardown_analysis();
         setup_analysis();
         for (int c = 0; c < kMaxChannels; ++c) {
@@ -174,6 +177,14 @@ public:
                 break;
             }
             case kGainDb: gain_db_ = std::max(-12.0f, std::min(12.0f, v)); break;
+            case kGender:
+                gender_morph_ = std::max(-1.0f, std::min(1.0f, v));
+                build_warp_table();
+                build_tilt_table();
+                break;
+            case kBreathiness:
+                breathiness_ = std::max(0.0f, std::min(1.0f, v));
+                break;
             default: break;
         }
     }
@@ -277,6 +288,7 @@ public:
 private:
     float sr_;
     float pitch_st_, formant_st_, mix_, prev_mix_, gain_db_;
+    float gender_morph_, breathiness_;
     int fft_size_, numbins_;
     bool profile_;
     double t_reim_, t_ct_, t_d4c_, t_synth_;
@@ -285,6 +297,7 @@ private:
     CheapTrickOption ct_opt_;
     D4COption d4c_opt_;
     std::vector<double> warp_table_;  // dest bin -> source position
+    std::vector<double> tilt_table_;  // glottal spectral tilt multiplier per bin
     std::vector<double> last_ap_;     // held aperiodicity (D4C runs half-rate)
     bool ap_valid_ = false;
     long hop_count_ = 0;
@@ -369,7 +382,11 @@ private:
 
     void build_warp_table() {
         warp_table_.assign(static_cast<size_t>(numbins_), 0.0);
-        const double alpha = -std::max(-0.4, std::min(0.4, formant_st_ * 0.025));
+        // Unified VTLN: manual formant shift plus 3 semitones per unit of
+        // gender morph (matches VocalTransformer's gender base).
+        const double eff_formant =
+            static_cast<double>(formant_st_) + 3.0 * static_cast<double>(gender_morph_);
+        const double alpha = -std::max(-0.4, std::min(0.4, eff_formant * 0.025));
         const double n1 = static_cast<double>(numbins_ - 1);
         for (int k = 0; k < numbins_; ++k) {
             const double w = M_PI * static_cast<double>(k) / n1;
@@ -382,6 +399,25 @@ private:
             if (pos < 0.0) pos = 0.0;
             if (pos > n1) pos = n1;
             warp_table_[static_cast<size_t>(k)] = pos;
+        }
+    }
+
+    void build_tilt_table() {
+        // Glottal spectral tilt, log-octave anchored at 1 kHz and clamped to
+        // +-10 dB (mirrors VocalTransformer's excitation shaper, applied here
+        // to the warped envelope). Sized to numbins_, never hardcoded.
+        tilt_table_.assign(static_cast<size_t>(numbins_), 1.0);
+        if (gender_morph_ == 0.0f) return;
+        const double f_step = static_cast<double>(sr_) / static_cast<double>(fft_size_);
+        const double tilt_db_per_oct = -static_cast<double>(gender_morph_) * 2.5;
+        for (int k = 0; k < numbins_; ++k) {
+            const double f_hz = static_cast<double>(k) * f_step;
+            double tilt_db = 0.0;
+            if (f_hz > 0.0) {
+                const double octaves = std::log2(std::max(f_hz, 50.0) / 1000.0);
+                tilt_db = std::max(-10.0, std::min(10.0, octaves * tilt_db_per_oct));
+            }
+            tilt_table_[static_cast<size_t>(k)] = std::pow(10.0, tilt_db / 20.0);
         }
     }
 
@@ -469,10 +505,15 @@ private:
             slot.ap[static_cast<size_t>(k)] = a;
         }
 
-        // 4. Pitch scale (voiced only) + formant warp on log Sp.
+        // 4. Pitch scale (voiced only) + Timbre Path (VTLN warp, glottal
+        //    tilt, H1/H2 balance, Ap breathiness injection).
         double target_f0 = (f0 > 0.0)
             ? f0 * std::pow(2.0, static_cast<double>(pitch_st_) / 12.0) : 0.0;
-        if (formant_st_ != 0.0f) {
+
+        // Unified formant warp on log Sp; the gate covers gender-only morphs.
+        const double eff_formant =
+            static_cast<double>(formant_st_) + 3.0 * static_cast<double>(gender_morph_);
+        if (eff_formant != 0.0) {
             for (int k = 0; k < numbins_; ++k)
                 an_.logsp[static_cast<size_t>(k)] =
                     std::log(slot.sp[static_cast<size_t>(k)] + 1e-12);
@@ -481,6 +522,66 @@ private:
                     std::exp(interp_log(an_.logsp, warp_table_[static_cast<size_t>(k)],
                                         numbins_));
         }
+
+        // Glottal spectral tilt (precomputed per-bin multipliers).
+        if (gender_morph_ != 0.0f) {
+            for (int k = 0; k < numbins_; ++k)
+                slot.sp[static_cast<size_t>(k)] *= tilt_table_[static_cast<size_t>(k)];
+        }
+
+        // Dynamic H1/H2 glottal balance, keyed on the target fundamental
+        // (where the synthesis excitation actually pulses). Gated to low
+        // registers; above ~450 Hz target the boost gracefully bypasses.
+        if (target_f0 > 0.0 && gender_morph_ > 0.0f) {
+            const double f_step = static_cast<double>(sr_) / static_cast<double>(fft_size_);
+            const int k1 = static_cast<int>(std::round(target_f0 / f_step));
+            if (k1 >= 1 && target_f0 <= 450.0 && k1 < numbins_) {
+                const double boost = 1.0 + 1.2 * static_cast<double>(gender_morph_);
+                for (int d = -2; d <= 2; ++d) {
+                    const int kb = k1 + d;
+                    if (kb >= 1 && kb < numbins_) {
+                        const double w =
+                            0.5 * (1.0 + std::cos(M_PI * static_cast<double>(d) / 3.0));
+                        slot.sp[static_cast<size_t>(kb)] *= (1.0 + (boost - 1.0) * w);
+                    }
+                }
+                const int k2 = 2 * k1;
+                if (k2 < numbins_) {
+                    const double cut = 1.0 - 0.4 * static_cast<double>(gender_morph_);
+                    for (int d = -2; d <= 2; ++d) {
+                        const int kb = k2 + d;
+                        if (kb >= 1 && kb < numbins_) {
+                            const double w =
+                                0.5 * (1.0 + std::cos(M_PI * static_cast<double>(d) / 3.0));
+                            slot.sp[static_cast<size_t>(kb)] *= (1.0 + (cut - 1.0) * w);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Native aperiodicity breathiness injection (1.5-7 kHz raised-cosine
+        // band). Applied to slot.ap AFTER the last_ap_ clean snapshot above,
+        // so held half-rate frames never accumulate drift. WORLD's
+        // power-complementary periodic/noise split keeps headroom intact.
+        // Synthesis excitation is Gaussian white noise (randn/RandnState),
+        // distinct from ReIm's velvet-noise generator.
+        if (breathiness_ > 0.0f && f0 > 0.0) {
+            const double f_step = static_cast<double>(sr_) / static_cast<double>(fft_size_);
+            for (int k = 0; k < numbins_; ++k) {
+                const double f_hz = static_cast<double>(k) * f_step;
+                if (f_hz >= 1500.0 && f_hz <= 7000.0) {
+                    const double mu = (f_hz - 1500.0) / (7000.0 - 1500.0);
+                    const double band_weight = 0.5 * (1.0 - std::cos(2.0 * M_PI * mu));
+                    const double injection =
+                        static_cast<double>(breathiness_) * 0.45 * band_weight;
+                    double a = slot.ap[static_cast<size_t>(k)] + injection;
+                    if (a > 1.0) a = 1.0;
+                    slot.ap[static_cast<size_t>(k)] = a;
+                }
+            }
+        }
+
         slot.f0 = target_f0;
         auto t4 = profile_ ? std::chrono::steady_clock::now()
                            : std::chrono::steady_clock::time_point();

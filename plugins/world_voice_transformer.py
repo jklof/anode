@@ -35,9 +35,10 @@ class WorldVoiceTransformer(FFINode):
         "Real-time voice pitch and formant transformer combining ReIm "
         "streaming F0 tracking with WORLD vocoding (CheapTrick envelope, "
         "D4C aperiodicity, real-time synthesis). Independent pitch "
-        "transposition and formant warping with natural consonants. Fixed "
-        "algorithmic latency of 1024 samples (21.3 ms at 48 kHz); mix "
-        "crossfades cleanly with the latency-aligned dry path."
+        "transposition, formant warping, acoustic gender morphing, and "
+        "native aperiodicity breathiness. Fixed algorithmic latency of "
+        "1024 samples (21.3 ms at 48 kHz); mix crossfades cleanly with the "
+        "latency-aligned dry path."
     )
 
     LIB_NAME = "world_transformer"
@@ -47,6 +48,36 @@ class WorldVoiceTransformer(FFINode):
         "formant_shift": 1,
         "mix": 2,
         "output_gain": 3,
+        "gender_morph": 4,
+        "breathiness": 5,
+    }
+
+    # Presets mirror the VocalTransformer schema for the ui_system NodeItem menu.
+    PRESETS = {
+        "Male -> Female": {
+            "pitch_shift": 9.5,
+            "formant_shift": 1.0,
+            "gender_morph": 0.85,
+            "breathiness": 0.20,
+            "output_gain": 0.0,
+            "mix": 1.0,
+        },
+        "Female -> Male": {
+            "pitch_shift": -9.0,
+            "formant_shift": -0.8,
+            "gender_morph": -0.80,
+            "breathiness": 0.05,
+            "output_gain": 0.0,
+            "mix": 1.0,
+        },
+        "Neutral (Reset)": {
+            "pitch_shift": 0.0,
+            "formant_shift": 0.0,
+            "gender_morph": 0.0,
+            "breathiness": 0.0,
+            "output_gain": 0.0,
+            "mix": 1.0,
+        },
     }
 
     def __init__(self, name=""):
@@ -76,6 +107,13 @@ class WorldVoiceTransformer(FFINode):
                              help="Fundamental pitch shift in semitones.")
         self.add_float_param("formant_shift", 0.0, -12.0, 12.0, unit="st",
                              help="Vocal tract resonance / formant shift in semitones.")
+        self.add_float_param("gender_morph", 0.0, -1.0, 1.0, unit="",
+                             help="Vocal tract length morphing & glottal character (+1.0 = Feminine, "
+                                  "-1.0 = Masculine). Shifts formants ±3 st, applies glottal spectral "
+                                  "tilt, and shapes H1/H2 fundamental balance.")
+        self.add_float_param("breathiness", 0.0, 0.0, 1.0, unit="",
+                             help="Vocal cord aspiration / breathiness level. Injects native aperiodicity "
+                                  "into the 1.5-7 kHz band on voiced speech.")
         self.add_float_param("mix", 1.0, 0.0, 1.0,
                              help="Dry/wet crossfade (0.0 = dry bypass, 1.0 = transformed "
                                   "vocal). The dry path is latency-aligned inside the DSP, "
