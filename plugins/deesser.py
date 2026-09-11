@@ -27,7 +27,7 @@ class DeEsser(FFINode):
         "Split-band de-esser: attenuates only the high-frequency band above "
         "'frequency' when sibilant energy exceeds 'threshold' (up to 'depth' "
         "dB), leaving vowel body untouched. Detection is linked across "
-        "channels; 'listen' solos the detector band for tuning. Zero added "
+        "channels; 'listen' solos the HF crossover band (the ducked signal) for tuning. Zero added "
         "latency; mix blends dry/wet without comb filtering."
     )
 
@@ -62,11 +62,13 @@ class DeEsser(FFINode):
         self.add_float_param("release_ms", 60.0, 10.0, 300.0, unit="ms",
                              help="Detector release time (smooth recovery).")
         self.add_bool_param("listen", False,
-                            help="Solo the detector band to tune frequency/threshold.")
+                            help="Solo the HF crossover band (the ducked signal) to tune frequency/threshold.")
         self.add_float_param("mix", 1.0, 0.0, 1.0,
                              help="Dry/wet balance (0.0 = bit-exact bypass). Intermediate "
                                   "values blend inside the crossover's phase-consistent "
-                                  "domain, so no comb filtering occurs.")
+                                  "domain, so no comb filtering occurs. Note: moving off "
+                                  "0.0 engages the crossover phase and fresh detector "
+                                  "state (clean engagement, no ghost of bypassed audio).")
 
     def _bind_functions(self):
         super()._bind_functions()

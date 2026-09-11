@@ -11,8 +11,8 @@
 // side, RBJ cookbook) sums flat, so with g = 1 the output is bit-near the
 // input. Only the HF band is ever attenuated, leaving vowel formants and
 // low harmonics untouched. Detection runs on an independent bandpass
-// (Q ~= 1) centered at the same frequency, so ess energy below the split
-// point still triggers; it is linked across channels (max of the two
+// (Q = 0.5, ~2.5 octaves) centered at the same frequency, so ess energy
+// below the split point still triggers; it is linked across channels (max of the two
 // bands) so the stereo image never shifts under reduction.
 //
 // `listen` solos the detector band to the output for tuning.
@@ -80,7 +80,7 @@ struct Biquad {
         a2 = (1.0f - alpha) / a0;
     }
 
-    // Constant-peak-gain bandpass for the ess detector (Q ~= 1 spans the
+    // Constant-peak-gain bandpass for the ess detector (Q = 0.5 spans the
     // full sibilant range around the center frequency). Kept independent
     // of the crossover so ess energy below the split point still triggers.
     void set_detector_bandpass(float fc, float sr) {
@@ -88,7 +88,7 @@ struct Biquad {
         const float w = 2.0f * kPi * fc / sr;
         const float c = std::cos(w);
         const float s = std::sin(w);
-        const float alpha = s;  // Q = 1
+        const float alpha = s;  // Q = 0.5 (~2.5 octaves: wide ess coverage)
         const float a0 = 1.0f + alpha;
         b0 = alpha / a0;
         b1 = 0.0f;
@@ -110,7 +110,7 @@ public:
     DeEsserProcessor()
         : sr_(48000.0f), freq_(6500.0f), thresh_db_(-18.0f), depth_db_(6.0f),
           att_ms_(1.0f), rel_ms_(60.0f), listen_(false), mix_(1.0f),
-          env_(0.0f), gr_db_(0.0f) {
+          env_(0.0f), gr_db_(0.0f), gr_block_min_(0.0f) {
         recalc();
     }
 
@@ -151,7 +151,7 @@ public:
         }
     }
 
-    float gr_db() const { return gr_db_; }
+    float gr_db() const { return gr_block_min_; }
 
     void reset() {
         for (int c = 0; c < kMaxChannels; ++c) {
@@ -163,6 +163,7 @@ public:
         }
         env_ = 0.0f;
         gr_db_ = 0.0f;
+        gr_block_min_ = 0.0f;
     }
 
     void process(const float* in, float* out, int channels, int frames) {
@@ -184,6 +185,10 @@ public:
 
         // Mono input: duplicate internally to both output channels.
         const int chs = (channels == 1) ? kMaxChannels : channels;
+
+        // Metering reports the block minimum (most negative) reduction so a
+        // brief mid-block spike is not masked by end-of-block release.
+        gr_block_min_ = 0.0f;
 
         for (int i = 0; i < frames; ++i) {
             // Linked detection: hottest detector-band energy across channels.
@@ -214,6 +219,7 @@ public:
                 }
             }
             gr_db_ = target_gr;
+            if (target_gr < gr_block_min_) gr_block_min_ = target_gr;
             const float g = std::pow(10.0f, gr_db_ / 20.0f);
 
             for (int c = 0; c < chs; ++c) {
@@ -266,7 +272,7 @@ private:
     bool listen_;
     float mix_;
     float att_, rel_;
-    float env_, gr_db_;
+    float env_, gr_db_, gr_block_min_;
     Biquad lp1_[kMaxChannels], lp2_[kMaxChannels];
     Biquad hp1_[kMaxChannels], hp2_[kMaxChannels];
     Biquad det_[kMaxChannels];

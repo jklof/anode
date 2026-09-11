@@ -205,6 +205,23 @@ def test_deesser_attack_release_ballistics():
     assert node.get_telemetry()["gr_db"] == pytest.approx(0.0, abs=0.2)
 
 
+def test_deesser_gr_reports_block_minimum():
+    """Metering captures a mid-block spike: ess in the first quarter of a
+    block with fast release still reads near-full reduction, even though
+    the end-of-block value has already released."""
+    node = make_node()
+    set_params(node, frequency=6500.0, threshold=-30.0, depth=6.0,
+               attack_ms=1.0, release_ms=10.0, mix=1.0)
+    silence = torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE)
+    for _ in range(4):
+        process_block(node, silence)
+    eblocks = ess_blocks(2)
+    burst = eblocks[0].clone()
+    burst[:, BLOCK_SIZE // 4:] = 0.0  # ess only in the first quarter
+    process_block(node, burst)
+    assert node.get_telemetry()["gr_db"] < -4.0
+
+
 def test_deesser_mono_to_stereo_identical():
     node = make_node()
     set_params(node, mix=1.0)
