@@ -51,7 +51,15 @@ enum ParamId {
     kFormantShift = 1,
     kGenderMorph = 2,
     kTonalityLimitHz = 3,
-    kMix = 4
+    kMix = 4,
+    kLatencyMode = 5
+};
+
+// Operating modes: Studio keeps the default preset; Live uses a shorter
+// block/interval for monitor-friendly latency (see configure()).
+enum SigLatencyMode {
+    kSigStudio = 0,
+    kSigLive = 1
 };
 
 class SignalsmithVocalProcessor {
@@ -59,7 +67,7 @@ public:
     SignalsmithVocalProcessor()
         : sr_(48000.0f), pitch_st_(0.0f), formant_st_(0.0f),
           gender_morph_(0.0f), tonality_hz_(0.0f),
-          mix_(1.0f), prev_mix_(1.0f), latency_(0) {
+          mix_(1.0f), prev_mix_(1.0f), latency_mode_(kSigStudio), latency_(0) {
         configure();
         apply_params();
     }
@@ -96,6 +104,17 @@ public:
                 // so restart both paths cleanly (mirrors world_transformer).
                 if ((prev_mix_ <= 0.0f) != (mix_ <= 0.0f)) reset_transient();
                 prev_mix_ = mix_;
+                break;
+            }
+            case kLatencyMode: {
+                const int m = (v > 0.5f) ? kSigLive : kSigStudio;
+                if (m != latency_mode_) {
+                    latency_mode_ = m;
+                    // New block/interval geometry: rebuild the stretcher and
+                    // clear both paths so the dry-read step cannot pop.
+                    configure();
+                    apply_params();
+                }
                 break;
             }
             default: break;
@@ -191,7 +210,14 @@ public:
 
 private:
     void configure() {
-        stretch_.presetDefault(kMaxChannels, sr_);
+        if (latency_mode_ == kSigLive) {
+            // 40 ms block / 10 ms interval for monitor-friendly latency;
+            // the reported latency is queried below, not assumed.
+            stretch_.configure(kMaxChannels, static_cast<int>(sr_ * 0.04),
+                               static_cast<int>(sr_ * 0.01));
+        } else {
+            stretch_.presetDefault(kMaxChannels, sr_);
+        }
         stretch_.setFormantBase(kFormantBaseHz / sr_);
         latency_ = stretch_.inputLatency() + stretch_.outputLatency();
         if (latency_ < 0) latency_ = 0;
@@ -233,6 +259,7 @@ private:
     float sr_;
     float pitch_st_, formant_st_, gender_morph_, tonality_hz_;
     float mix_, prev_mix_;
+    int latency_mode_;
     int latency_;
     signalsmith::stretch::SignalsmithStretch<float> stretch_;
     std::vector<float> dry_[kMaxChannels];

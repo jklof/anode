@@ -25,9 +25,11 @@ pitch-class mask rotated to a root), live MIDI note targeting via the
 synthesized vibrato. With correction and MIDI both off, tracking is skipped
 entirely and the node is a pure manual pitch/formant/gender shifter.
 
-Latency: FIXED 9216 samples (192 ms @ 48 kHz) across the whole pitch range —
-see get_telemetry(). The 'mix' parameter is latency-compensated: intermediate
-values crossfade cleanly with the dry path without comb filtering.
+Latency: 9216 samples (192 ms @ 48 kHz) in Studio mode across the whole
+pitch range — see get_telemetry(). Live Tracking (2560 spls / 53 ms) and
+Ultra-Low (2048 spls / 42 ms) modes trade FFT resolution and pitch range
+for monitor-friendly latency. The 'mix' parameter is latency-compensated:
+intermediate values crossfade cleanly with the dry path without comb filtering.
 """
 
 import ctypes
@@ -54,6 +56,12 @@ _SCALE_NAMES = tuple(SCALES.keys())
 _ROOT_VALUES = tuple(float(ROOT_NOTES[k]) for k in _ROOT_NAMES)
 _SCALE_VALUES = tuple(float(SCALES[k]) for k in _SCALE_NAMES)
 
+LATENCY_MODES = [
+    "Studio (HQ / 192ms)",
+    "Live Tracking (53ms)",
+    "Ultra-Low (42ms)",
+]
+
 
 class VocalTransformer(FFINode):
     category = "Effects"
@@ -67,8 +75,9 @@ class VocalTransformer(FFINode):
         "quality on upward shifts and dullness on downward shifts, plus "
         "tract-filtered 1.5-7 kHz aspiration noise. Optional auto-tune style "
         "pitch correction (hard-tune to natural glide), scale snapping, MIDI "
-        "note targeting, and synthesized vibrato. Fixed algorithmic latency "
-        "of 9216 samples (192 ms at 48 kHz) across the full pitch range; mix "
+        "note targeting, and synthesized vibrato. Algorithmic latency of "
+        "9216 samples (192 ms at 48 kHz) in Studio mode, 2560 (53 ms) Live, "
+        "2048 (42 ms) Ultra-Low; mix "
         "crossfades cleanly with the latency-aligned dry path."
     )
 
@@ -85,6 +94,7 @@ class VocalTransformer(FFINode):
         "breathiness": 9,
         "sibilant_bypass": 10,
         "mix": 11,
+        "latency_mode": 14,
     }
 
     PARAM_SCALE_ROOT_ID = 1
@@ -262,6 +272,20 @@ class VocalTransformer(FFINode):
                              help="Dry/wet crossfade (0.0 = dry bypass, 1.0 = transformed "
                                   "vocal). The dry path is latency-aligned inside the DSP, "
                                   "so intermediate values crossfade without comb filtering.")
+        self.add_menu_param(
+            "latency_mode", LATENCY_MODES, initial_idx=0,
+            help="Algorithmic latency tradeoff: Studio (2048-pt FFT, highest "
+                 "frequency resolution down to 80 Hz, +-24 st, 192 ms), Live "
+                 "Tracking (1024-pt FFT, 53 ms, +-12 st, >= 140 Hz material), "
+                 "or Ultra-Low (1024-pt FFT, 42 ms, +-7 st, in-ear monitoring). "
+                 "Switching clears the transient pipeline (one latency cycle "
+                 "of silence).")
+
+    def _bind_functions(self):
+        super()._bind_functions()
+        if hasattr(self.lib, "get_latency_samples"):
+            self.lib.get_latency_samples.restype = ctypes.c_int
+            self.lib.get_latency_samples.argtypes = [ctypes.c_void_p]
 
     def start(self):
         super().start()
@@ -427,11 +451,15 @@ class VocalTransformer(FFINode):
         self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
 
     def get_telemetry(self) -> dict:
-        # Fixed emission latency (see cpp kLatency): frames span 2048*ratio
-        # input samples (ratio <= 4 at +-24 st) and the read pointer trails the
-        # input stream by L = 1024 + 2048*4 = 9216 samples so every emitted
-        # sample is fully accumulated.
+        # Emission latency depends on the latency mode (see cpp
+        # configure_mode); query the native side so the UI always reports
+        # the active value.
         latency_samples = 9216
+        if self.lib and self.dsp_handle and hasattr(self.lib, "get_latency_samples"):
+            try:
+                latency_samples = int(self.lib.get_latency_samples(self.dsp_handle))
+            except Exception:
+                pass
         return {
             "latency_samples": latency_samples,
             "latency_ms": round(latency_samples / float(SAMPLE_RATE) * 1000.0, 2),

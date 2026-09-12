@@ -12,9 +12,9 @@ sizes, no time-stretch):
   (semitones, pitch-compensated so formants stay absolute) plus a gender
   morph that adds 3.5 semitones of formant shift per unit.
 - Fixed algorithmic latency of inputLatency()+outputLatency() samples
-  (5760 samples / 120 ms at 48 kHz with the default preset); `mix`
-  crossfades with the latency-aligned dry path, and `mix = 0` is a
-  bit-exact zero-latency bypass.
+  (5760 samples / 120 ms at 48 kHz in Studio mode, 1920 / 40 ms in Live
+  mode); `mix` crossfades with the latency-aligned dry path, and `mix = 0`
+  is a bit-exact zero-latency bypass.
 
 The Python side only marshals pointers, pushes staged parameters once per
 change, and forwards block-rate CV from the modulation sockets.
@@ -34,8 +34,9 @@ class SignalsmithVocal(FFINode):
         "Stretch (transient-aware phase locking, no glottal marking, no "
         "phase-vocoder smearing). Independent pitch transposition with "
         "optional tonality limit, pitch-compensated formant shifting, and "
-        "acoustic gender morphing. Fixed algorithmic latency of 5760 "
-        "samples (120 ms at 48 kHz); mix crossfades cleanly with the "
+        "acoustic gender morphing. Algorithmic latency of 5760 samples "
+        "(120 ms at 48 kHz) in Studio mode, 1920 (40 ms) in Live mode; mix "
+        "crossfades cleanly with the "
         "latency-aligned dry path."
     )
 
@@ -47,7 +48,13 @@ class SignalsmithVocal(FFINode):
         "gender_morph": 2,
         "tonality_limit": 3,
         "mix": 4,
+        "latency_mode": 5,
     }
+
+    LATENCY_MODES = [
+        "Studio (HQ / 120ms)",
+        "Live (40ms)",
+    ]
 
     # Presets mirror the VocalTransformer schema for the ui_system NodeItem menu.
     PRESETS = {
@@ -119,6 +126,12 @@ class SignalsmithVocal(FFINode):
                              help="Dry/wet crossfade (0.0 = dry bypass, 1.0 = transformed "
                                   "vocal). The dry path is latency-aligned inside the DSP, "
                                   "so intermediate values crossfade without comb filtering.")
+        self.add_menu_param(
+            "latency_mode", self.LATENCY_MODES, initial_idx=0,
+            help="Algorithmic latency tradeoff: Studio (default preset geometry, "
+                 "120 ms) or Live (40 ms block / 10 ms interval, 40 ms). "
+                 "Switching clears the transient pipeline (one latency cycle "
+                 "of silence).")
 
     def _bind_functions(self):
         super()._bind_functions()

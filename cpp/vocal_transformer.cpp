@@ -60,6 +60,10 @@ constexpr int   kFFT = 2048;              // 42.7 ms window: resolves male harmo
 constexpr int   kHop = 256;               // 87.5% overlap
 constexpr int   kHalf = 1025;             // real frequency bins incl. DC + Nyquist
 constexpr int   kLifter = 48;             // wider cepstral lifter for 2048 bins
+// NOTE: kFFT/kHop/kHalf/kLifter above are MAXIMUM capacities (member array
+// sizes). The active slice is controlled per latency mode via fft_size_/hop_/
+// num_bins_/base_lifter_ below; all DSP loops must use the members, never the
+// constants (except array declarations and Studio-mode defaults).
 constexpr int   kIters = 4;
 constexpr int   kMaxChannels = 2;
 constexpr int   kRingSize = 16384;        // input history + OLA ring (power of 2;
@@ -70,6 +74,14 @@ constexpr int   kRingMask = kRingSize - 1;
 // and output sample o is complete once frame floor(o/256) has been processed,
 // so L >= 1024 + 2048*4 = 9216 keeps every emitted sample fully accumulated.
 constexpr long long kLatency = 9216;
+// Operating / latency modes (see configure_mode): Studio keeps the full
+// 2048-pt analysis; Live/UltraLive drop to 1024-pt with proportionally
+// smaller hops, lifter cutoffs, pitch ranges, and emission latencies.
+enum LatencyMode {
+    kModeStudio = 0,    // N=2048, H=256, L=9216 (192 ms), pitch +-24 st
+    kModeLive = 1,      // N=1024, H=128, L=2560 (53.3 ms), pitch +-12 st
+    kModeUltraLive = 2  // N=1024, H=128, L=2048 (42.7 ms), pitch +-7 st
+};
 // Pitch-tracker analysis constants (12 kHz decimated domain).
 constexpr int kPitchDecim = 4;
 constexpr int kPitchBufSize = 1024;
@@ -204,9 +216,14 @@ public:
                 midi_mode_ = v > 0.5f ? 1.0f : 0.0f;
                 break;
             case 13: target_midi_note_ = v; break;
+            case 14:
+                configure_mode(static_cast<int>(v));
+                break;
             default: break;
         }
     }
+
+    int latency_samples() const { return static_cast<int>(latency_samples_); }
 
     void reset() {
         reset_transient();
@@ -259,8 +276,12 @@ public:
             total_shift += vibrato_depth_ * std::sin(vibrato_phase_);
         }
 
-        total_shift = std::max(-24.0f, std::min(24.0f, total_shift));
-        const float ratio = std::pow(2.0f, total_shift / 12.0f);
+        // Mode-aware clamp: Live/UltraLive budgets only cover their reduced
+        // max span, so manual shift + correction + vibrato together must never
+        // exceed the mode range (belt & braces: ratio clamped again below).
+        total_shift = std::max(-max_pitch_st_, std::min(max_pitch_st_, total_shift));
+        const float ratio = std::min(std::pow(2.0f, total_shift / 12.0f),
+                                     max_pitch_ratio_);
 
         // Mono input: duplicate internally to both output channels.
         const int chs = (channels == 1) ? kMaxChannels : channels;
@@ -284,11 +305,11 @@ public:
             // the dry frame; dispatching on 2048*ratio alone would read
             // not-yet-received future samples as stale ring data and corrupt
             // the dry sibilant spectrum on every unvoiced frame.
-            const double span = 2048.0 * (double)std::max(ratio, 1.0f);
+            const double span = static_cast<double>(fft_size_) * (double)std::max(ratio, 1.0f);
             int frames_this_call = 0;
-            while (256.0 * (double)frame_index_[c] + span
+            while (static_cast<double>(hop_) * (double)frame_index_[c] + span
                        <= (double)total_received_[c] + 1e-6
-                   && frames_this_call < kMaxFramesPerCall) {
+                    && frames_this_call < max_frames_per_call_) {
                 process_frame(c, ratio);
                 ++frames_this_call;
             }
@@ -306,7 +327,7 @@ public:
             // first L samples of the stream are silence). The dry path is
             // read from the input history ring at the same latency-aligned
             // position, so (0,1) mix values crossfade without comb filtering.
-            const long long read_base = total_received_[c] - kLatency;
+            const long long read_base = total_received_[c] - latency_samples_;
             for (int i = 0; i < frames; ++i) {
                 const long long o = read_base + i;
                 if (o >= 0) {
@@ -346,6 +367,17 @@ private:
     float midi_mode_, target_midi_note_;
     float detected_f0_, current_pitch_semitone_, target_smoothed_semitone_;
     float vibrato_phase_;
+
+    // ---- Latency mode (active DSP slice of the max-sized buffers) ---------
+    int latency_mode_ = kModeStudio;
+    int fft_size_ = kFFT;
+    int hop_ = kHop;
+    int num_bins_ = kHalf;
+    int base_lifter_ = kLifter;
+    float max_pitch_st_ = 24.0f;
+    float max_pitch_ratio_ = 4.0f;
+    long long latency_samples_ = kLatency;
+    int max_frames_per_call_ = kMaxFramesPerCall;
 
     Biquad aa_filter_;
     float pitch_downsample_buf_[kPitchBufSize];
@@ -641,28 +673,75 @@ private:
         return static_cast<float>(best);
     }
 
+    // Latency-mode switch (param-change path only, never steady-state):
+    // rescales the active DSP slice, rebuilds tables, and clears transient
+    // state so the dry-delay read pointer step cannot pop. No heap use:
+    // every buffer stays at its static maximum capacity.
+    void configure_mode(int mode) {
+        if (mode < kModeStudio) mode = kModeStudio;
+        if (mode > kModeUltraLive) mode = kModeUltraLive;
+        if (mode == latency_mode_) return;
+        latency_mode_ = mode;
+        switch (mode) {
+            case kModeLive:
+                fft_size_ = 1024;
+                hop_ = 128;
+                num_bins_ = 513;
+                base_lifter_ = 24;
+                max_pitch_st_ = 12.0f;
+                max_pitch_ratio_ = 2.0f;
+                latency_samples_ = 2560;
+                break;
+            case kModeUltraLive:
+                fft_size_ = 1024;
+                hop_ = 128;
+                num_bins_ = 513;
+                base_lifter_ = 24;
+                max_pitch_st_ = 7.0f;
+                max_pitch_ratio_ = 1.4983f;  // 2^(7/12)
+                latency_samples_ = 2048;
+                break;
+            case kModeStudio:
+            default:
+                fft_size_ = kFFT;
+                hop_ = kHop;
+                num_bins_ = kHalf;
+                base_lifter_ = kLifter;
+                max_pitch_st_ = 24.0f;
+                max_pitch_ratio_ = 4.0f;
+                latency_samples_ = kLatency;
+                break;
+        }
+        // Steady state needs BLOCK_SIZE/hop frames per block; keep the RT
+        // burst guard proportional so backlogs can still drain in Live modes.
+        max_frames_per_call_ = kMaxFramesPerCall * kHop / hop_;
+        build_tables();
+        recompute_tables();
+        reset_transient();
+    }
+
     void build_tables() {
         // Synthesis window normalization: the effective OLA window is
         // analysis*synthesis = hann^2, whose COLA sum at hop H is
         // (N/H)*0.375 (exact for Hann^2 at any N/H integer ratio).
         // H = N/4 -> 1.5, H = N/8 (2048/256) -> 3.0.
-        const float cola = static_cast<float>(kFFT) / static_cast<float>(kHop)
+        const float cola = static_cast<float>(fft_size_) / static_cast<float>(hop_)
                            * 0.375f;
-        for (int i = 0; i < kFFT; ++i) {
-            const float w = 0.5f - 0.5f * std::cos(kTwoPi * static_cast<float>(i) / kFFT);
+        for (int i = 0; i < fft_size_; ++i) {
+            const float w = 0.5f - 0.5f * std::cos(kTwoPi * static_cast<float>(i) / fft_size_);
             window_[i] = w;
             synth_window_[i] = w / cola;
         }
         int bits = 0;
-        while ((1 << bits) < kFFT) ++bits;
-        for (int i = 0; i < kFFT; ++i) {
+        while ((1 << bits) < fft_size_) ++bits;
+        for (int i = 0; i < fft_size_; ++i) {
             int r = 0, x = i;
             for (int b = 0; b < bits; ++b) { r = (r << 1) | (x & 1); x >>= 1; }
             rev_[i] = r;
         }
-        for (int j = 0; j < kFFT / 2; ++j) {
-            cos_tab_[j] = std::cos(kTwoPi * static_cast<float>(j) / kFFT);
-            sin_tab_[j] = std::sin(kTwoPi * static_cast<float>(j) / kFFT);
+        for (int j = 0; j < fft_size_ / 2; ++j) {
+            cos_tab_[j] = std::cos(kTwoPi * static_cast<float>(j) / fft_size_);
+            sin_tab_[j] = std::sin(kTwoPi * static_cast<float>(j) / fft_size_);
         }
     }
 
@@ -698,7 +777,7 @@ private:
     //                         1-3 kHz speech-intelligence band.
     // Depends only on gender_morph_ / sr_; rebuilt on param or rate change.
     void recompute_tables() {
-        const float bin_hz = sr_ / static_cast<float>(kFFT);
+        const float bin_hz = sr_ / static_cast<float>(fft_size_);
         // Base tract shift: +1 (feminine) => +3 st shortening (upward
         // formant shift), -1 (masculine) => -3 st lengthening.
         const float base_st = gender_morph_ * 3.0f;
@@ -717,7 +796,7 @@ private:
         // source), -1 (masc) adds +2.5 dB/oct (sharper, buzzy closure).
         const float tilt_db_per_oct = -gender_morph_ * 2.5f;
 
-        for (int k = 0; k < kHalf; ++k) {
+        for (int k = 0; k < num_bins_; ++k) {
             const float f_hz = static_cast<float>(k) * bin_hz;
 
             // 1. Three-zone anatomical VTLN warp table.
@@ -738,8 +817,8 @@ private:
             }
             float b = f_source / bin_hz;
             if (b < 0.0f) b = 0.0f;
-            if (b > static_cast<float>(kHalf - 1))
-                b = static_cast<float>(kHalf - 1);
+            if (b > static_cast<float>(num_bins_ - 1))
+                b = static_cast<float>(num_bins_ - 1);
             vtln_warp_bin_[k] = b;
 
             // 2. Logarithmic (dB/octave) spectral tilt, 1 kHz anchor.
@@ -762,8 +841,8 @@ private:
         //    fpos grows without bound over a long session, so wrap it into
         //    ring range BEFORE the double->int cast — an out-of-range cast is
         //    UB and (on x86 cvttsd2si) silently reads ring position 0.
-        const double fpos = std::fmod(256.0 * (double)frame_index_[c], (double)kRingSize);
-        for (int i = 0; i < kFFT; ++i) {
+        const double fpos = std::fmod(static_cast<double>(hop_) * (double)frame_index_[c], (double)kRingSize);
+        for (int i = 0; i < fft_size_; ++i) {
             const double pos = fpos + (double)i * (double)ratio;
             const int i0 = (int)std::floor(pos);
             const float frac = (float)(pos - (double)i0);
@@ -784,7 +863,7 @@ private:
         forward_real(scratch_time_, spec_re_, spec_im_);
 
         // 2. Magnitude / phase.
-        for (int k = 0; k < kHalf; ++k) {
+        for (int k = 0; k < num_bins_; ++k) {
             mag_[k] = std::sqrt(spec_re_[k] * spec_re_[k] + spec_im_[k] * spec_im_[k]);
             phase_[k] = std::atan2(spec_im_[k], spec_re_[k]);
         }
@@ -794,7 +873,7 @@ private:
 
         // 4. Fine excitation from the analysis envelope (before replacement),
         //    clamped to prevent explosion in spectral troughs.
-        for (int k = 0; k < kHalf; ++k) {
+        for (int k = 0; k < num_bins_; ++k) {
             float h = mag_[k] / (envelope_[k] + 1e-9f);
             excitation_[k] = h < 0.0f ? 0.0f : (h > 100.0f ? 100.0f : h);
         }
@@ -806,7 +885,7 @@ private:
 
         // Snapshot the unwarped analysis envelope so peak-locking in synthesize()
         // compares mag_ against its original envelope rather than the warped target.
-        std::memcpy(analysis_envelope_, envelope_, kHalf * sizeof(float));
+        std::memcpy(analysis_envelope_, envelope_, num_bins_ * sizeof(float));
 
         // 6. Formant-preserving envelope replacement + formant/VTLN warp.
         replace_envelope(ratio);
@@ -820,8 +899,8 @@ private:
         // 9. Synthesis window, accumulate into the OLA ring at this frame's
         //     output position (256*m). Emission is handled by the trailing
         //     read pointer in process() once the frame is the last contributor.
-        const long long base = 256LL * frame_index_[c];
-        for (int i = 0; i < kFFT; ++i)
+        const long long base = static_cast<long long>(hop_) * frame_index_[c];
+        for (int i = 0; i < fft_size_; ++i)
             ola_ring_[c][(base + i) & kRingMask] += scratch_time_[i] * synth_window_[i];
         frame_index_[c]++;
     }
@@ -833,18 +912,18 @@ private:
         // and causing comb notches when shifting.
         int num_raw_peaks = 0;
         raw_peak_bins_[num_raw_peaks++] = 0;
-        for (int k = 1; k < kHalf - 1; ++k) {
+        for (int k = 1; k < num_bins_ - 1; ++k) {
             if (mag_[k] >= mag_[k - 1] && mag_[k] >= mag_[k + 1] && mag_[k] > 1e-6f) {
                 raw_peak_bins_[num_raw_peaks++] = k;
-                if (num_raw_peaks >= kHalf - 1) break;
+                if (num_raw_peaks >= num_bins_ - 1) break;
             }
         }
-        raw_peak_bins_[num_raw_peaks++] = kHalf - 1;
+        raw_peak_bins_[num_raw_peaks++] = num_bins_ - 1;
 
         // Precompute the input log-magnitudes once: the hull loop below needs
         // log(mag_[k]) at every bin plus log() at both bracketing peaks —
         // recomputing them inline triples the log() count per frame.
-        for (int k = 0; k < kHalf; ++k)
+        for (int k = 0; k < num_bins_; ++k)
             log_mag_in_[k] = std::log(mag_[k] + 1e-9f);
 
         float* A = log_mag_;
@@ -883,7 +962,7 @@ private:
             // d_0 = delta_0 is already in slot 0.
 
             int p_idx = 0;
-            for (int k = 0; k < kHalf; ++k) {
+            for (int k = 0; k < num_bins_; ++k) {
                 while (p_idx + 1 < M && raw_peak_bins_[p_idx + 1] < k) {
                     ++p_idx;
                 }
@@ -911,16 +990,16 @@ private:
                 A[k] = std::max(h, log_mag_in_[k]);
             }
         } else {
-            for (int k = 0; k < kHalf; ++k)
+            for (int k = 0; k < num_bins_; ++k)
                 A[k] = log_mag_in_[k];
         }
 
         for (int it = 0; it < kIters; ++it) {
             // Real, EVEN 2048-pt spectrum from A -> IFFT -> real cepstrum.
-            for (int k = 0; k < kHalf; ++k) { fft_re_[k] = A[k]; fft_im_[k] = 0.0f; }
-            for (int k = 1; k < kHalf - 1; ++k) {
-                fft_re_[kFFT - k] = A[k];
-                fft_im_[kFFT - k] = 0.0f;
+            for (int k = 0; k < num_bins_; ++k) { fft_re_[k] = A[k]; fft_im_[k] = 0.0f; }
+            for (int k = 1; k < num_bins_ - 1; ++k) {
+                fft_re_[fft_size_ - k] = A[k];
+                fft_im_[fft_size_ - k] = 0.0f;
             }
             fft_run(true);
 
@@ -931,25 +1010,28 @@ private:
             // Adaptive lifter cutoff: feminine morphs (gender_morph_ > 0) have
             // higher acoustic wall/radiation losses relative to vocal-tract
             // volume, broadening formant bandwidths (lower Q). Shorten the
-            // cutoff toward 36 (broader peaks) as gender_morph_ -> 1; retain
-            // the full 48-quefrency resolution (sharp peaks) at =< 0.
-            int eff_lifter = kLifter;
+            // cutoff toward 3/4 of base (broader peaks) as gender_morph_ -> 1;
+            // retain the full base-quefrency resolution (sharp peaks) at =< 0.
+            // Scales with the FFT size (48/36 at N=2048, 24/18 at N=1024).
+            int eff_lifter = base_lifter_;
             if (gender_morph_ > 0.0f) {
-                eff_lifter = static_cast<int>(kLifter - gender_morph_ * 12.0f);
-                if (eff_lifter < 36) eff_lifter = 36;
+                const int lifter_delta = base_lifter_ / 4;
+                const int lifter_floor = base_lifter_ - lifter_delta;
+                eff_lifter = static_cast<int>(base_lifter_ - gender_morph_ * lifter_delta);
+                if (eff_lifter < lifter_floor) eff_lifter = lifter_floor;
             }
-            apply_symmetric_lifter(fft_re_, kFFT, eff_lifter, gender_morph_);
+            apply_symmetric_lifter(fft_re_, fft_size_, eff_lifter, gender_morph_);
 
             // Forward FFT of the liftered (real, even) cepstrum.
-            for (int i = 0; i < kFFT; ++i) fft_im_[i] = 0.0f;
+            for (int i = 0; i < fft_size_; ++i) fft_im_[i] = 0.0f;
             fft_run(false);
-            for (int k = 0; k < kHalf; ++k)
+            for (int k = 0; k < num_bins_; ++k)
                 A[k] = std::max(A[k], fft_re_[k]);   // imag ~ 0 by evenness
         }
 
         // Clamp before exponentiation: the running max() can only grow.
         const float a_max = std::log(1.0e6f);
-        for (int k = 0; k < kHalf; ++k)
+        for (int k = 0; k < num_bins_; ++k)
             envelope_[k] = std::exp(std::min(A[k], a_max));
     }
 
@@ -968,14 +1050,14 @@ private:
                     static_cast<size_t>(n - 2 * cutoff + 1) * sizeof(float));
     }
 
-    static float interp(const float* buf, float pos) {
+    float interp(const float* buf, float pos) {
         // Clamp the FRACTION too: clamping only the integer index would leave a
         // negative fraction when pos < 0, extrapolating past the array's lower
         // edge and potentially producing a negative envelope.
         if (pos < 0.0f) pos = 0.0f;
-        if (pos > static_cast<float>(kHalf - 1)) pos = static_cast<float>(kHalf - 1);
+        if (pos > static_cast<float>(num_bins_ - 1)) pos = static_cast<float>(num_bins_ - 1);
         const int i = static_cast<int>(pos);
-        const int j = (i < kHalf - 1) ? i + 1 : i;
+        const int j = (i < num_bins_ - 1) ? i + 1 : i;
         return buf[i] + (buf[j] - buf[i]) * (pos - static_cast<float>(i));
     }
 
@@ -991,14 +1073,14 @@ private:
     void replace_envelope(float ratio) {
         const float rf = std::pow(2.0f, formant_st_ / 12.0f);
         const float scale = ratio / rf;
-        for (int k = 0; k < kHalf; ++k) {
+        for (int k = 0; k < num_bins_; ++k) {
             float pos = vtln_warp_bin_[k] * scale;
             if (pos < 0.0f) pos = 0.0f;
-            if (pos > static_cast<float>(kHalf - 1))
-                pos = static_cast<float>(kHalf - 1);
+            if (pos > static_cast<float>(num_bins_ - 1))
+                pos = static_cast<float>(num_bins_ - 1);
             warped_envelope_[k] = interp(envelope_, pos);
         }
-        std::memcpy(envelope_, warped_envelope_, kHalf * sizeof(float));
+        std::memcpy(envelope_, warped_envelope_, num_bins_ * sizeof(float));
     }
 
     int find_peaks() {
@@ -1008,17 +1090,17 @@ private:
         // peaks per frame, tearing the phase vocoder's rigid peak locking and
         // causing random phase diffusion in low-energy regions.
         int n = 0;
-        for (int k = 2; k < kHalf - 2; ++k) {
+        for (int k = 2; k < num_bins_ - 2; ++k) {
             if (mag_[k] > mag_[k - 1] && mag_[k] >= mag_[k + 1] &&
                 mag_[k] > mag_[k - 2] && mag_[k] > mag_[k + 2] &&
                 mag_[k] > envelope_[k] * 0.3f && mag_[k] > 1e-4f) {
                 peak_bins_[n++] = k;
-                if (n >= kHalf) break;
+                if (n >= num_bins_) break;
             }
         }
         // Assign each source bin to its nearest peak (-1 when unvoiced).
         int pi = 0;
-        for (int k = 0; k < kHalf; ++k) {
+        for (int k = 0; k < num_bins_; ++k) {
             while (pi + 1 < n &&
                    std::abs(k - peak_bins_[pi + 1]) < std::abs(k - peak_bins_[pi]))
                 ++pi;
@@ -1038,12 +1120,15 @@ private:
         {
             float flux = 0.0f;
             float energy = 0.0f;
-            for (int k = 4; k < kHalf; ++k) {
+            // Rumble floor scales with bin width (~94 Hz in every mode:
+            // bin k=4 at N=2048, k=2 at N=1024).
+            const int kFluxMin = num_bins_ >> 8;
+            for (int k = kFluxMin; k < num_bins_; ++k) {
                 const float d = mag_[k] - prev_mag_[c][k];
                 if (d > 0.0f) flux += d;
                 energy += mag_[k];
             }
-            const float flux_rel = flux / (energy + 1.0e-6f * static_cast<float>(kHalf));
+            const float flux_rel = flux / (energy + 1.0e-6f * static_cast<float>(num_bins_));
             // Thresholds: measured steady-state (periodic voiced) flux_rel is
             // ~0.002; a 10 ms plosive burst reaches ~0.6. 0.4 leaves a ~175x
             // margin against false positives while catching real onsets.
@@ -1055,17 +1140,17 @@ private:
         //                  samples = Ha' analysis samples)
         //   synthesis hop Hs  = 256
         //   phi_syn(k) += Omega_k*Hs + dphi(k)*(Hs/Ha') = Omega_k*256 + dphi*ratio
-        const float ha = kHop / ratio;
-        for (int k = 0; k < kHalf; ++k) {
+        const float ha = static_cast<float>(hop_) / ratio;
+        for (int k = 0; k < num_bins_; ++k) {
             if (is_transient) {
                 synth_phase_[k] = phase_[k];
                 continue;
             }
-            const float omega_k = kTwoPi * static_cast<float>(k) / kFFT;
+            const float omega_k = kTwoPi * static_cast<float>(k) / fft_size_;
             const float dphi = wrap_phase(phase_[k] - prev_phase_in_[c][k]
                                           - omega_k * ha);
             synth_phase_[k] = wrap_phase(prev_phase_out_[c][k]
-                                         + omega_k * kHop + dphi * ratio);
+                                         + omega_k * static_cast<float>(hop_) + dphi * ratio);
         }
 
         // Peak-locking restricted to the main lobe of detected peaks:
@@ -1075,7 +1160,7 @@ private:
         // (which turns breath/noise into a metallic, robotic buzz).
         // Skipped on transient frames (phases are already coherent).
         if (num_peaks > 0 && !is_transient) {
-            for (int k = 0; k < kHalf; ++k) {
+            for (int k = 0; k < num_bins_; ++k) {
                 const int kp = peak_bins_[peak_owner_[k]];
                 if (std::abs(k - kp) <= 2 && mag_[k] > analysis_envelope_[k] * 0.15f) {
                     synth_phase_[k] = wrap_phase(synth_phase_[kp]
@@ -1086,7 +1171,7 @@ private:
 
         // Magnitudes: replaced envelope x (fine excitation x precomputed
         // excitation shaper — log-octave spectral tilt).
-        for (int k = 0; k < kHalf; ++k)
+        for (int k = 0; k < num_bins_; ++k)
             synth_mag_[k] = envelope_[k] * (excitation_[k] * excitation_shaper_[k]);
 
         // Glottal source reshaping: H1 boost and H2 attenuation for feminine morphs
@@ -1105,7 +1190,7 @@ private:
         int h1_bin = -1;
         int h2_bin = -1;
         if (num_peaks > 0) {
-            const float bin_hz = sr_ / static_cast<float>(kFFT);
+            const float bin_hz = sr_ / static_cast<float>(fft_size_);
             const int kMin = std::max(1, static_cast<int>(80.0f / bin_hz));
             const int kMax = static_cast<int>(400.0f / bin_hz) + 1;
 
@@ -1143,14 +1228,14 @@ private:
             }
         }
         if (num_peaks > 0) {
-            const float bin_hz = sr_ / static_cast<float>(kFFT);
+            const float bin_hz = sr_ / static_cast<float>(fft_size_);
 
             if (gender_morph_ > 0.0f
                     && static_cast<float>(h1_bin) * bin_hz < kH1MaxHz) {
                 const float boost = 1.0f + 1.2f * gender_morph_;  // up to +6.8 dB
                 for (int d = -2; d <= 2; ++d) {
                     const int kb = h1_bin + d;
-                    if (kb >= 1 && kb < kHalf) {
+                    if (kb >= 1 && kb < num_bins_) {
                         const float w =
                             0.5f * (1.0f + std::cos(kPi * static_cast<float>(d) / 3.0f));
                         synth_mag_[kb] *= (1.0f + (boost - 1.0f) * w);
@@ -1162,7 +1247,7 @@ private:
                     const float cut = 1.0f - 0.4f * gender_morph_; // down to -4.5 dB
                     for (int d = -2; d <= 2; ++d) {
                         const int kb = h2_bin + d;
-                        if (kb >= 1 && kb < kHalf) {
+                        if (kb >= 1 && kb < num_bins_) {
                             const float w =
                                 0.5f * (1.0f + std::cos(kPi * static_cast<float>(d) / 3.0f));
                             synth_mag_[kb] *= (1.0f + (cut - 1.0f) * w);
@@ -1177,27 +1262,27 @@ private:
         current_h1_bin_ = h1_bin;
 
         // Update phase history for the next frame.
-        for (int k = 0; k < kHalf; ++k) {
+        for (int k = 0; k < num_bins_; ++k) {
             prev_phase_in_[c][k] = phase_[k];
             prev_phase_out_[c][k] = synth_phase_[k];
         }
         // Magnitude history for the next frame's transient-flux detection.
-        std::memcpy(prev_mag_[c], mag_, sizeof(float) * kHalf);
+        std::memcpy(prev_mag_[c], mag_, sizeof(float) * num_bins_);
     }
 
     // Composite voiced/unvoiced detector: low-to-high frequency energy ratio
     // combined with speech-band spectral flatness.
     float compute_voiced_prob(int num_peaks) const {
-        const float bin_hz = sr_ / static_cast<float>(kFFT);
+        const float bin_hz = sr_ / static_cast<float>(fft_size_);
         const int k_1500 = static_cast<int>(1500.0f / bin_hz);
         const int k_3500 = static_cast<int>(3500.0f / bin_hz);
 
         float e_lf = 0.0f;
-        for (int k = 1; k < k_1500 && k < kHalf; ++k)
+        for (int k = 1; k < k_1500 && k < num_bins_; ++k)
             e_lf += mag_[k] * mag_[k];
 
         float e_hf = 0.0f;
-        for (int k = k_3500; k < kHalf; ++k)
+        for (int k = k_3500; k < num_bins_; ++k)
             e_hf += mag_[k] * mag_[k];
 
         const float ratio = (e_lf + 1e-7f) / (e_hf + 1e-7f);
@@ -1208,7 +1293,7 @@ private:
         float log_sum = 0.0f;
         float lin_sum = 0.0f;
         int n_sub = 0;
-        for (int k = k_300; k < k_3000 && k < kHalf; ++k) {
+        for (int k = k_300; k < k_3000 && k < num_bins_; ++k) {
             log_sum += std::log(mag_[k] + 1e-9f);
             lin_sum += mag_[k];
             ++n_sub;
@@ -1243,7 +1328,7 @@ private:
         // Voiced/unvoiced-gated sibilant crossfade + complex-bin blending of
         // the BAND-LIMITED, tract-shaped aspiration noise, then rebuild the
         // full conjugate-symmetric spectrum and invert.
-        const float bin_hz = sr_ / static_cast<float>(kFFT);
+        const float bin_hz = sr_ / static_cast<float>(fft_size_);
 
         // Dynamic V/UV detection: sibilant dry-bin mixing is active ONLY on
         // unvoiced frames.
@@ -1258,7 +1343,7 @@ private:
             // stride-1.0 dry read needs no floor/interpolation — frac is
             // identically zero and linear interpolation here is dead math.
             const int fp = static_cast<int>(fpos);
-            for (int i = 0; i < kFFT; ++i)
+            for (int i = 0; i < fft_size_; ++i)
                 dry_time_[i] = in_ring_[c][(fp + i) & kRingMask] * window_[i];
             forward_real(dry_time_, dry_spec_re_, dry_spec_im_);
             has_dry_spec = true;
@@ -1266,8 +1351,8 @@ private:
 
         // Tract-shaped aspiration: signal-proportional noise scaled by the vocal tract
         // envelope and gated by voicing (natural vocal cord leakage occurs during phonation).
-        const int k_low = static_cast<int>(1500.0f * (kFFT / sr_));
-        const int k_high = static_cast<int>(7000.0f * (kFFT / sr_));
+        const int k_low = static_cast<int>(1500.0f * (fft_size_ / sr_));
+        const int k_high = static_cast<int>(7000.0f * (fft_size_ / sr_));
         const float breath_scale = breathiness_ * 0.04f * voiced_prob;
 
         // Pitch-synchronous (glottally modulated) aspiration: blending the noise
@@ -1285,11 +1370,11 @@ private:
         const float sideband_norm = 1.0f / std::sqrt(1.0f + 2.0f * beta * beta);
         if (pitch_sync) {
             k0 = current_h1_bin_;
-            if (k0 > 64) k0 = 64;   // sanity clamp (F0 <= ~1.5 kHz)
+            if (k0 > fft_size_ / 32) k0 = fft_size_ / 32;   // sanity clamp (F0 <= ~1.5 kHz)
             nb_lo = k_low - k0;
             if (nb_lo < 0) nb_lo = 0;
             nb_hi = k_high + k0;
-            if (nb_hi > kHalf - 1) nb_hi = kHalf - 1;
+            if (nb_hi > num_bins_ - 1) nb_hi = num_bins_ - 1;
             for (int k = nb_lo; k <= nb_hi; ++k) {
                 rng_state_ ^= rng_state_ << 13;
                 rng_state_ ^= rng_state_ >> 17;
@@ -1304,12 +1389,12 @@ private:
             }
         }
 
-        for (int kd = 0; kd < kHalf; ++kd) {
+        for (int kd = 0; kd < num_bins_; ++kd) {
             float vr = synth_mag_[kd] * std::cos(synth_phase_[kd]);
             float vi = synth_mag_[kd] * std::sin(synth_phase_[kd]);
 
             // Complex tract-filtered breath injection (1.5-7 kHz band).
-            if (breath_scale > 0.0f && kd >= k_low && kd <= k_high && kd < kHalf - 1) {
+            if (breath_scale > 0.0f && kd >= k_low && kd <= k_high && kd < num_bins_ - 1) {
                 float n_re;
                 float n_im;
                 if (pitch_sync) {
@@ -1369,15 +1454,15 @@ private:
 
         // Real DC / Nyquist + conjugate-symmetric upper half (planar layout).
         fft_im_[0] = 0.0f;
-        fft_im_[kHalf - 1] = 0.0f;
-        for (int k = 1; k < kHalf - 1; ++k) {
-            fft_re_[kFFT - k] = fft_re_[k];
-            fft_im_[kFFT - k] = -fft_im_[k];
+        fft_im_[num_bins_ - 1] = 0.0f;
+        for (int k = 1; k < num_bins_ - 1; ++k) {
+            fft_re_[fft_size_ - k] = fft_re_[k];
+            fft_im_[fft_size_ - k] = -fft_im_[k];
         }
         fft_run(true);
 
         // Safety clamp on the synthesized frame.
-        for (int i = 0; i < kFFT; ++i) {
+        for (int i = 0; i < fft_size_; ++i) {
             float v = fft_re_[i];
             if (!std::isfinite(v)) v = 0.0f;
             if (v > 4.0f) v = 4.0f;
@@ -1387,30 +1472,30 @@ private:
     }
 
     void forward_real(const float* time, float* re513, float* im513) {
-        for (int i = 0; i < kFFT; ++i) { fft_re_[i] = time[i]; fft_im_[i] = 0.0f; }
+        for (int i = 0; i < fft_size_; ++i) { fft_re_[i] = time[i]; fft_im_[i] = 0.0f; }
         fft_run(false);
-        for (int k = 0; k < kHalf; ++k) {
+        for (int k = 0; k < num_bins_; ++k) {
             re513[k] = fft_re_[k];
             im513[k] = fft_im_[k];
         }
         // DC and Nyquist are purely real.
         im513[0] = 0.0f;
-        im513[kHalf - 1] = 0.0f;
+        im513[num_bins_ - 1] = 0.0f;
     }
 
-    // Iterative radix-2 complex FFT, n = kFFT fixed. Inverse includes 1/N.
+    // Iterative radix-2 complex FFT on the active size. Inverse includes 1/N.
     void fft_run(bool inverse) {
-        for (int i = 0; i < kFFT; ++i) {
+        for (int i = 0; i < fft_size_; ++i) {
             const int j = rev_[i];
             if (j > i) {
                 std::swap(fft_re_[i], fft_re_[j]);
                 std::swap(fft_im_[i], fft_im_[j]);
             }
         }
-        for (int len = 2; len <= kFFT; len <<= 1) {
+        for (int len = 2; len <= fft_size_; len <<= 1) {
             const int half = len >> 1;
-            const int step = kFFT / len;
-            for (int i = 0; i < kFFT; i += len) {
+            const int step = fft_size_ / len;
+            for (int i = 0; i < fft_size_; i += len) {
                 for (int j = 0; j < half; ++j) {
                     const int t = j * step;
                     const float wr = cos_tab_[t];
@@ -1426,8 +1511,8 @@ private:
             }
         }
         if (inverse) {
-            const float s = 1.0f / kFFT;
-            for (int i = 0; i < kFFT; ++i) { fft_re_[i] *= s; fft_im_[i] *= s; }
+            const float s = 1.0f / fft_size_;
+            for (int i = 0; i < fft_size_; ++i) { fft_re_[i] *= s; fft_im_[i] *= s; }
         }
     }
 };
@@ -1460,4 +1545,9 @@ EXPORT void reset(void* h) {
 
 EXPORT void process(void* h, const float* in, float* out, int channels, int frames) {
     if (h) static_cast<VocalTransformerProcessor*>(h)->process(in, out, channels, frames);
+}
+
+EXPORT int get_latency_samples(void* h) {
+    if (!h) return 9216;
+    return static_cast<VocalTransformerProcessor*>(h)->latency_samples();
 }

@@ -402,3 +402,77 @@ def test_signalsmith_native_processing_budget():
             process_block(node, blk)
         best = min(best, (time.perf_counter() - t0) / n * 1000.0)
     assert best < 4.0, f"best process() {best:.2f} ms exceeds budget"
+
+
+# ---------------------------------------------------------------------------
+# Latency modes: 0 Studio (5760 spls / 120 ms), 1 Live (~1920 spls / 40 ms).
+# ---------------------------------------------------------------------------
+
+def _set_live_mode(node, mode):
+    """Switch mode and run one block so the staged value reaches native DSP
+    (telemetry reads native state)."""
+    node.params["latency_mode"].set(mode)
+    node.sync()
+    process_block(node, torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE))
+
+
+def test_signalsmith_latency_modes_query():
+    node = make_node()
+    assert node.get_telemetry()["latency_samples"] == LATENCY
+    _set_live_mode(node, 1)
+    telem = node.get_telemetry()
+    assert telem["latency_samples"] == 1920, telem
+    assert telem["latency_ms"] == pytest.approx(40.0, abs=0.01)
+    _set_live_mode(node, 0)
+    assert node.get_telemetry()["latency_samples"] == LATENCY
+
+
+def test_signalsmith_live_mode_pitch_accuracy():
+    """220 Hz saw +12 st in Live mode lands at 440 Hz after the short prime."""
+    node = make_node()
+    set_params(node, pitch_shift=12.0, formant_shift=0.0, mix=1.0)
+    _set_live_mode(node, 1)
+    live_lat = node.get_telemetry()["latency_samples"]
+    settle = live_lat // BLOCK_SIZE + 6
+    blocks = saw_blocks(220.0, settle + 16)
+    for b in blocks[:settle]:
+        process_block(node, b)
+    tail = torch.cat(
+        [process_block(node, b) for b in blocks[settle:]], dim=1
+    )[0].numpy().astype(np.float64)
+    assert abs(autocorr_pitch(tail) - 440.0) < 8.0
+
+
+def test_signalsmith_live_mode_mix_aligned():
+    """Mid-mix blends the Live-latency-aligned dry path (align = live L)."""
+    node0 = make_node()
+    _set_live_mode(node0, 1)
+    live_lat = node0.get_telemetry()["latency_samples"]
+    blocks = tone_blocks(220.0, 30)
+    flat_in = torch.cat(blocks, dim=1)
+
+    def run(mix):
+        node = make_node()
+        set_params(node, mix=mix)
+        _set_live_mode(node, 1)
+        return torch.cat([process_block(node, b) for b in blocks], dim=1)
+
+    wet_full = run(1.0)
+    mid = run(0.5)
+    dry_aligned = torch.zeros_like(flat_in)
+    dry_aligned[:, live_lat:] = flat_in[:, :flat_in.shape[1] - live_lat]
+    expected = 0.5 * dry_aligned + 0.5 * wet_full
+    assert torch.allclose(mid, expected, atol=1e-4)
+
+
+def test_signalsmith_live_mode_switch_stability():
+    """Studio -> Live -> Studio mid-stream stays finite and recovers."""
+    node = make_node()
+    set_params(node, pitch_shift=0.0, mix=1.0)
+    blocks = saw_blocks(220.0, 40)
+    for b in blocks[:12]:
+        process_block(node, b)
+    _set_live_mode(node, 1)
+    outs = [process_block(node, b) for b in blocks[12:]]
+    assert all(torch.isfinite(o).all() for o in outs)
+    assert float(torch.cat(outs[-6:], dim=1).abs().max()) > 0.01
