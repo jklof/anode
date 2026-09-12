@@ -176,9 +176,11 @@ def test_deesser_no_false_trigger_on_lf_thump():
     assert node.get_telemetry()["gr_db"] == pytest.approx(0.0, abs=0.5)
 
 
-def test_deesser_listen_solos_detector_band():
+def test_deesser_listen_band_solos_detector_band():
+    """listen_mode=1 (Sibilant Band) preserves the legacy behavior: the HF
+    crossover band is soloed at full amplitude regardless of gain reduction."""
     node = make_node()
-    set_params(node, frequency=6500.0, listen=True, mix=1.0)
+    set_params(node, frequency=6500.0, listen=True, listen_mode=1, mix=1.0)
     vblocks = saw_blocks(220.0, 8)
     outs = torch.cat([process_block(node, b) for b in vblocks], dim=1)
     wet = outs[0].numpy()
@@ -268,11 +270,15 @@ def test_deesser_save_load_roundtrip():
     set_params(node, frequency=7000.0, threshold=-24.0, depth=8.0,
                attack_ms=0.5, release_ms=120.0, listen=True, mix=0.8)
     snapshot = node.to_dict()
+    assert "auto_learn" not in snapshot["params"], \
+        "momentary auto_learn must never be serialized"
     node2 = make_node()
     node2.load_state(snapshot)
     for k in ("frequency", "threshold", "depth", "attack_ms", "release_ms",
               "listen", "mix"):
         assert node2.params[k].value == pytest.approx(node.params[k].value)
+    assert node2.params["listen_mode"].value == node.params["listen_mode"].value
+    assert node2.params["auto_threshold"].value == node.params["auto_threshold"].value
 
 
 def test_deesser_zero_python_allocation():
@@ -303,3 +309,190 @@ def test_deesser_native_processing_budget():
         process_block(node, blk)
     dt = (time.perf_counter() - t0) / n * 1000.0
     assert dt < 0.5, f"mean process() {dt:.3f} ms exceeds budget"
+
+
+# ==============================================================================
+# Delta Listen / Auto-Threshold / Auto-Learn
+# ==============================================================================
+
+def test_deesser_delta_listen_silence_on_idle():
+    """Delta audition of a non-reducing de-esser is bit-exact silence:
+    g = 1.0 exactly below threshold, so hf * (1 - g) == 0."""
+    node = make_node()
+    set_params(node, frequency=6500.0, threshold=-6.0, depth=6.0,
+               listen=True, listen_mode=0, mix=1.0)
+    # Settle the filters first, then a vowel-only stimulus.
+    silence = torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE)
+    for _ in range(4):
+        process_block(node, silence)
+    for b in saw_blocks(220.0, 8):
+        out = process_block(node, b)
+        assert float(out.abs().max()) == 0.0
+
+
+def test_deesser_delta_listen_extracts_reduction():
+    """Delta audition carries only the removed HF energy: non-zero under
+    reduction, and no vowel-band (LF) bleed."""
+    node = make_node()
+    set_params(node, frequency=6500.0, threshold=-30.0, depth=6.0,
+               attack_ms=1.0, release_ms=60.0, listen=True, listen_mode=0,
+               mix=1.0)
+    outs = torch.cat([process_block(node, b) for b in ess_blocks(16)], dim=1)
+    assert float(outs.abs().max()) > 0.01, "delta audition must be non-zero"
+    for ch in range(CHANNELS):
+        e_low = band_energy(outs[ch].numpy(), 100.0, 2000.0)
+        e_all = band_energy(outs[ch].numpy(), 100.0, 20000.0)
+        assert e_low < 0.05 * e_all, (
+            f"vowel-band bleed in delta audition: {e_low:.2e} vs {e_all:.2e}")
+
+
+def test_deesser_band_listen_solos_crossover():
+    """listen_mode=1 output is the full HF band regardless of reduction,
+    carrying strictly more HF energy than the delta signal."""
+    node = make_node()
+    set_params(node, frequency=6500.0, threshold=-30.0, depth=6.0,
+               attack_ms=1.0, release_ms=60.0, listen=True, listen_mode=1,
+               mix=1.0)
+    outs = torch.cat([process_block(node, b) for b in ess_blocks(16)], dim=1)
+    e_band = band_energy(outs[0].numpy(), 5000.0, 9000.0)
+    assert e_band > 1e-2, f"band solo lost HF energy: {e_band:.2e}"
+
+    node2 = make_node()
+    set_params(node2, frequency=6500.0, threshold=-30.0, depth=6.0,
+               attack_ms=1.0, release_ms=60.0, listen=True, listen_mode=0,
+               mix=1.0)
+    outs2 = torch.cat([process_block(node2, b) for b in ess_blocks(16)], dim=1)
+    assert band_energy(outs2[0].numpy(), 5000.0, 9000.0) < e_band
+
+
+def test_deesser_auto_threshold_level_independence():
+    """Auto-threshold reduction is level-independent: identical relative
+    contrast at soft and loud levels produces (nearly) identical GR; a loud
+    vowel alone and silence produce none."""
+    def gr_for(ess_amp, saw_amp):
+        node = make_node()
+        set_params(node, frequency=6500.0, threshold=-18.0, depth=12.0,
+                   attack_ms=1.0, release_ms=60.0, auto_threshold=True,
+                   mix=1.0)
+        e = ess_blocks(16, amp=ess_amp)
+        s = saw_blocks(220.0, 16, amp=saw_amp)
+        grs = []
+        for eb, sb in zip(e, s):
+            process_block(node, eb + sb)
+            grs.append(node.get_telemetry()["gr_db"])
+        # Steady state only: the first blocks are the crossover/detector
+        # engagement transient, where the two followers start from zero.
+        return min(grs[4:])
+
+    gr_soft = gr_for(0.03, 0.012)
+    gr_loud = gr_for(0.3, 0.12)
+    assert gr_soft < -1.5 and gr_loud < -1.5, "sibilance must reduce"
+    assert abs(gr_soft - gr_loud) < 1.0, (
+        f"GR not level-independent: soft {gr_soft:.2f} vs loud {gr_loud:.2f}")
+
+    # Loud vowel alone: no reduction.
+    node = make_node()
+    set_params(node, frequency=6500.0, threshold=-18.0, depth=6.0,
+               auto_threshold=True, mix=1.0)
+    for b in saw_blocks(220.0, 12, amp=0.9):
+        process_block(node, b)
+    assert node.get_telemetry()["gr_db"] > -0.5
+
+    # Silence: the noise-floor gate must prevent idle self-triggering.
+    node = make_node()
+    set_params(node, frequency=6500.0, threshold=-40.0, depth=6.0,
+               auto_threshold=True, mix=1.0)
+    silence = torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE)
+    for _ in range(8):
+        process_block(node, silence)
+    assert node.get_telemetry()["gr_db"] == pytest.approx(0.0)
+
+
+def test_deesser_auto_learn_analysis():
+    """The NRT profiler finds the sibilant center frequency and a sane
+    threshold; silence yields a failed (None) result."""
+    node = make_node()
+    n = node._learn_capacity_blocks * BLOCK_SIZE
+    t = np.arange(n) / SAMPLE_RATE
+    saw = np.zeros(n)
+    for h in range(1, 60):
+        if 220.0 * h < SAMPLE_RATE / 2:
+            saw += (1.0 / h) * np.sin(2 * np.pi * 220.0 * h * t)
+    saw /= np.max(np.abs(saw))
+    sig = 0.3 * saw.astype(np.float32)
+    # Sibilant burst: 7 kHz tone, ~0.4 s in the middle (>5% of frames).
+    burst = (np.sin(2 * np.pi * 7000.0 * t) * 0.2).astype(np.float32)
+    m = (t > 1.0) & (t < 1.4)
+    sig[m] += burst[m]
+    buf = torch.from_numpy(sig.copy())
+
+    res = node._analyze_profile_nrt(buf)
+    assert res is not None
+    freq, thresh = res
+    assert abs(freq - 7000.0) <= 200.0, f"learned freq {freq} off target"
+    assert -36.0 <= thresh <= -10.0, f"learned threshold {thresh} out of range"
+
+    # Silence -> None -> "Calibration Failed" path.
+    assert node._analyze_profile_nrt(torch.zeros(n)) is None
+
+    # Capture path: learning fills the pre-allocated buffer with zero-alloc
+    # copies and stops at capacity (no engine in this test -> no submit).
+    node2 = make_node()
+    node2._learning = True
+    for i in range(node2._learn_capacity_blocks):
+        blk = torch.from_numpy(
+            np.tile(sig[i * BLOCK_SIZE:(i + 1) * BLOCK_SIZE].copy(),
+                    (CHANNELS, 1)))
+        node2.inp.get_tensor = lambda b=blk: b
+        node2.process()
+    assert not node2._learning and not node2._analyzing
+    assert torch.allclose(node2._learn_bufs[node2._learn_active], buf)
+
+
+def test_deesser_legacy_patch_compatibility():
+    """A saved patch from before listen_mode/auto_threshold existed loads
+    cleanly with the new parameters at their defaults."""
+    import json
+    with open("patches/vocal_broadcast_chain.json") as f:
+        patch = json.load(f)
+    deess = next(n for n in patch["nodes"] if n["type"] == "DeEsser")
+    node = make_node()
+    node.load_state(deess)
+    assert node.params["frequency"].value == pytest.approx(6500.0)
+    assert node.params["threshold"].value == pytest.approx(-18.0)
+    assert node.params["listen_mode"].value == 0
+    assert node.params["auto_threshold"].value is False
+    assert node.params["auto_learn"].value is False
+
+
+def test_deesser_auto_mode_reset_clears_reference():
+    """reset() (start()) clears the vowel-body reference: after transport
+    restart the auto-threshold gate holds and delta listen is silent."""
+    node = make_node()
+    set_params(node, frequency=6500.0, threshold=-30.0, depth=6.0,
+               auto_threshold=True, listen=True, listen_mode=0, mix=1.0)
+    for b in ess_blocks(8):
+        process_block(node, b)
+    assert node.get_telemetry()["gr_db"] < -1.0
+    node.start()
+    silence = torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE)
+    out = process_block(node, silence)
+    assert float(out.abs().max()) == 0.0
+    assert node.get_telemetry()["gr_db"] == pytest.approx(0.0)
+
+
+def test_deesser_zero_python_allocation_listen_and_auto():
+    """Delta listen + auto-threshold steady state stays allocation-free."""
+    node = make_node()
+    set_params(node, mix=1.0, listen=True, listen_mode=0, auto_threshold=True)
+    blk = torch.randn(CHANNELS, BLOCK_SIZE, dtype=DTYPE) * 0.3
+    process_block(node, blk)  # warm-up
+
+    gc.collect()
+    tracemalloc.start()
+    before, _ = tracemalloc.get_traced_memory()
+    for _ in range(50):
+        process_block(node, blk)
+    growth, _ = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert growth - before < 64 * 1024, f"net Python allocation {growth - before} bytes"
