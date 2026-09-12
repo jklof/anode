@@ -155,6 +155,7 @@ public:
           current_pitch_semitone_(60.0f),
           target_smoothed_semitone_(60.0f),
           vibrato_phase_(0.0f),
+          ext_f0_mode_(0.0f), ext_f0_hz_(0.0f), ext_voiced_(0.0f),
           last_accepted_f0_(0.0f), jump_pending_f0_(0.0f),
           jump_confirm_(0), voicing_hangover_(0),
           current_h1_bin_(-1), rng_state_(kRngSeed) {
@@ -219,6 +220,23 @@ public:
             case 14:
                 configure_mode(static_cast<int>(v));
                 break;
+            case 15: {
+                // External F0 mode: 0 = internal NSDF, 1 = external with
+                // authoritative gate wire, 2 = external with local fallback
+                // voicing (RMS silence veto in process() + spectral veto in
+                // synthesize()). A mode change invalidates F0 history so a
+                // stale pitch cannot carry across sources.
+                int m = static_cast<int>(v);
+                if (m < 0) m = 0;
+                if (m > 2) m = 2;
+                if (static_cast<float>(m) != ext_f0_mode_) {
+                    ext_f0_mode_ = static_cast<float>(m);
+                    reset_tracker();
+                }
+                break;
+            }
+            case 16: ext_f0_hz_ = std::max(0.0f, std::min(2000.0f, v)); break;
+            case 17: ext_voiced_ = (v > 0.5f) ? 1.0f : 0.0f; break;
             default: break;
         }
     }
@@ -231,6 +249,14 @@ public:
         target_smoothed_semitone_ = 60.0f;
         current_pitch_semitone_ = 60.0f;
         vibrato_phase_ = 0.0f;
+        // Clean slate for the external-F0 wire state: the Python wrapper
+        // re-pushes mode/hz/voiced on the next block when f0_in is still
+        // connected (change-detected with a None sentinel on start()), so
+        // clearing here cannot strand a connected session, and a
+        // disconnected session cannot inherit a stale external mode.
+        ext_f0_mode_ = 0.0f;
+        ext_f0_hz_ = 0.0f;
+        ext_voiced_ = 0.0f;
     }
 
     void process(const float* in, float* out, int channels, int frames) {
@@ -255,18 +281,68 @@ public:
         // Skipped entirely (zero tracking overhead) when pitch correction
         // and MIDI targeting are both off: the node is then a pure manual
         // pitch/formant/gender shifter. F0 tracking reads channel 0.
+        // When the external-F0 wire (f0_in) is connected, the 12 kHz NSDF
+        // tracker is bypassed entirely: detected_f0_ comes from the CV
+        // instead. detected_f0_ is still published for the H1/H2 glottal
+        // shaping and pitch-synchronous aspiration in synthesize()/
+        // reconstruct() even with correction disabled (natural-inflection
+        // speech conversion); the scale/MIDI correction is only APPLIED to
+        // total_shift when correction_enable is on.
         float total_shift = pitch_st_;
-        const bool need_tracking =
-            (correction_enable_ > 0.5f) || (midi_mode_ > 0.5f);
-        if (need_tracking) {
-            track_pitch_and_retune(in, frames);
-            if (correction_enable_ > 0.5f && detected_f0_ > 50.0f) {
-                const float correction =
-                    target_smoothed_semitone_ - current_pitch_semitone_;
-                total_shift += std::max(-12.0f, std::min(12.0f, correction));
+        const bool ext_active =
+            (ext_f0_mode_ == 1.0f) || (ext_f0_mode_ == 2.0f);
+        if (ext_active) {
+            bool voiced = (ext_voiced_ > 0.5f);
+            if (ext_f0_mode_ == 2.0f) {
+                // Fallback voicing (no gate wire): the upstream node holds
+                // its last pitch through pauses, so qualify the held CV
+                // against local input energy. Layout note: the native input
+                // is planar (channel blocks), matching track_pitch_and_retune
+                // which reads in[i*kPitchDecim+d] off channel 0 — in[0..frames)
+                // is channel 0 here as well. Spectral (fricative) rejection
+                // happens per-frame in synthesize() via compute_voiced_prob.
+                float energy = 0.0f;
+                for (int i = 0; i < frames; ++i) energy += in[i] * in[i];
+                const float rms = std::sqrt(
+                    energy / static_cast<float>(frames > 0 ? frames : 1));
+                if (rms < 0.001f) voiced = false;
+            }
+
+            if (voiced && ext_f0_hz_ >= 50.0f && ext_f0_hz_ <= 2000.0f) {
+                detected_f0_ = ext_f0_hz_;
+                last_accepted_f0_ = detected_f0_;
+                voicing_hangover_ = 4;
+                jump_confirm_ = 0;
+                jump_pending_f0_ = 0.0f;
+            } else if (voicing_hangover_ > 0 && last_accepted_f0_ > 0.0f) {
+                --voicing_hangover_;
+                detected_f0_ = last_accepted_f0_;
+            } else {
+                detected_f0_ = 0.0f;
+                last_accepted_f0_ = 0.0f;
+            }
+
+            if (detected_f0_ > 50.0f) {
+                update_retune_target(frames);
+                if (correction_enable_ > 0.5f) {
+                    const float correction =
+                        target_smoothed_semitone_ - current_pitch_semitone_;
+                    total_shift += std::max(-12.0f, std::min(12.0f, correction));
+                }
             }
         } else {
-            detected_f0_ = 0.0f;
+            const bool need_tracking =
+                (correction_enable_ > 0.5f) || (midi_mode_ > 0.5f);
+            if (need_tracking) {
+                track_pitch_and_retune(in, frames);
+                if (correction_enable_ > 0.5f && detected_f0_ > 50.0f) {
+                    const float correction =
+                        target_smoothed_semitone_ - current_pitch_semitone_;
+                    total_shift += std::max(-12.0f, std::min(12.0f, correction));
+                }
+            } else {
+                detected_f0_ = 0.0f;
+            }
         }
 
         if (vibrato_depth_ > 0.001f) {
@@ -365,6 +441,13 @@ private:
     int scale_root_, scale_mask_;
     float retune_speed_ms_, vibrato_depth_, vibrato_rate_;
     float midi_mode_, target_midi_note_;
+    // External F0 CV (driven per-block by the Python wrapper when f0_in is
+    // wired; NOT staged parameters, so never in PARAM_MAP / save files):
+    //   ext_f0_mode_ 0 = internal NSDF, 1 = external + gate wire,
+    //                2 = external + local fallback voicing
+    //   ext_f0_hz_   continuous fundamental in Hz (clamped 0-2000)
+    //   ext_voiced_  1 = voiced, 0 = unvoiced (gate wire or Python fallback)
+    float ext_f0_mode_, ext_f0_hz_, ext_voiced_;
     float detected_f0_, current_pitch_semitone_, target_smoothed_semitone_;
     float vibrato_phase_;
 
@@ -632,24 +715,36 @@ private:
         }
 
         if (detected_f0_ > 50.0f) {
-            current_pitch_semitone_ =
-                69.0f + 12.0f * std::log2(detected_f0_ / 440.0f);
+            update_retune_target(frames);
+        }
+    }
 
-            float target = current_pitch_semitone_;
-            if (midi_mode_ > 0.5f && target_midi_note_ >= 0.0f)
-                target = target_midi_note_;
-            else
-                target = snap_to_scale(current_pitch_semitone_);
+    // Shared scale/MIDI target + glide update for a freshly accepted F0.
+    // Called by both the internal NSDF path (end of track_pitch_and_retune)
+    // and the external-F0 bypass branch in process(). Keeping one copy
+    // avoids glide-math drift between the two sources. Runs whenever F0 is
+    // valid — even with correction disabled — so re-enabling correction
+    // starts from a warm glide state instead of sweeping from stale history.
+    // The caller decides whether the resulting correction is APPLIED to
+    // total_shift (correction_enable gate in process()).
+    void update_retune_target(int frames) {
+        current_pitch_semitone_ =
+            69.0f + 12.0f * std::log2(detected_f0_ / 440.0f);
 
-            if (retune_speed_ms_ <= 0.1f) {
-                target_smoothed_semitone_ = target;
-            } else {
-                const float alpha = 1.0f - std::exp(
-                    -static_cast<float>(frames) /
-                    (retune_speed_ms_ * 0.001f * sr_));
-                target_smoothed_semitone_ +=
-                    alpha * (target - target_smoothed_semitone_);
-            }
+        float target = current_pitch_semitone_;
+        if (midi_mode_ > 0.5f && target_midi_note_ >= 0.0f)
+            target = target_midi_note_;
+        else
+            target = snap_to_scale(current_pitch_semitone_);
+
+        if (retune_speed_ms_ <= 0.1f) {
+            target_smoothed_semitone_ = target;
+        } else {
+            const float alpha = 1.0f - std::exp(
+                -static_cast<float>(frames) /
+                (retune_speed_ms_ * 0.001f * sr_));
+            target_smoothed_semitone_ +=
+                alpha * (target - target_smoothed_semitone_);
         }
     }
 
@@ -1181,7 +1276,9 @@ private:
         //
         // H1 identification is deliberately conservative: the first spectral
         // peak is frequently sub-rumble, breath, or a plosive (< 80 Hz), and
-        // boosting THAT instead of the fundamental puts +6.8 dB on mud. So:
+        // boosting THAT instead of the fundamental puts +6.8 dB on mud. When
+        // a valid F0 is known (external CV or internal NSDF track), the
+        // guided search below takes precedence; otherwise:
         //   1. candidates are restricted to the biological H1 window 80-400 Hz
         //      (above it the boost is gated off by kH1MaxHz anyway);
         //   2. a candidate wins only with an overtone at 2k (+-2 bins);
@@ -1189,8 +1286,60 @@ private:
         //      instead of snapping onto rumble; longer gaps report -1.
         int h1_bin = -1;
         int h2_bin = -1;
-        if (num_peaks > 0) {
-            const float bin_hz = sr_ / static_cast<float>(fft_size_);
+        const float bin_hz = sr_ / static_cast<float>(fft_size_);
+        // Harmonic-guided peak tracking: when a valid F0 is known (external
+        // CV or internal NSDF), pin the H1 search to k0 = round(F0/df)
+        // instead of the blind 80-400 Hz overtone-pair search. The guide is
+        // additionally vetoed per-frame by compute_voiced_prob so a held CV
+        // through fricatives/silence cannot plant a boost on noise: with no
+        // peak near k0 the bin clamps to k0 only on voiced frames, otherwise
+        // the search yields to the continuity hangover below. In an external
+        // session the blind search is skipped entirely (hangover only), so a
+        // stale held F0 never degrades into rumble-boosting; the internal
+        // path keeps the blind fallback for frames where NSDF has no pitch.
+        const bool ext_session =
+            (ext_f0_mode_ == 1.0f) || (ext_f0_mode_ == 2.0f);
+        bool guided_done = false;
+        if (detected_f0_ >= 60.0f && detected_f0_ <= 1000.0f) {
+            const float frame_voiced = compute_voiced_prob(num_peaks);
+            if (frame_voiced > 0.25f) {
+                const int target_k0 =
+                    static_cast<int>(std::round(detected_f0_ / bin_hz));
+                if (target_k0 >= 1 && target_k0 < num_bins_) {
+                    // Nearest peak within +-2 bins of k0; clamp to k0 itself
+                    // when H1 is submerged beneath formant energy.
+                    int best_p = -1;
+                    int min_dist = 3;
+                    for (int p = 0; p < num_peaks; ++p) {
+                        const int dist =
+                            std::abs(peak_bins_[p] - target_k0);
+                        if (dist < min_dist) {
+                            min_dist = dist;
+                            best_p = peak_bins_[p];
+                        }
+                    }
+                    h1_bin = (best_p > 0) ? best_p : target_k0;
+
+                    // H2: nearest peak within +-3 bins of 2*h1.
+                    const int target_k1 = 2 * h1_bin;
+                    int best_h2 = -1;
+                    min_dist = 4;
+                    for (int p = 0; p < num_peaks; ++p) {
+                        const int dist =
+                            std::abs(peak_bins_[p] - target_k1);
+                        if (dist < min_dist) {
+                            min_dist = dist;
+                            best_h2 = peak_bins_[p];
+                        }
+                    }
+                    h2_bin = best_h2;
+                    last_h1_bin_[c] = h1_bin;
+                    h1_hangover_[c] = 4;
+                    guided_done = true;
+                }
+            }
+        }
+        if (!guided_done && !ext_session && num_peaks > 0) {
             const int kMin = std::max(1, static_cast<int>(80.0f / bin_hz));
             const int kMax = static_cast<int>(400.0f / bin_hz) + 1;
 
@@ -1228,8 +1377,6 @@ private:
             }
         }
         if (num_peaks > 0) {
-            const float bin_hz = sr_ / static_cast<float>(fft_size_);
-
             if (gender_morph_ > 0.0f
                     && static_cast<float>(h1_bin) * bin_hz < kH1MaxHz) {
                 const float boost = 1.0f + 1.2f * gender_morph_;  // up to +6.8 dB

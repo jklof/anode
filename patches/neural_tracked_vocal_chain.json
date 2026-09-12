@@ -1,0 +1,48 @@
+{
+  "clock_id": null,
+  "nodes": [
+    {
+      "id": "mic",
+      "type": "AudioDeviceInput",
+      "name": "Mic In",
+      "pos": [0, 200]
+    },
+    {
+      "id": "tracker",
+      "type": "SwiftF0Node",
+      "name": "Neural Tracker",
+      "params": {
+        "confidence_thresh": 0.45,
+        "glide_ms": 0.0
+      },
+      "pos": [260, 320]
+    },
+    {
+      "id": "vox",
+      "type": "VocalTransformer",
+      "name": "Neural Transformed Lead",
+      "params": {
+        "correction_enable": 1.0,
+        "scale_root": 0,
+        "scale_type": 1,
+        "retune_speed": 10.0,
+        "gender_morph": 0.75,
+        "mix": 1.0
+      },
+      "pos": [560, 200]
+    },
+    {
+      "id": "out",
+      "type": "AudioDeviceOutput",
+      "name": "Master Out",
+      "pos": [860, 200]
+    }
+  ],
+  "connections": [
+    {"src_id": "mic", "src_port": "out", "dst_id": "tracker", "dst_port": "in"},
+    {"src_id": "mic", "src_port": "out", "dst_id": "vox", "dst_port": "in"},
+    {"src_id": "tracker", "src_port": "pitch_out", "dst_id": "vox", "dst_port": "f0_in"},
+    {"src_id": "tracker", "src_port": "gate_out", "dst_id": "vox", "dst_port": "gate_in"},
+    {"src_id": "vox", "src_port": "out", "dst_id": "out", "dst_port": "audio_in"}
+  ]
+}

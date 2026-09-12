@@ -25,6 +25,18 @@ pitch-class mask rotated to a root), live MIDI note targeting via the
 synthesized vibrato. With correction and MIDI both off, tracking is skipped
 entirely and the node is a pure manual pitch/formant/gender shifter.
 
+External F0 guidance: wiring a pitch CV (e.g. SwiftF0 `pitch_out`) into
+`f0_in` bypasses the internal NSDF tracker. The external F0 drives scale
+snapping/MIDI targeting exactly like the internal track (only applied when
+`correction_enable` is on) and additionally pins the H1/H2 glottal shaping
+plus pitch-synchronous aspiration to the true harmonic grid — including
+with correction off (natural-inflection speech conversion). Wiring the
+voicing gate (e.g. SwiftF0 `gate_out`) into `gate_in` is strongly
+recommended: upstream trackers hold their last pitch through pauses, and
+without the gate a held CV is qualified only by local input energy (silence
+veto) plus per-frame spectral voicing. Disconnecting `f0_in` cleanly
+reverts to internal tracking.
+
 Latency: 9216 samples (192 ms @ 48 kHz) in Studio mode across the whole
 pitch range — see get_telemetry(). Live Tracking (2560 spls / 53 ms) and
 Ultra-Low (2048 spls / 42 ms) modes trade FFT resolution and pitch range
@@ -101,6 +113,18 @@ class VocalTransformer(FFINode):
     PARAM_SCALE_MASK_ID = 2
     PARAM_MIDI_MODE_ID = 12
     PARAM_TARGET_MIDI_NOTE_ID = 13
+    # External-F0 CV params (matches cpp/vocal_transformer.cpp set_param).
+    # Deliberately NOT in PARAM_MAP / save files: they are block-rate CV,
+    # not staged parameters. Mode is an enum: 0 = internal NSDF,
+    # 1 = external with authoritative gate wire, 2 = external with local
+    # fallback voicing (native RMS silence veto + per-frame spectral veto).
+    PARAM_EXT_F0_MODE_ID = 15
+    PARAM_EXT_F0_HZ_ID = 16
+    PARAM_EXT_VOICED_ID = 17
+    EXT_F0_MODE_OFF = 0.0
+    EXT_F0_MODE_GATED = 1.0
+    EXT_F0_MODE_FALLBACK = 2.0
+    EXT_F0_MIN_HZ = 50.0
 
     # Gender-transformation macro presets (surfaced in the node's
     # right-click "Presets" context menu; see ui_system.NodeItem).
@@ -214,6 +238,11 @@ class VocalTransformer(FFINode):
         # nothing dirty after the disconnect).
         self._was_pitch_mod_connected = False
         self._was_formant_mod_connected = False
+        self._was_f0_connected = False
+        # Change-detected external-F0 mode (None sentinel forces the first
+        # push after start()/load_state(); the native reset() clears its own
+        # side too, so both ends converge either way).
+        self._last_ext_mode = None
         self._active_midi_note = -1.0
         self._last_scale_root = None
         self._last_scale_mask = None
@@ -235,6 +264,17 @@ class VocalTransformer(FFINode):
             "formant_mod", "formant_shift",
             help="Block-rate formant CV in semitones (bound to 'formant_shift'; "
                  "first sample of each block). Unconnected: uses the parameter value.")
+        self.f0_in = self.add_input(
+            "f0_in",
+            help="External fundamental-frequency CV in Hz (e.g. SwiftF0 pitch_out; "
+                 "first sample of each block). When connected, bypasses the internal "
+                 "NSDF tracker: drives scale/MIDI retune like the internal track and "
+                 "pins H1/H2 glottal shaping plus aspiration sync to the true grid.")
+        self.gate_in = self.add_input(
+            "gate_in",
+            help="External voicing gate CV (e.g. SwiftF0 gate_out; >0.5 = voiced). "
+                 "Strongly recommended with pitch-hold trackers; unconnected falls back "
+                 "to local energy/spectral voicing of the held CV.")
         self.out = self.add_output(
             "out", channels=CHANNELS, help="Transformed vocal stereo output.")
 
@@ -291,6 +331,8 @@ class VocalTransformer(FFINode):
         super().start()
         self._was_pitch_mod_connected = False
         self._was_formant_mod_connected = False
+        self._was_f0_connected = False
+        self._last_ext_mode = None
         self._active_midi_note = -1.0
         self._last_scale_root = None
         self._last_scale_mask = None
@@ -308,6 +350,8 @@ class VocalTransformer(FFINode):
         self._active_midi_note = -1.0
         self._was_pitch_mod_connected = False
         self._was_formant_mod_connected = False
+        self._was_f0_connected = False
+        self._last_ext_mode = None
 
     def _sync_scale_parameters(self):
         if not self.lib or not self.dsp_handle:
@@ -387,6 +431,40 @@ class VocalTransformer(FFINode):
 
         # 2. MIDI note targeting (change-detected; silent when idle)
         self._sync_midi_parameters()
+
+        # 2b. External F0 guidance (block-rate CV, first sample of the block).
+        # Gated mode (gate_in wired) takes the gate as strict voicing
+        # authority; fallback mode (f0_in only) pre-qualifies here by CV range
+        # and leaves silence/fricative rejection to the native side (block
+        # RMS veto in process() + per-frame spectral veto in synthesize()),
+        # since upstream trackers hold their last pitch through pauses.
+        # Mode is change-detected; hz/voiced ride every block while wired.
+        # Disconnect contract (karplus_strong pattern): publish mode 0 once so
+        # the native DSP reverts to internal NSDF tracking.
+        if self.f0_in.connected_outputs:
+            ext_f0 = float(self.f0_in.get_tensor()[0, 0].item())
+            if self.gate_in.connected_outputs:
+                gate_val = float(self.gate_in.get_tensor()[0, 0].item())
+                is_voiced = (gate_val > 0.5) and (ext_f0 >= self.EXT_F0_MIN_HZ)
+                ext_mode = self.EXT_F0_MODE_GATED
+            else:
+                is_voiced = ext_f0 >= self.EXT_F0_MIN_HZ
+                ext_mode = self.EXT_F0_MODE_FALLBACK
+            if ext_mode != self._last_ext_mode:
+                self.lib.set_param(self.dsp_handle, self.PARAM_EXT_F0_MODE_ID, ext_mode)
+                self._last_ext_mode = ext_mode
+            self.lib.set_param(self.dsp_handle, self.PARAM_EXT_F0_HZ_ID,
+                               ext_f0 if is_voiced else 0.0)
+            self.lib.set_param(self.dsp_handle, self.PARAM_EXT_VOICED_ID,
+                               1.0 if is_voiced else 0.0)
+            self._was_f0_connected = True
+        elif self._was_f0_connected:
+            self.lib.set_param(self.dsp_handle, self.PARAM_EXT_F0_MODE_ID,
+                               self.EXT_F0_MODE_OFF)
+            self.lib.set_param(self.dsp_handle, self.PARAM_EXT_F0_HZ_ID, 0.0)
+            self.lib.set_param(self.dsp_handle, self.PARAM_EXT_VOICED_ID, 0.0)
+            self._last_ext_mode = self.EXT_F0_MODE_OFF
+            self._was_f0_connected = False
 
         # 3. Block-rate modulation: push directly after staged sync.
         #    First sample of the block, matching RubberbandPitchShifter.

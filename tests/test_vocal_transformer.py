@@ -105,7 +105,7 @@ def test_vocal_transformer_registration():
     assert cls.description
     node = make_node()
     assert node.error_msg is None, f"native library failed to load: {node.error_msg}"
-    for port in ("in", "pitch_mod", "formant_mod"):
+    for port in ("in", "pitch_mod", "formant_mod", "f0_in", "gate_in"):
         assert node.inputs[port].help, f"{port} missing help"
     assert node.inputs["pitch_mod"].param_name == "pitch_shift"
     assert node.inputs["formant_mod"].param_name == "formant_shift"
@@ -1127,3 +1127,179 @@ def test_vocal_transformer_tracking_path_zero_allocation():
     ]
     leak_size = sum(s.size_diff for s in vt_stats if s.size_diff > 0)
     assert leak_size == 0, f"Detected allocations in vocal_transformer.py: {vt_stats}"
+
+
+# ---------------------------------------------------------------------------
+# External F0 guidance (e.g. SwiftF0 pitch_out/gate_out -> f0_in/gate_in):
+# NSDF bypass, scale correction from neural F0, and harmonic-guided H1/H2
+# shaping with dual-path (gate-authoritative / local-fallback) voicing.
+# ---------------------------------------------------------------------------
+
+
+def _connect_ext_f0(node, f0_hz, gate=None):
+    """Wire block-constant external F0 (+ optional gate) CV into the node,
+    mimicking a connected upstream CV output slot."""
+    f0_tensor = torch.full((1, BLOCK_SIZE), f0_hz, dtype=DTYPE)
+    node.f0_in.connected_outputs = [object()]
+    node.f0_in.get_tensor = lambda: f0_tensor
+    if gate is not None:
+        gate_tensor = torch.full((1, BLOCK_SIZE), gate, dtype=DTYPE)
+        node.gate_in.connected_outputs = [object()]
+        node.gate_in.get_tensor = lambda: gate_tensor
+
+
+def test_vocal_transformer_ext_f0_drives_scale_correction():
+    """External F0 at 230 Hz with C Major (hard snap) corrects toward A3,
+    mirroring the internal-tracker snap in tracking_bypass_optimization."""
+    node = make_node()
+    set_params(node, correction_enable=1.0, retune_speed=0.0, mix=1.0)
+    node.params["scale_root"].set(0)  # C
+    node.params["scale_type"].set(1)  # Major
+    node.sync()
+    _connect_ext_f0(node, 230.0, gate=1.0)
+
+    blocks = tone_blocks(230.0, SETTLE_BLOCKS + 16, amp=0.5)
+    outs = [process_block(node, b) for b in blocks]
+    sig = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy()
+    fft = np.abs(np.fft.rfft(sig))
+    freqs = np.fft.rfftfreq(len(sig), 1.0 / SAMPLE_RATE)
+    peak = freqs[np.argmax(fft)]
+    assert peak == pytest.approx(220.0, abs=6.0), \
+        f"external F0 230 Hz should snap toward A3 220 Hz, got {peak:.1f}"
+    assert node._was_f0_connected is True
+
+
+def test_vocal_transformer_ext_gate_unvoiced_holds_output():
+    """Gate 0 (unvoiced) must veto the external CV: 440 Hz audio with a held
+    330 Hz CV stays at ~440 Hz instead of being pulled toward 330 Hz."""
+    node = make_node()
+    set_params(node, correction_enable=1.0, retune_speed=0.0, mix=1.0)
+    node.params["scale_root"].set(0)
+    node.params["scale_type"].set(1)
+    node.sync()
+    _connect_ext_f0(node, 330.0, gate=0.0)
+
+    blocks = tone_blocks(440.0, SETTLE_BLOCKS + 16, amp=0.5)
+    outs = [process_block(node, b) for b in blocks]
+    sig = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy()
+    fft = np.abs(np.fft.rfft(sig))
+    freqs = np.fft.rfftfreq(len(sig), 1.0 / SAMPLE_RATE)
+    peak = freqs[np.argmax(fft)]
+    assert peak == pytest.approx(440.0, abs=8.0), \
+        f"unvoiced gate must not retune 440 Hz toward held 330 Hz, got {peak:.1f}"
+
+
+def test_vocal_transformer_guided_h1_rejects_rumble():
+    """With 46.9/70.3 Hz rumble + 140.6 Hz voice, external F0 pins the H1
+    boost on the true fundamental (correction OFF: pure glottal shaping, no
+    pitch snap — the speech-conversion path)."""
+    blocks = _rumble_blocks()
+
+    def render(gender):
+        node = make_node()
+        set_params(node, pitch_shift=0.0, formant_shift=0.0,
+                   gender_morph=gender, breathiness=0.0,
+                   sibilant_bypass=0.0, mix=1.0, correction_enable=0.0)
+        _connect_ext_f0(node, 140.625, gate=1.0)
+        return [process_block(node, b) for b in blocks]
+
+    outs0 = render(0.0)
+    outs1 = render(1.0)
+
+    def gain(freq, width=15.0):
+        return _welch_band(outs1, freq, width) / (_welch_band(outs0, freq, width) + 1e-12)
+
+    f_h1, f_h2 = 140.625, 281.25
+    assert gain(f_h1) > 4.0, f"guided H1 boost missing: x{gain(f_h1):.2f}"
+    r0 = _welch_band(outs0, f_h1) / (_welch_band(outs0, f_h2) + 1e-12)
+    r1 = _welch_band(outs1, f_h1) / (_welch_band(outs1, f_h2) + 1e-12)
+    assert r1 / r0 > 3.0, \
+        f"guided H1/H2 reshape missing (neutral {r0:.2f}, fem {r1:.2f})"
+
+
+def test_vocal_transformer_ext_fallback_rejects_unvoiced():
+    """A held CV through fricative-like noise must not plant H1 boost/cut:
+    H1/H2 balance may only move by the gender tilt (~1.9x), never the full
+    reshape (>3x). Holds in both fallback (no gate) and gated modes, since
+    the per-frame spectral veto backs the gate. Silence with a held CV must
+    pass as finite silence (RMS veto)."""
+    rng = np.random.default_rng(11)
+    n_blocks = SETTLE_BLOCKS + 6
+    white = (rng.standard_normal(n_blocks * BLOCK_SIZE).astype(np.float32) * 0.25)
+    nblocks = [torch.from_numpy(np.tile(white[i * BLOCK_SIZE:(i + 1) * BLOCK_SIZE],
+                                        (CHANNELS, 1)).copy())
+               for i in range(n_blocks)]
+
+    for gate in (None, 1.0):
+        def render(gender):
+            node = make_node()
+            set_params(node, pitch_shift=0.0, formant_shift=0.0,
+                       gender_morph=gender, breathiness=0.0,
+                       sibilant_bypass=0.0, mix=1.0, correction_enable=0.0)
+            _connect_ext_f0(node, 140.625, gate=gate)
+            return [process_block(node, b) for b in nblocks]
+
+        outs0, outs1 = render(0.0), render(1.0)
+        r0 = _welch_band(outs0, 140.625) / (_welch_band(outs0, 281.25) + 1e-12)
+        r1 = _welch_band(outs1, 140.625) / (_welch_band(outs1, 281.25) + 1e-12)
+        assert r1 / r0 < 2.5, \
+            f"held F0 must not reshape fricatives (gate={gate}): {r0:.2f} -> {r1:.2f}"
+
+    # Silence + held CV (fallback): RMS veto drops F0, output stays silent.
+    node = make_node()
+    set_params(node, mix=1.0, correction_enable=1.0, retune_speed=0.0,
+               gender_morph=1.0)
+    _connect_ext_f0(node, 220.0)
+    silence = torch.zeros(CHANNELS, BLOCK_SIZE, dtype=DTYPE)
+    outs = [process_block(node, silence) for _ in range(8)]
+    full = torch.cat(outs, dim=1)
+    assert torch.isfinite(full).all()
+    assert float(full.abs().max()) == 0.0
+
+
+def test_vocal_transformer_ext_f0_disconnect_reverts():
+    """Disconnecting f0_in publishes mode 0 once and reverts to internal
+    tracking: with correction off, an off-scale 230 Hz tone then passes
+    through unshifted (~230 Hz)."""
+    node = make_node()
+    set_params(node, correction_enable=0.0, mix=1.0)
+    _connect_ext_f0(node, 220.0, gate=1.0)
+    process_block(node, tone_blocks(220.0, 1)[0])
+    assert node._was_f0_connected is True
+    assert node._last_ext_mode == pytest.approx(1.0)
+
+    node.f0_in.connected_outputs = []
+    node.gate_in.connected_outputs = []
+    blocks = tone_blocks(230.0, SETTLE_BLOCKS + 8, amp=0.5)
+    outs = [process_block(node, b) for b in blocks]
+    assert node._was_f0_connected is False
+    assert node._last_ext_mode == pytest.approx(0.0)
+    sig = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy()
+    fft = np.abs(np.fft.rfft(sig))
+    freqs = np.fft.rfftfreq(len(sig), 1.0 / SAMPLE_RATE)
+    peak = freqs[np.argmax(fft)]
+    assert peak == pytest.approx(230.0, abs=5.0), \
+        f"after disconnect 230 Hz must pass unshifted, got {peak:.1f}"
+
+
+def test_vocal_transformer_ext_path_zero_allocation():
+    """External-F0 steady state (gated 220 Hz CV, correction on): 100 blocks
+    allocate < 64 KB net, matching the internal tracking-path budget."""
+    node = make_node()
+    set_params(node, mix=1.0, correction_enable=1.0)
+    _connect_ext_f0(node, 220.0, gate=1.0)
+
+    audio_in = torch.randn((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
+    node.inp.get_tensor = lambda: audio_in
+
+    for _ in range(20):  # warm-up (mode push + pipeline settle)
+        node.process()
+
+    gc.collect()
+    tracemalloc.start()
+    before, _ = tracemalloc.get_traced_memory()
+    for _ in range(100):
+        node.process()
+    growth, _ = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert growth < 64 * 1024, f"net allocation {growth} bytes over 100 ext-F0 blocks"
