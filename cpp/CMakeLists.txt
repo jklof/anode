@@ -128,3 +128,20 @@ copy_target_to_directory(world_transformer "${PROJECT_SOURCE_DIR}/../plugins")
 add_library(deesser SHARED deesser.cpp)
 target_compile_features(deesser PRIVATE cxx_std_17)
 copy_target_to_directory(deesser "${PROJECT_SOURCE_DIR}/../plugins")
+
+# --- Target: Signalsmith Vocal Processor (sub-band pitch/formant shifter) ---
+# Pinned to main@57b93f4 (header version 1.3.2; upstream publishes no v1.3.x
+# tag). The INTERFACE target auto-fetches signalsmith-linear 0.3.1.
+FetchContent_Declare(
+    signalsmith_stretch
+    GIT_REPOSITORY https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+    GIT_TAG        57b93f4e9206a089a45387eaa39bdc9f310d3308
+)
+FetchContent_MakeAvailable(signalsmith_stretch)
+add_library(signalsmith_vocal SHARED signalsmith_vocal.cpp)
+target_compile_features(signalsmith_vocal PRIVATE cxx_std_17)
+target_link_libraries(signalsmith_vocal PRIVATE signalsmith-stretch)
+# The root header (signalsmith-stretch.h) lives at the repo root, while the
+# INTERFACE include dir points at <src>/include: cover both layouts.
+target_include_directories(signalsmith_vocal PRIVATE ${signalsmith_stretch_SOURCE_DIR})
+copy_target_to_directory(signalsmith_vocal "${PROJECT_SOURCE_DIR}/../plugins")

@@ -1,0 +1,81 @@
+{
+  "clock_id": null,
+  "nodes": [
+    {
+      "id": "mic",
+      "type": "AudioDeviceInput",
+      "name": "Mic",
+      "params": {},
+      "pos": [0, 240]
+    },
+    {
+      "id": "voxClassic",
+      "type": "VocalTransformer",
+      "name": "Classic Vocoder",
+      "params": {"pitch_shift": 0.0, "formant_shift": 0.0, "mix": 1.0},
+      "pos": [240, 0]
+    },
+    {
+      "id": "voxStudio",
+      "type": "StudioVocalTransformer",
+      "name": "Studio Retune",
+      "params": {"correction_enable": 0.0, "pitch_shift": 0.0, "formant_shift": 0.0, "mix": 1.0},
+      "pos": [240, 160]
+    },
+    {
+      "id": "voxWorld",
+      "type": "WorldVoiceTransformer",
+      "name": "WORLD Voice",
+      "params": {"pitch_shift": 0.0, "formant_shift": 0.0, "mix": 1.0, "output_gain": 0.0},
+      "pos": [240, 320]
+    },
+    {
+      "id": "voxSmith",
+      "type": "SignalsmithVocal",
+      "name": "Signalsmith",
+      "params": {"pitch_shift": 0.0, "formant_shift": 0.0, "gender_morph": 0.0, "tonality_limit": 0.0, "mix": 1.0},
+      "pos": [240, 480]
+    },
+    {
+      "id": "sel1",
+      "type": "Selector",
+      "name": "A/B: Classic vs Studio",
+      "params": {"source": 0},
+      "pos": [560, 80]
+    },
+    {
+      "id": "sel2",
+      "type": "Selector",
+      "name": "A/B vs WORLD",
+      "params": {"source": 0},
+      "pos": [780, 240]
+    },
+    {
+      "id": "sel3",
+      "type": "Selector",
+      "name": "A/B vs Signalsmith",
+      "params": {"source": 0},
+      "pos": [1000, 240]
+    },
+    {
+      "id": "out",
+      "type": "AudioDeviceOutput",
+      "name": "Out",
+      "params": {},
+      "pos": [1220, 240]
+    }
+  ],
+  "connections": [
+    {"src_id": "mic", "src_port": "out", "dst_id": "voxClassic", "dst_port": "in"},
+    {"src_id": "mic", "src_port": "out", "dst_id": "voxStudio", "dst_port": "in"},
+    {"src_id": "mic", "src_port": "out", "dst_id": "voxWorld", "dst_port": "in"},
+    {"src_id": "mic", "src_port": "out", "dst_id": "voxSmith", "dst_port": "in"},
+    {"src_id": "voxClassic", "src_port": "out", "dst_id": "sel1", "dst_port": "A"},
+    {"src_id": "voxStudio", "src_port": "out", "dst_id": "sel1", "dst_port": "B"},
+    {"src_id": "sel1", "src_port": "out", "dst_id": "sel2", "dst_port": "A"},
+    {"src_id": "voxWorld", "src_port": "out", "dst_id": "sel2", "dst_port": "B"},
+    {"src_id": "sel2", "src_port": "out", "dst_id": "sel3", "dst_port": "A"},
+    {"src_id": "voxSmith", "src_port": "out", "dst_id": "sel3", "dst_port": "B"},
+    {"src_id": "sel3", "src_port": "out", "dst_id": "out", "dst_port": "audio_in"}
+  ]
+}
