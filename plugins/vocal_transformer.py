@@ -1,6 +1,6 @@
 """
 VocalTransformer — studio-grade human voice pitch, formant, and gender
-transformation (Effects).
+transformation with optional real-time pitch correction (Effects).
 
 Thin FFINode wrapper over libvocal_transformer (cpp/vocal_transformer.cpp).
 All spectral processing (true-envelope cepstral fitting, resampled-frame
@@ -18,6 +18,13 @@ clamped to +-8 dB) plus H1 harmonic emphasis (0-350 Hz, gated off DC) to
 avoid a buzzy/pinched sound when shifting up, and broaden formant bandwidths
 via an adaptive cepstral lifter cutoff.
 
+Optional retune front end (off by default): a 12 kHz NSDF pitch tracker
+with continuity scoring and octave-jump guard drives scale snapping (12-bit
+pitch-class mask rotated to a root), live MIDI note targeting via the
+`midi_in` port, an exponential target-approach glide (retune speed), and
+synthesized vibrato. With correction and MIDI both off, tracking is skipped
+entirely and the node is a pure manual pitch/formant/gender shifter.
+
 Latency: FIXED 9216 samples (192 ms @ 48 kHz) across the whole pitch range —
 see get_telemetry(). The 'mix' parameter is latency-compensated: intermediate
 values crossfade cleanly with the dry path without comb filtering.
@@ -27,6 +34,25 @@ import ctypes
 
 from ffi_base import FFINode
 from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE
+
+SCALES = {
+    "Chromatic": 0b111111111111,
+    "Major":     0b101011010101,
+    "Minor":     0b101101011010,
+    "Harmonic Minor": 0b101101011001,
+    "Pentatonic": 0b101001010010,
+    "Bypass":    0b000000000000,
+}
+
+ROOT_NOTES = {
+    "C": 0, "C#": 1, "D": 2, "D#": 3, "E": 4, "F": 5,
+    "F#": 6, "G": 7, "G#": 8, "A": 9, "A#": 10, "B": 11,
+}
+
+_ROOT_NAMES = tuple(ROOT_NOTES.keys())
+_SCALE_NAMES = tuple(SCALES.keys())
+_ROOT_VALUES = tuple(float(ROOT_NOTES[k]) for k in _ROOT_NAMES)
+_SCALE_VALUES = tuple(float(SCALES[k]) for k in _SCALE_NAMES)
 
 
 class VocalTransformer(FFINode):
@@ -39,7 +65,9 @@ class VocalTransformer(FFINode):
         "(VTLN) — decoupling the F1 region from F2/F3, with precomputed "
         "spectral-tilt and H1 harmonic shaping to eliminate the buzzy/pinched "
         "quality on upward shifts and dullness on downward shifts, plus "
-        "tract-filtered 1.5-7 kHz aspiration noise. Fixed algorithmic latency "
+        "tract-filtered 1.5-7 kHz aspiration noise. Optional auto-tune style "
+        "pitch correction (hard-tune to natural glide), scale snapping, MIDI "
+        "note targeting, and synthesized vibrato. Fixed algorithmic latency "
         "of 9216 samples (192 ms at 48 kHz) across the full pitch range; mix "
         "crossfades cleanly with the latency-aligned dry path."
     )
@@ -47,13 +75,22 @@ class VocalTransformer(FFINode):
     LIB_NAME = "vocal_transformer"
     # Matches cpp/vocal_transformer.cpp set_param switch-case
     PARAM_MAP = {
-        "pitch_shift": 0,
-        "formant_shift": 1,
-        "gender_morph": 2,
-        "breathiness": 3,
-        "sibilant_bypass": 4,
-        "mix": 5,
+        "correction_enable": 0,
+        "retune_speed": 3,
+        "pitch_shift": 4,
+        "formant_shift": 5,
+        "gender_morph": 6,
+        "vibrato_depth": 7,
+        "vibrato_rate": 8,
+        "breathiness": 9,
+        "sibilant_bypass": 10,
+        "mix": 11,
     }
+
+    PARAM_SCALE_ROOT_ID = 1
+    PARAM_SCALE_MASK_ID = 2
+    PARAM_MIDI_MODE_ID = 12
+    PARAM_TARGET_MIDI_NOTE_ID = 13
 
     # Gender-transformation macro presets (surfaced in the node's
     # right-click "Presets" context menu; see ui_system.NodeItem).
@@ -90,7 +127,70 @@ class VocalTransformer(FFINode):
             "formant_shift": 0.0,
             "gender_morph": 0.0,
             "breathiness": 0.0,
-            "sibilant_bypass": 0.8,
+            "sibilant_bypass": 0.85,
+            "mix": 1.0,
+        },
+        "Male -> Female Pop Lead": {
+            "correction_enable": 1.0,
+            "retune_speed": 15.0,
+            "pitch_shift": 10.0,
+            "formant_shift": 1.5,
+            "gender_morph": 0.85,
+            "breathiness": 0.20,
+            "sibilant_bypass": 0.85,
+            "mix": 1.0,
+        },
+        "Female -> Male Deep Chest": {
+            "correction_enable": 1.0,
+            "retune_speed": 20.0,
+            "pitch_shift": -10.0,
+            "formant_shift": -1.2,
+            "gender_morph": -0.80,
+            "breathiness": 0.05,
+            "sibilant_bypass": 0.85,
+            "mix": 1.0,
+        },
+        "Hard-Tune (T-Pain FX)": {
+            "correction_enable": 1.0,
+            "retune_speed": 0.0,
+            "pitch_shift": 0.0,
+            "formant_shift": 0.0,
+            "gender_morph": 0.0,
+            "breathiness": 0.0,
+            "sibilant_bypass": 0.9,
+            "mix": 1.0,
+        },
+        "Transparent Vocal Polisher": {
+            "correction_enable": 1.0,
+            "retune_speed": 45.0,
+            "pitch_shift": 0.0,
+            "formant_shift": 0.2,
+            "gender_morph": 0.1,
+            "breathiness": 0.08,
+            "sibilant_bypass": 0.95,
+            "mix": 1.0,
+        },
+        # Speech conversion: pitch correction stays OFF (scale snapping
+        # warbles prosody). Pitch + formants do the gender work; the VTLN
+        # warp and H1 shaping inside gender_morph carry the timbre.
+        "Male -> Female Speech": {
+            "correction_enable": 0.0,
+            "retune_speed": 20.0,
+            "pitch_shift": 9.0,
+            "formant_shift": 1.0,
+            "gender_morph": 0.85,
+            "breathiness": 0.20,
+            "sibilant_bypass": 0.85,
+            "mix": 1.0,
+        },
+        "Female -> Male Speech": {
+            "correction_enable": 0.0,
+            "retune_speed": 20.0,
+            "pitch_shift": -9.0,
+            "formant_shift": -1.0,
+            "gender_morph": -0.80,
+            "breathiness": 0.05,
+            "sibilant_bypass": 0.85,
             "mix": 1.0,
         },
     }
@@ -104,10 +204,19 @@ class VocalTransformer(FFINode):
         # nothing dirty after the disconnect).
         self._was_pitch_mod_connected = False
         self._was_formant_mod_connected = False
+        self._active_midi_note = -1.0
+        self._last_scale_root = None
+        self._last_scale_mask = None
+        # Change-detected MIDI derived params: avoids two redundant native
+        # set_param() calls on every block when nothing changed.
+        self._last_midi_mode = None
+        self._last_midi_target = None
 
         # Audio sockets
         self.inp = self.add_input(
             "in", help="Vocal signal to transform; mono inputs are duplicated to stereo.")
+        self.midi_in = self.add_midi_input(
+            "midi_in", help="Optional MIDI input for live note targeting.")
         self.pitch_mod = self.add_input(
             "pitch_mod", "pitch_shift",
             help="Block-rate pitch CV in semitones (bound to 'pitch_shift'; "
@@ -120,6 +229,14 @@ class VocalTransformer(FFINode):
             "out", channels=CHANNELS, help="Transformed vocal stereo output.")
 
         # Parameters (defaults/ranges match the native constructor defaults)
+        self.add_float_param("correction_enable", 0.0, 0.0, 1.0, unit="",
+                             help="Enable real-time pitch correction (1.0 = On, 0.0 = Off).")
+        self.add_menu_param("scale_root", list(ROOT_NOTES.keys()), initial_idx=0,
+                            help="Root note of the musical scale.")
+        self.add_menu_param("scale_type", list(SCALES.keys()), initial_idx=1,
+                            help="Musical scale type used for snapping.")
+        self.add_float_param("retune_speed", 20.0, 0.0, 100.0, unit="ms",
+                             help="Pitch snapping transition time (0 ms = hard snap, 100 ms = natural).")
         self.add_float_param("pitch_shift", 0.0, -24.0, 24.0, unit="st",
                              help="Fundamental pitch shift in semitones.")
         self.add_float_param("formant_shift", 0.0, -24.0, 24.0, unit="st",
@@ -130,17 +247,102 @@ class VocalTransformer(FFINode):
                                   "F1 is warped at reduced intensity; positive values "
                                   "add spectral-tilt + H1 harmonic emphasis and broaden "
                                   "formant bandwidths.")
+        self.add_float_param("vibrato_depth", 0.0, 0.0, 2.0, unit="st",
+                             help="Synthesized vibrato depth in semitones.")
+        self.add_float_param("vibrato_rate", 5.5, 2.0, 9.0, unit="Hz",
+                             help="Synthesized vibrato modulation rate in Hz.")
         self.add_float_param("breathiness", 0.0, 0.0, 1.0, unit="",
                              help="Vocal aspiration noise level. Deterministic, "
                                   "tract-shaped noise injected into the 1.5-7 kHz "
                                   "band only (avoids low-frequency rumble).")
-        self.add_float_param("sibilant_bypass", 0.8, 0.0, 1.0, unit="",
+        self.add_float_param("sibilant_bypass", 0.85, 0.0, 1.0, unit="",
                              help="Preserves natural unvoiced consonants (/s/, /t/, /k/) "
                                   "without pitch artifacts.")
         self.add_float_param("mix", 1.0, 0.0, 1.0,
                              help="Dry/wet crossfade (0.0 = dry bypass, 1.0 = transformed "
                                   "vocal). The dry path is latency-aligned inside the DSP, "
                                   "so intermediate values crossfade without comb filtering.")
+
+    def start(self):
+        super().start()
+        self._was_pitch_mod_connected = False
+        self._was_formant_mod_connected = False
+        self._active_midi_note = -1.0
+        self._last_scale_root = None
+        self._last_scale_mask = None
+        self._last_midi_mode = None
+        self._last_midi_target = None
+
+    def load_state(self, data: dict):
+        super().load_state(data)
+        # Force derived params to re-push on the next block; the active MIDI
+        # note itself is performance state (not saved), so clear it.
+        self._last_scale_root = None
+        self._last_scale_mask = None
+        self._last_midi_mode = None
+        self._last_midi_target = None
+        self._active_midi_note = -1.0
+        self._was_pitch_mod_connected = False
+        self._was_formant_mod_connected = False
+
+    def _sync_scale_parameters(self):
+        if not self.lib or not self.dsp_handle:
+            return
+
+        root_p = self.params["scale_root"].value
+        if isinstance(root_p, str):
+            root_val = float(ROOT_NOTES.get(root_p, 0))
+        else:
+            idx = int(root_p)
+            root_val = _ROOT_VALUES[idx] if 0 <= idx < len(_ROOT_VALUES) else 0.0
+
+        scale_p = self.params["scale_type"].value
+        if isinstance(scale_p, str):
+            mask_val = float(SCALES.get(scale_p, SCALES["Major"]))
+        else:
+            idx = int(scale_p)
+            mask_val = _SCALE_VALUES[idx] if 0 <= idx < len(_SCALE_VALUES) else float(SCALES["Major"])
+
+        if root_val != self._last_scale_root or mask_val != self._last_scale_mask:
+            self.lib.set_param(self.dsp_handle, self.PARAM_SCALE_ROOT_ID, root_val)
+            self.lib.set_param(self.dsp_handle, self.PARAM_SCALE_MASK_ID, mask_val)
+            self._last_scale_root = root_val
+            self._last_scale_mask = mask_val
+
+    def _sync_midi_parameters(self):
+        # Fold the block's MIDI packet into the latched target note, then
+        # push the derived (mode, target) pair only when it changed. Steady
+        # state with no MIDI traffic performs zero native calls here.
+        packet = self.midi_in.get_packet()
+        if packet.messages:
+            for _, msg in packet.messages:
+                mtype = getattr(msg, "type", "")
+                if mtype == "note_on" and getattr(msg, "velocity", 0) > 0:
+                    self._active_midi_note = float(msg.note)
+                elif mtype == "note_off" or (mtype == "note_on" and getattr(msg, "velocity", 0) == 0):
+                    if float(msg.note) == self._active_midi_note:
+                        self._active_midi_note = -1.0
+
+        if self._active_midi_note >= 0.0:
+            midi_active = 1.0
+            midi_target = self._active_midi_note
+        else:
+            midi_active = 0.0
+            # Keep the last target value stable when idle; only the mode
+            # matters to the native side in that state.
+            midi_target = self._last_midi_target if self._last_midi_target is not None else -1.0
+
+        if midi_active != self._last_midi_mode:
+            self.lib.set_param(self.dsp_handle, self.PARAM_MIDI_MODE_ID, midi_active)
+            self._last_midi_mode = midi_active
+        if self._active_midi_note >= 0.0 and midi_target != self._last_midi_target:
+            self.lib.set_param(self.dsp_handle, self.PARAM_TARGET_MIDI_NOTE_ID, midi_target)
+            self._last_midi_target = midi_target
+        elif self._last_midi_target is None:
+            # First block with no MIDI: publish the idle target once so the
+            # native side starts from a defined state.
+            self.lib.set_param(self.dsp_handle, self.PARAM_TARGET_MIDI_NOTE_ID, -1.0)
+            self._last_midi_target = -1.0
 
     def process(self):
         # Mirrors plugins/filters.py BiquadFilter.process(): replicate the
@@ -155,10 +357,14 @@ class VocalTransformer(FFINode):
                 out_slot.buffer.zero_()
             return
 
-        # 1. Sync staged parameters (canonical path)
+        # 1. Sync staged parameters (canonical path) & derived scale parameters
         self._sync_params_to_cpp()
+        self._sync_scale_parameters()
 
-        # 2. Block-rate modulation: push directly after staged sync.
+        # 2. MIDI note targeting (change-detected; silent when idle)
+        self._sync_midi_parameters()
+
+        # 3. Block-rate modulation: push directly after staged sync.
         #    First sample of the block, matching RubberbandPitchShifter.
         #    Disconnect contract: when a mod input is disconnected, re-push the
         #    staged parameter ONCE — _sync_params_to_cpp() would otherwise skip
@@ -182,7 +388,7 @@ class VocalTransformer(FFINode):
                                float(self.params["formant_shift"].value))
             self._was_formant_mod_connected = False
 
-        # 3. Native dispatch with FFINode's channel-adaptation policy
+        # 4. Native dispatch with FFINode's channel-adaptation policy
         raw_tensor = self.inp.get_tensor()
         processed_tensor = self._preprocess_input(raw_tensor, self._ffi_in_buffer)
         in_channels = processed_tensor.shape[0]

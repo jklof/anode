@@ -156,7 +156,7 @@ def test_vocal_transformer_native_mono_bypass_writes_stereo():
     mix<=0 bypass mono-duplication fix — previously channel 1 was left stale
     (ghosting) because the bypass used the raw channel count."""
     node = make_node()
-    node.lib.set_param(node.dsp_handle, 5, 0.0)   # mix = 0 -> native bypass
+    node.lib.set_param(node.dsp_handle, 11, 0.0)  # mix = 0 -> native bypass
     n = BLOCK_SIZE
     mono = (np.random.rand(n).astype(np.float32) * 0.3 - 0.15)
     in_buf = (ctypes.c_float * n)(*mono)
@@ -870,3 +870,260 @@ def test_vocal_transformer_h1_boost_rejects_sub_rumble():
     q1 = _welch_band(outs1, f_h1) / (_welch_band(outs1, f_rumble, 10.0) + 1e-12)
     assert q1 / q0 > 0.8, \
         f"H1 boost landed on rumble instead (neutral {q0:.2f}, fem {q1:.2f})"
+
+
+# ---------------------------------------------------------------------------
+# Retune front end (merged from StudioVocalTransformer): NSDF pitch tracking,
+# scale snapping, MIDI targeting, glide, vibrato.
+# ---------------------------------------------------------------------------
+
+class _FakeMidiOut:
+    """Minimal fake MIDI output slot (slot_type='midi') with a message list."""
+    def __init__(self, messages):
+        self.slot_type = "midi"
+        self.packet = type("P", (), {"messages": messages})()
+
+
+class _NoteOn:
+    def __init__(self, note, velocity=100):
+        self.type = "note_on"
+        self.note = note
+        self.velocity = velocity
+
+
+class _NoteOff:
+    def __init__(self, note):
+        self.type = "note_off"
+        self.note = note
+        self.velocity = 0
+
+
+def test_vocal_transformer_retune_interface():
+    """Merged node exposes the retune ports and parameters."""
+    node = make_node()
+    assert "midi_in" in node.inputs
+    assert node.inputs["midi_in"].slot_type == "midi"
+    assert node.inputs["midi_in"].help
+    for pname in ("correction_enable", "scale_root", "scale_type",
+                  "retune_speed", "vibrato_depth", "vibrato_rate"):
+        assert pname in node.params, f"missing retune param '{pname}'"
+    assert node.params["correction_enable"].value == 0.0
+    assert node.params["retune_speed"].value == pytest.approx(20.0)
+    telem = node.get_telemetry()
+    assert telem["latency_samples"] == 9216
+
+
+def test_vocal_transformer_pitch_retune_accuracy():
+    """Feed 220 Hz (A3) sine with scale C Major, retune 0 ms: pitch locks to
+    A3 (in scale, ratio 1.0). Switch to C Minor (A out of scale) -> snaps to
+    G#3 (207.65 Hz) or Bb3 (233.08 Hz). Pipeline latency burned off first."""
+    node = make_node()
+    set_params(node, correction_enable=1.0, retune_speed=0.0, mix=1.0)
+    node.params["scale_root"].set(0)  # C
+    node.params["scale_type"].set(1)  # Major
+    node.sync()
+
+    out_major = []
+    for b in tone_blocks(220.0, 50, amp=0.5):
+        out_major.append(process_block(node, b))
+
+    sig_major = torch.cat(out_major[22:], dim=1)[0].numpy()
+    fft_maj = np.abs(np.fft.rfft(sig_major))
+    freqs = np.fft.rfftfreq(len(sig_major), 1.0 / SAMPLE_RATE)
+    peak_major = freqs[np.argmax(fft_maj)]
+    assert peak_major == pytest.approx(220.0, abs=5.0), f"Expected ~220 Hz in C Major, got {peak_major}"
+
+    # Switch to Minor (scale_type index 2)
+    node.params["scale_type"].set(2)
+    node.sync()
+    out_minor = []
+    for b in tone_blocks(220.0, 50, amp=0.5):
+        out_minor.append(process_block(node, b))
+
+    sig_minor = torch.cat(out_minor[22:], dim=1)[0].numpy()
+    fft_min = np.abs(np.fft.rfft(sig_minor))
+    freqs_min = np.fft.rfftfreq(len(sig_minor), 1.0 / SAMPLE_RATE)
+    peak_minor = freqs_min[np.argmax(fft_min)]
+    # A3 (57) in C Minor snaps to G#3 (56 = 207.65 Hz) or Bb3 (58 = 233.08 Hz)
+    assert peak_minor == pytest.approx(207.65, abs=8.0) or peak_minor == pytest.approx(233.08, abs=8.0), \
+        f"Expected snap to G#3 (207.65) or Bb3 (233.08) in C Minor, got {peak_minor}"
+
+
+def test_vocal_transformer_midi_targeting_speed():
+    """note_on (MIDI 60 = 261.6 Hz) into midi_in with retune 0 ms: output
+    reaches the target as soon as the pipeline latency drains."""
+    node = make_node()
+    set_params(node, correction_enable=1.0, retune_speed=0.0, mix=1.0)
+
+    # Warm up with 220 Hz (covers the pipeline latency and tracker settle)
+    t = np.arange(50 * BLOCK_SIZE) / SAMPLE_RATE
+    sine = (0.5 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
+    t2 = np.tile(sine, (CHANNELS, 1))
+
+    for blk in range(25):
+        b = torch.from_numpy(t2[:, blk * BLOCK_SIZE:(blk + 1) * BLOCK_SIZE].copy())
+        process_block(node, b)
+
+    # Send note_on 60 (C4 = 261.63 Hz)
+    node.midi_in.connected_outputs = [_FakeMidiOut([(0, _NoteOn(60, 100))])]
+    out_midi = []
+    for blk in range(25, 50):
+        b = torch.from_numpy(t2[:, blk * BLOCK_SIZE:(blk + 1) * BLOCK_SIZE].copy())
+        out_midi.append(process_block(node, b))
+
+    # Measure past the latency drain with an FFT peak pick on the shifted tone.
+    sig = torch.cat(out_midi[19:], dim=1)[0].numpy().astype(np.float64)
+    fft = np.abs(np.fft.rfft(sig))
+    freqs = np.fft.rfftfreq(len(sig), 1.0 / SAMPLE_RATE)
+    peak = freqs[np.argmax(fft)]
+    assert peak == pytest.approx(261.63, rel=0.05), f"Expected target ~261.6 Hz, got {peak:.1f}"
+
+
+def test_vocal_transformer_scale_snapping():
+    """Hard snap on a C-Major in-scale tone stays finite, non-zero, bounded."""
+    node = make_node()
+    set_params(node, correction_enable=1.0, retune_speed=0.0, mix=1.0)
+    node.params["scale_root"].set(0)  # C
+    node.params["scale_type"].set(1)  # Major
+    node.sync()
+
+    for b in tone_blocks(440.0, SETTLE_BLOCKS + 8, amp=0.4):
+        process_block(node, b)
+    out = process_block(node, tone_blocks(440.0, 1, amp=0.4)[0])
+
+    assert float(out.abs().sum()) > 0.0
+    assert torch.isfinite(out).all()
+    assert float(out.abs().max()) < 4.0
+
+
+def test_vocal_transformer_scale_params_pushed():
+    """Menu params map to the native scale_root / scale_mask without a KeyError
+    (scale_mask is derived, not a Parameter, so it must NOT be in PARAM_MAP)."""
+    node = make_node()
+    calls = []
+    node.lib.set_param = lambda h, pid, v: calls.append((pid, float(v)))
+
+    process_block(node, torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32))
+
+    # Switch root to D (index 2) and scale to Minor (index 2).
+    node.params["scale_root"].set(2)
+    node.params["scale_type"].set(2)
+    node.sync()
+    process_block(node, torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32))
+
+    node._sync_params_to_cpp()  # must not raise (no 'scale_mask' Parameter)
+    scale_root_calls = [v for pid, v in calls if pid == 1]
+    scale_mask_calls = [v for pid, v in calls if pid == 2]
+    assert scale_root_calls and scale_root_calls[-1] == pytest.approx(2.0), \
+        f"scale_root should map D -> 2.0: {scale_root_calls}"
+    from plugins.vocal_transformer import SCALES
+    assert scale_mask_calls and scale_mask_calls[-1] == pytest.approx(float(SCALES["Minor"])), \
+        f"scale_mask should map Minor index 2: {scale_mask_calls}"
+
+
+def test_vocal_transformer_midi_target():
+    node = make_node()
+    calls = []
+    node.lib.set_param = lambda h, pid, v: calls.append((pid, float(v)))
+
+    # note_on 72 (C5) -> midi_mode must be 1, target_note 72.
+    node.midi_in.connected_outputs = [_FakeMidiOut([(0, _NoteOn(72, 100))])]
+    audio = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
+    node.inp.get_tensor = lambda: audio
+    node.process()
+    mode = [v for pid, v in calls if pid == 12]
+    target = [v for pid, v in calls if pid == 13]
+    assert mode and mode[-1] == 1.0, f"midi_mode not set: {mode}"
+    assert target and target[-1] == pytest.approx(72.0), f"target note not set: {target}"
+
+    # note_off 72 clears the target -> midi_mode returns to 0.
+    calls.clear()
+    node.midi_in.connected_outputs = [_FakeMidiOut([(0, _NoteOff(72))])]
+    node.process()
+    mode = [v for pid, v in calls if pid == 12]
+    assert mode and mode[-1] == 0.0, f"midi_mode not cleared: {mode}"
+
+
+def test_vocal_transformer_preset_bounded():
+    node = make_node()
+    preset = node.PRESETS["Male -> Female Pop Lead"]
+    set_params(node, **preset)
+
+    for b in saw_blocks(220.0, SETTLE_BLOCKS, amp=0.3):
+        process_block(node, b)
+    out = process_block(node, saw_blocks(220.0, 1, amp=0.3)[0])
+
+    assert out.shape == (CHANNELS, BLOCK_SIZE)
+    assert torch.isfinite(out).all()
+    assert float(out.abs().max()) < 4.0
+
+
+def test_vocal_transformer_tracking_bypass_optimization():
+    """With correction off (and no MIDI), pitch tracking is bypassed: an
+    off-scale 230 Hz tone passes through at ~230 Hz, while correction on
+    (C Major, hard snap) pulls it to A3 220 Hz. Off-path output is
+    additionally bit-deterministic across fresh instances."""
+    blocks = tone_blocks(230.0, SETTLE_BLOCKS + 16, amp=0.5)
+
+    def peak_after(**kw):
+        node = make_node()
+        set_params(node, mix=1.0, **kw)
+        outs = [process_block(node, b) for b in blocks]
+        sig = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy()
+        fft = np.abs(np.fft.rfft(sig))
+        freqs = np.fft.rfftfreq(len(sig), 1.0 / SAMPLE_RATE)
+        return freqs[np.argmax(fft)], torch.cat(outs, dim=1)
+
+    peak_off, out_off = peak_after(correction_enable=0.0)
+    assert peak_off == pytest.approx(230.0, abs=5.0), \
+        f"correction off must not snap 230 Hz, got {peak_off:.1f}"
+
+    node2 = make_node()
+    set_params(node2, mix=1.0, correction_enable=0.0)
+    outs2 = torch.cat([process_block(node2, b) for b in blocks], dim=1)
+    assert torch.equal(out_off, outs2), "correction-off path must be bit-deterministic"
+
+    node3 = make_node()
+    set_params(node3, mix=1.0, correction_enable=1.0, retune_speed=0.0)
+    node3.params["scale_root"].set(0)  # C
+    node3.params["scale_type"].set(1)  # Major
+    node3.sync()
+    outs3 = [process_block(node3, b) for b in blocks]
+    sig3 = torch.cat(outs3[SETTLE_BLOCKS:], dim=1)[0].numpy()
+    fft3 = np.abs(np.fft.rfft(sig3))
+    freqs3 = np.fft.rfftfreq(len(sig3), 1.0 / SAMPLE_RATE)
+    peak_on = freqs3[np.argmax(fft3)]
+    assert peak_on == pytest.approx(220.0, abs=8.0), \
+        f"correction on must snap 230 Hz toward A3 220 Hz, got {peak_on:.1f}"
+
+
+def test_vocal_transformer_tracking_path_zero_allocation():
+    """Retune engaged (correction on): 1000 blocks perform zero Python
+    allocations inside the node module (tracemalloc snapshot diff)."""
+    node = make_node()
+    set_params(node, mix=1.0, correction_enable=1.0)
+
+    audio_in = torch.randn((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
+    node.inp.get_tensor = lambda: audio_in
+
+    # Warm-up
+    for _ in range(50):
+        node.process()
+
+    tracemalloc.start()
+    snap1 = tracemalloc.take_snapshot()
+
+    with torch.no_grad():
+        for _ in range(1000):
+            node.process()
+
+    snap2 = tracemalloc.take_snapshot()
+    tracemalloc.stop()
+
+    stats = snap2.compare_to(snap1, "lineno")
+    vt_stats = [
+        s for s in stats
+        if s.traceback[0].filename.endswith("/vocal_transformer.py")
+    ]
+    leak_size = sum(s.size_diff for s in vt_stats if s.size_diff > 0)
+    assert leak_size == 0, f"Detected allocations in vocal_transformer.py: {vt_stats}"

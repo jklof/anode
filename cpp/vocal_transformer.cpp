@@ -25,6 +25,17 @@
 //   - ring-buffer OLA with FIXED emission latency (kLatency = 9216 samples
 //     = 192 ms @ 48 kHz)
 //
+// Optional real-time retune front end (off by default):
+//   input -> F0 tracking (4:1-decimated NSDF at 12 kHz, 1.2 kHz AA filter,
+//     continuity scoring, harmonic unwinding, octave-jump guard)
+//         -> retune (12-bit scale snap / MIDI note target + exponential glide)
+//         -> vibrato -> total pitch shift (manual pitch_st + correction).
+//   When correction_enable and MIDI are both off, the downsampling and NSDF
+//   tracking are skipped entirely: the node is a pure manual pitch/formant/
+//   gender shifter with zero tracking overhead.
+//
+
+//
 // mix = 0 is a bit-exact memcpy bypass; set_param(mix) clears transient state on
 // bypass-boundary transitions (anti-ghosting). All ring indices are wrapped into
 // [0, kRingSize) via & kRingMask AFTER reducing positions into int range — the
@@ -59,6 +70,11 @@ constexpr int   kRingMask = kRingSize - 1;
 // and output sample o is complete once frame floor(o/256) has been processed,
 // so L >= 1024 + 2048*4 = 9216 keeps every emitted sample fully accumulated.
 constexpr long long kLatency = 9216;
+// Pitch-tracker analysis constants (12 kHz decimated domain).
+constexpr int kPitchDecim = 4;
+constexpr int kPitchBufSize = 1024;
+constexpr int kPitchMinLag = 15;   // 800 Hz @ 12 kHz
+constexpr int kPitchMaxLag = 240;  // 50 Hz @ 12 kHz
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr float kXoverLowHz = 3500.0f;    // sibilant bypass raised-cosine band
@@ -84,13 +100,53 @@ inline float wrap_phase(float x) {
     return x - kTwoPi * std::floor((x + kPi) / kTwoPi);
 }
 
+struct Biquad {
+    float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f;
+    float a1 = 0.0f, a2 = 0.0f;
+    float z1 = 0.0f, z2 = 0.0f;
+
+    void reset() { z1 = z2 = 0.0f; }
+
+    void set_lowpass(float fc, float q, float sr) {
+        fc = std::max(20.0f, std::min(0.45f * sr, fc));
+        const float w = kTwoPi * fc / sr;
+        const float c = std::cos(w);
+        const float s = std::sin(w);
+        const float alpha = s / (2.0f * q);
+        const float a0 = 1.0f + alpha;
+        b0 = ((1.0f - c) * 0.5f) / a0;
+        b1 = (1.0f - c) / a0;
+        b2 = b0;
+        a1 = (-2.0f * c) / a0;
+        a2 = (1.0f - alpha) / a0;
+    }
+
+    inline float process(float x) {
+        const float y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        return y;
+    }
+};
+
 class VocalTransformerProcessor {
 public:
     VocalTransformerProcessor()
         : sr_(48000.0f),
           pitch_st_(0.0f), formant_st_(0.0f), gender_morph_(0.0f),
-          breathiness_(0.0f), sibilant_mix_(0.8f), mix_(1.0f), prev_mix_(1.0f),
+          breathiness_(0.0f), sibilant_mix_(0.85f), mix_(1.0f), prev_mix_(1.0f),
+          correction_enable_(0.0f),
+          scale_root_(0), scale_mask_(0xFFF),
+          retune_speed_ms_(20.0f), vibrato_depth_(0.0f),
+          vibrato_rate_(5.5f), midi_mode_(0.0f),
+          target_midi_note_(-1.0f), detected_f0_(0.0f),
+          current_pitch_semitone_(60.0f),
+          target_smoothed_semitone_(60.0f),
+          vibrato_phase_(0.0f),
+          last_accepted_f0_(0.0f), jump_pending_f0_(0.0f),
+          jump_confirm_(0), voicing_hangover_(0),
           current_h1_bin_(-1), rng_state_(kRngSeed) {
+        aa_filter_.set_lowpass(1200.0f, 0.7071f, sr_);
         build_tables();
         recompute_tables();
         reset();
@@ -100,17 +156,31 @@ public:
         // Windows are normalized-frequency; sr scales the Hz mapping of the
         // VTLN band boundary, the tilt/H1 shaping bands, and the breath band
         // limits — every table below must be rebuilt when the rate changes.
+        // The pitch-tracker anti-alias filter tracks the rate too; the
+        // transient pipeline is cleared like any other rate change.
         if (sr > 1.0f && sr != sr_) {
             sr_ = sr;
+            aa_filter_.set_lowpass(1200.0f, 0.7071f, sr_);
             recompute_tables();
+            reset_transient();
         }
     }
 
     void set_param(int id, float v) {
         switch (id) {
-            case 0: pitch_st_ = std::max(-24.0f, std::min(24.0f, v)); break;
-            case 1: formant_st_ = std::max(-24.0f, std::min(24.0f, v)); break;
-            case 2:
+            case 0:
+                // Off->on transition: the decimated tracker buffer holds
+                // stale audio (or zeros); clear it so the first tracked
+                // blocks start from current input instead of history.
+                if (v > 0.5f && correction_enable_ <= 0.5f) reset_tracker();
+                correction_enable_ = v > 0.5f ? 1.0f : 0.0f;
+                break;
+            case 1: scale_root_ = std::max(0, std::min(11, static_cast<int>(v))); break;
+            case 2: scale_mask_ = static_cast<int>(v); break;
+            case 3: retune_speed_ms_ = std::max(0.0f, std::min(100.0f, v)); break;
+            case 4: pitch_st_ = std::max(-24.0f, std::min(24.0f, v)); break;
+            case 5: formant_st_ = std::max(-24.0f, std::min(24.0f, v)); break;
+            case 6:
                 gender_morph_ = std::max(-1.0f, std::min(1.0f, v));
                 // VTLN warp buckets and spectral tilt depend
                 // only on gender_morph; rebuild every table here (param-change
@@ -118,15 +188,22 @@ public:
                 // inside replace_envelope()/synthesize().
                 recompute_tables();
                 break;
-            case 3: breathiness_ = std::max(0.0f, std::min(1.0f, v)); break;
-            case 4: sibilant_mix_ = std::max(0.0f, std::min(1.0f, v)); break;
-            case 5:
+            case 7: vibrato_depth_ = std::max(0.0f, std::min(2.0f, v)); break;
+            case 8: vibrato_rate_ = std::max(2.0f, std::min(9.0f, v)); break;
+            case 9: breathiness_ = std::max(0.0f, std::min(1.0f, v)); break;
+            case 10: sibilant_mix_ = std::max(0.0f, std::min(1.0f, v)); break;
+            case 11:
                 mix_ = std::max(0.0f, std::min(1.0f, v));
                 // Bypass-boundary anti-ghosting: crossing mix = 0 invalidates the
                 // transient pipeline (stale rings / OLA / phase history).
                 if ((prev_mix_ <= 0.0f) != (mix_ <= 0.0f)) reset_transient();
                 prev_mix_ = mix_;
                 break;
+            case 12:
+                if (v > 0.5f && midi_mode_ <= 0.5f) reset_tracker();
+                midi_mode_ = v > 0.5f ? 1.0f : 0.0f;
+                break;
+            case 13: target_midi_note_ = v; break;
             default: break;
         }
     }
@@ -134,13 +211,15 @@ public:
     void reset() {
         reset_transient();
         prev_mix_ = mix_;
-        rng_state_ = kRngSeed;
+        target_smoothed_semitone_ = 60.0f;
+        current_pitch_semitone_ = 60.0f;
+        vibrato_phase_ = 0.0f;
     }
 
     void process(const float* in, float* out, int channels, int frames) {
+        if (!in || !out || frames <= 0) return;
         if (channels < 1) channels = 1;
         if (channels > kMaxChannels) channels = kMaxChannels;
-        if (frames <= 0) return;
 
         // Dry bypass: bit-exact memcpy early-out (zero latency, zero CPU).
         // Must honor the mono->stereo duplication contract of the normal path,
@@ -155,9 +234,36 @@ public:
             return;
         }
 
+        // Retune front end: F0 tracking, scale/MIDI target, glide, vibrato.
+        // Skipped entirely (zero tracking overhead) when pitch correction
+        // and MIDI targeting are both off: the node is then a pure manual
+        // pitch/formant/gender shifter. F0 tracking reads channel 0.
+        float total_shift = pitch_st_;
+        const bool need_tracking =
+            (correction_enable_ > 0.5f) || (midi_mode_ > 0.5f);
+        if (need_tracking) {
+            track_pitch_and_retune(in, frames);
+            if (correction_enable_ > 0.5f && detected_f0_ > 50.0f) {
+                const float correction =
+                    target_smoothed_semitone_ - current_pitch_semitone_;
+                total_shift += std::max(-12.0f, std::min(12.0f, correction));
+            }
+        } else {
+            detected_f0_ = 0.0f;
+        }
+
+        if (vibrato_depth_ > 0.001f) {
+            vibrato_phase_ += kTwoPi * vibrato_rate_ *
+                              (static_cast<float>(frames) / sr_);
+            vibrato_phase_ = std::fmod(vibrato_phase_, kTwoPi);
+            total_shift += vibrato_depth_ * std::sin(vibrato_phase_);
+        }
+
+        total_shift = std::max(-24.0f, std::min(24.0f, total_shift));
+        const float ratio = std::pow(2.0f, total_shift / 12.0f);
+
         // Mono input: duplicate internally to both output channels.
         const int chs = (channels == 1) ? kMaxChannels : channels;
-        const float ratio = std::pow(2.0f, pitch_st_ / 12.0f);
 
         for (int c = 0; c < chs; ++c) {
             const float* in_ch = (channels == 1) ? in : in + c * frames;
@@ -187,6 +293,14 @@ public:
                 ++frames_this_call;
             }
 
+            // Per-block wet/dry endpoints; the emission loop interpolates
+            // between them per sample so mix automation cannot click at
+            // block boundaries.
+            const float m_start = mix_smooth_[c];
+            mix_smooth_[c] += 0.5f * (mix_ - mix_smooth_[c]);
+            const float m_end = std::max(0.0f, std::min(1.0f, mix_smooth_[c]));
+            const float m0 = std::max(0.0f, std::min(1.0f, m_start));
+
             // Emit this block's output from the fixed latency L behind the
             // input stream (every emitted sample is fully accumulated; the
             // first L samples of the stream are silence). The dry path is
@@ -199,7 +313,11 @@ public:
                     const float wet = ola_ring_[c][o & kRingMask];
                     ola_ring_[c][o & kRingMask] = 0.0f;
                     const float dry = in_ring_[c][o & kRingMask];
-                    out_ch[i] = (1.0f - mix_) * dry + mix_ * wet;
+                    const float t = static_cast<float>(i) / static_cast<float>(frames);
+                    const float mb = m0 + (m_end - m0) * t;
+                    float y = (1.0f - mb) * dry + mb * wet;
+                    if (!std::isfinite(y)) y = 0.0f;
+                    out_ch[i] = y;
                 } else {
                     out_ch[i] = 0.0f;
                 }
@@ -213,23 +331,37 @@ public:
     }
 
 private:
-    // ---- Parameters -------------------------------------------------------
+    // ---- Retune front end --------------------------------------------------
     float sr_;
-    float pitch_st_;       // [-24, +24] semitones
+    float pitch_st_;       // [-24, +24] manual pitch relocation (semitones)
     float formant_st_;     // [-24, +24] semitones
     float gender_morph_;   // [-1, +1] VTLN warping
     float breathiness_;    // [0, 1]
     float sibilant_mix_;   // [0, 1]
     float mix_;            // [0, 1]
     float prev_mix_;       // bypass-transition detection
+    float correction_enable_;
+    int scale_root_, scale_mask_;
+    float retune_speed_ms_, vibrato_depth_, vibrato_rate_;
+    float midi_mode_, target_midi_note_;
+    float detected_f0_, current_pitch_semitone_, target_smoothed_semitone_;
+    float vibrato_phase_;
 
-    // ---- Per-channel persistent state --------------------------------------
+    Biquad aa_filter_;
+    float pitch_downsample_buf_[kPitchBufSize];
+    float nsdf_[kPitchMaxLag];
+
+    float last_accepted_f0_, jump_pending_f0_;
+    int jump_confirm_, voicing_hangover_;
+
+    // ---- Per-channel spectral pipeline state --------------------------------
     float in_ring_[kMaxChannels][kRingSize];   // raw input history
     float ola_ring_[kMaxChannels][kRingSize];  // output OLA ring (trailing read)
     long long total_received_[kMaxChannels];   // input samples received
     long long frame_index_[kMaxChannels];      // frames processed (start = 256*m)
     float prev_phase_in_[kMaxChannels][kHalf];
     float prev_phase_out_[kMaxChannels][kHalf];
+    float mix_smooth_[kMaxChannels];           // de-clicked wet/dry per channel
 
     // ---- Pre-computed tables (constructor only) -----------------------------
     float window_[kFFT];        // analysis Hann
@@ -285,8 +417,228 @@ private:
             std::memset(prev_mag_[c], 0, sizeof(float) * kHalf);
             last_h1_bin_[c] = -1;
             h1_hangover_[c] = 0;
+            mix_smooth_[c] = mix_;
         }
+        reset_tracker();
         current_h1_bin_ = -1;
+        rng_state_ = kRngSeed;
+    }
+
+    void reset_tracker() {
+        std::memset(pitch_downsample_buf_, 0, sizeof(pitch_downsample_buf_));
+        std::memset(nsdf_, 0, sizeof(nsdf_));
+        aa_filter_.reset();
+        detected_f0_ = 0.0f;
+        last_accepted_f0_ = 0.0f;
+        jump_pending_f0_ = 0.0f;
+        jump_confirm_ = 0;
+        voicing_hangover_ = 0;
+    }
+
+    // ---- Retune front end ---------------------------------------------------
+
+    void track_pitch_and_retune(const float* in, int frames) {
+        const int ds = frames / kPitchDecim;
+        if (ds > 0 && ds < kPitchBufSize) {
+            std::memmove(pitch_downsample_buf_,
+                         pitch_downsample_buf_ + ds,
+                         static_cast<size_t>(kPitchBufSize - ds) * sizeof(float));
+            for (int i = 0; i < ds; ++i) {
+                float y = 0.0f;
+                for (int d = 0; d < kPitchDecim; ++d)
+                    y = aa_filter_.process(in[i * kPitchDecim + d]);
+                pitch_downsample_buf_[kPitchBufSize - ds + i] = y;
+            }
+        }
+
+        constexpr int n = 512;
+        const int start = kPitchBufSize - kPitchMaxLag - n;
+
+        float energy = 0.0f;
+        for (int j = 0; j < n; ++j) {
+            const float x = pitch_downsample_buf_[start + j];
+            energy += x * x;
+        }
+        const float rms = std::sqrt(energy / static_cast<float>(n));
+
+        if (rms < 0.0015f) {
+            detected_f0_ = 0.0f;
+            last_accepted_f0_ = 0.0f;
+            jump_pending_f0_ = 0.0f;
+            jump_confirm_ = 0;
+            voicing_hangover_ = 0;
+            return;
+        }
+
+        for (int tau = kPitchMinLag; tau < kPitchMaxLag; ++tau) {
+            float num = 0.0f;
+            float den = 1e-9f;
+            for (int j = 0; j < n; ++j) {
+                const float x = pitch_downsample_buf_[start + j];
+                const float y = pitch_downsample_buf_[start + tau + j];
+                num += 2.0f * x * y;
+                den += x * x + y * y;
+            }
+            nsdf_[tau] = num / den;
+        }
+
+        float r_max = 0.0f;
+        for (int tau = kPitchMinLag + 1; tau < kPitchMaxLag - 1; ++tau) {
+            if (nsdf_[tau] > 0.0f &&
+                nsdf_[tau] > nsdf_[tau - 1] &&
+                nsdf_[tau] >= nsdf_[tau + 1])
+                r_max = std::max(r_max, nsdf_[tau]);
+        }
+
+        int best_tau = -1;
+        if (r_max >= 0.42f) {
+            if (last_accepted_f0_ > 50.0f) {
+                // Continuity scoring (one-block Viterbi): speech F0 moves
+                // continuously, so among all viable peaks prefer the one
+                // nearest last block's F0. Upward jumps are penalised hard:
+                // an octave-up lock would feed the retune corrector a false
+                // target and warble the output, while a downward error only
+                // coarsens tracking benignly. Real jumps still win: when the
+                // voice truly moves, the old peak vanishes and the new one
+                // takes r_max unopposed.
+                const float net = std::max(0.35f * r_max, 0.25f);
+                float best_score = -1e30f;
+                for (int tau = kPitchMinLag + 1; tau < kPitchMaxLag - 1; ++tau) {
+                    const float v = nsdf_[tau];
+                    if (v <= 0.0f || v < net) continue;
+                    if (!(v > nsdf_[tau - 1] && v >= nsdf_[tau + 1])) continue;
+                    const float f = (sr_ / static_cast<float>(kPitchDecim)) /
+                                    static_cast<float>(tau);
+                    const float st = 12.0f * std::log2(f / last_accepted_f0_);
+                    const float pen = st > 0.0f ? 0.030f * st : -0.012f * st;
+                    const float score = v - pen;
+                    if (score > best_score) {
+                        best_score = score;
+                        best_tau = tau;
+                    }
+                }
+                // Fall through to MPM acquisition below if nothing scored.
+            }
+            if (best_tau <= 0) {
+                const float threshold = r_max * 0.85f;
+                for (int tau = kPitchMinLag + 1; tau < kPitchMaxLag - 1; ++tau) {
+                    if (nsdf_[tau] > 0.0f &&
+                        nsdf_[tau] > nsdf_[tau - 1] &&
+                        nsdf_[tau] >= nsdf_[tau + 1] &&
+                        nsdf_[tau] >= threshold) {
+                        best_tau = tau;
+                        break;
+                    }
+                }
+            }
+            // Fundamental preference: the smallest-lag pick above is easily
+            // a strong upper harmonic (H2-H6 sit near fundamental level in
+            // real vowels), locking an octave or more sharp. If a small
+            // integer multiple of the candidate is itself a local peak and
+            // clearly higher, the candidate was a harmonic: unwind toward
+            // the fundamental. The margin keeps true high voices (whose
+            // multiples correlate almost as well) from doubling down.
+            for (int iter = 0; iter < 2 && best_tau > 0; ++iter) {
+                bool moved = false;
+                for (int m = 2; m <= 6; ++m) {
+                    const int cand = best_tau * m;
+                    if (cand - 1 < kPitchMinLag || cand + 1 >= kPitchMaxLag)
+                        continue;
+                    if (nsdf_[cand] > nsdf_[best_tau] + 0.04f &&
+                        nsdf_[cand] >= nsdf_[cand - 1] &&
+                        nsdf_[cand] >= nsdf_[cand + 1] &&
+                        nsdf_[cand] >= 0.5f * r_max) {
+                        best_tau = cand;
+                        moved = true;
+                        break;
+                    }
+                }
+                if (!moved) break;
+            }
+        }
+
+        if (best_tau > 0) {
+            const float y0 = nsdf_[best_tau - 1];
+            const float y1 = nsdf_[best_tau];
+            const float y2 = nsdf_[best_tau + 1];
+            float denom = y0 - 2.0f * y1 + y2;
+            if (std::fabs(denom) < 1e-9f) denom = -1e-9f;
+            float delta = 0.5f * (y0 - y2) / denom;
+            delta = std::max(-0.5f, std::min(0.5f, delta));
+            const float tau = static_cast<float>(best_tau) + delta;
+            const float raw_f0 = (sr_ / static_cast<float>(kPitchDecim)) / tau;
+
+            float accepted = raw_f0;
+            if (last_accepted_f0_ > 0.0f) {
+                const float jump_st =
+                    std::fabs(12.0f * std::log2(raw_f0 / last_accepted_f0_));
+                if (jump_st > 6.0f) {
+                    if (jump_pending_f0_ > 0.0f &&
+                        std::fabs(12.0f * std::log2(raw_f0 / jump_pending_f0_)) < 2.0f)
+                        ++jump_confirm_;
+                    else
+                        jump_confirm_ = 1;
+
+                    jump_pending_f0_ = raw_f0;
+                    if (jump_confirm_ < 2)
+                        accepted = last_accepted_f0_;
+                } else {
+                    jump_confirm_ = 0;
+                    jump_pending_f0_ = 0.0f;
+                }
+            }
+
+            last_accepted_f0_ = accepted;
+            detected_f0_ = accepted;
+            voicing_hangover_ = 4;
+        } else if (voicing_hangover_ > 0 && last_accepted_f0_ > 0.0f) {
+            --voicing_hangover_;
+            detected_f0_ = last_accepted_f0_;
+        } else {
+            detected_f0_ = 0.0f;
+            last_accepted_f0_ = 0.0f;
+        }
+
+        if (detected_f0_ > 50.0f) {
+            current_pitch_semitone_ =
+                69.0f + 12.0f * std::log2(detected_f0_ / 440.0f);
+
+            float target = current_pitch_semitone_;
+            if (midi_mode_ > 0.5f && target_midi_note_ >= 0.0f)
+                target = target_midi_note_;
+            else
+                target = snap_to_scale(current_pitch_semitone_);
+
+            if (retune_speed_ms_ <= 0.1f) {
+                target_smoothed_semitone_ = target;
+            } else {
+                const float alpha = 1.0f - std::exp(
+                    -static_cast<float>(frames) /
+                    (retune_speed_ms_ * 0.001f * sr_));
+                target_smoothed_semitone_ +=
+                    alpha * (target - target_smoothed_semitone_);
+            }
+        }
+    }
+
+    float snap_to_scale(float note) const {
+        if (scale_mask_ == 0) return note;
+        const int rounded = static_cast<int>(std::round(note));
+        int best = rounded;
+        int min_dist = 100;
+        for (int d = -6; d <= 6; ++d) {
+            const int cand = rounded + d;
+            int pc = (cand - scale_root_) % 12;
+            if (pc < 0) pc += 12;
+            if ((scale_mask_ & (1 << (11 - pc))) != 0) {
+                const int dist = std::abs(cand - rounded);
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    best = cand;
+                }
+            }
+        }
+        return static_cast<float>(best);
     }
 
     void build_tables() {

@@ -12,14 +12,14 @@
       "id": "voxClassic",
       "type": "VocalTransformer",
       "name": "Classic Vocoder",
-      "params": {"pitch_shift": 0.0, "formant_shift": 0.0, "mix": 1.0},
+      "params": {"correction_enable": 0.0, "pitch_shift": 0.0, "formant_shift": 0.0, "mix": 1.0},
       "pos": [240, 0]
     },
     {
-      "id": "voxStudio",
-      "type": "StudioVocalTransformer",
-      "name": "Studio Retune",
-      "params": {"correction_enable": 0.0, "pitch_shift": 0.0, "formant_shift": 0.0, "mix": 1.0},
+      "id": "voxTuned",
+      "type": "VocalTransformer",
+      "name": "Tuned Vocoder",
+      "params": {"correction_enable": 1.0, "retune_speed": 15.0, "pitch_shift": 0.0, "formant_shift": 0.0, "mix": 1.0},
       "pos": [240, 160]
     },
     {
@@ -39,7 +39,7 @@
     {
       "id": "sel1",
       "type": "Selector",
-      "name": "A/B: Classic vs Studio",
+      "name": "A/B: Classic vs Tuned",
       "params": {"source": 0},
       "pos": [560, 80]
     },
@@ -67,11 +67,11 @@
   ],
   "connections": [
     {"src_id": "mic", "src_port": "out", "dst_id": "voxClassic", "dst_port": "in"},
-    {"src_id": "mic", "src_port": "out", "dst_id": "voxStudio", "dst_port": "in"},
+    {"src_id": "mic", "src_port": "out", "dst_id": "voxTuned", "dst_port": "in"},
     {"src_id": "mic", "src_port": "out", "dst_id": "voxWorld", "dst_port": "in"},
     {"src_id": "mic", "src_port": "out", "dst_id": "voxSmith", "dst_port": "in"},
     {"src_id": "voxClassic", "src_port": "out", "dst_id": "sel1", "dst_port": "A"},
-    {"src_id": "voxStudio", "src_port": "out", "dst_id": "sel1", "dst_port": "B"},
+    {"src_id": "voxTuned", "src_port": "out", "dst_id": "sel1", "dst_port": "B"},
     {"src_id": "sel1", "src_port": "out", "dst_id": "sel2", "dst_port": "A"},
     {"src_id": "voxWorld", "src_port": "out", "dst_id": "sel2", "dst_port": "B"},
     {"src_id": "sel2", "src_port": "out", "dst_id": "sel3", "dst_port": "A"},

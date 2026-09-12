@@ -84,16 +84,10 @@ target_compile_definitions(neural_amp PRIVATE NAM_SAMPLE_FLOAT)
 
 copy_target_to_directory(neural_amp "${PROJECT_SOURCE_DIR}/../plugins")
 
-# --- Target: Vocal Transformer ---
+# --- Target: Vocal Transformer (spectral vocal core + retune front end) ---
 add_library(vocal_transformer SHARED vocal_transformer.cpp)
 target_compile_features(vocal_transformer PRIVATE cxx_std_17)
 copy_target_to_directory(vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
-
-# --- Target: Studio Vocal Transformer (real-time pitch correction + retune on
-#     top of the VocalTransformer spectral core) ---
-add_library(studio_vocal_transformer SHARED studio_vocal_transformer.cpp)
-target_compile_features(studio_vocal_transformer PRIVATE cxx_std_17)
-copy_target_to_directory(studio_vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: WORLD Voice Transformer (ReIm framing/F0 + WORLD analysis/synth) ---
 # WORLD: official vocoder (CheapTrick/D4C/synthesisrealtime), fetched at
