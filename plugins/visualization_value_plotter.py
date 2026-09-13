@@ -12,8 +12,16 @@ Real-time notes:
   that fills the 16 slots drops frames). paintEvent decimates the trace to one
   min/max pair per screen column, so a dense history stays cheap to draw
   (AGENTS.md section 10).
+- Display range is user-configurable: ``min_val``/``max_val`` sliders in a
+  compact row under the plot, plus an ``AUTO`` mode (on by default) that tracks
+  the signal with a UI-side peak-hold envelope (fast attack, ~1 s release).
+  Auto-range is display-only: it never writes the manual parameters and never
+  touches the audio thread.
 - Zero heap allocation on the audio thread.
 """
+
+import logging
+import math
 
 import numpy as np
 import torch
@@ -21,8 +29,8 @@ import torch
 from base import Node, BLOCK_SIZE, CHANNELS, DTYPE, TelemetryRingBuffer
 
 try:
-    from PySide6.QtWidgets import QWidget
-    from PySide6.QtCore import Qt, QTimer, QRectF, QPointF, QLineF
+    from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox
+    from PySide6.QtCore import Qt, QTimer, QRect, QRectF, QPointF, QLineF, QSignalBlocker
     from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
     GUI_AVAILABLE = True
@@ -57,6 +65,24 @@ def _decimate_columns(values, w, h, min_v, max_v):
     return xs, y_top, y_bot
 
 
+def _zero_line_y(h, min_v, max_v):
+    """Pixel y of value 0 under the plot's scale mapping, or None when 0 is
+    outside the [min_v, max_v] view window (no misleading edge line then).
+
+    Uses the same ``h - 4 - (v - min)/span * (h - 8)`` mapping as the trace so
+    the dashed guide always sits on the trace's true zero.
+    """
+    min_v = float(min_v)
+    max_v = float(max_v)
+    if min_v > max_v:
+        min_v, max_v = max_v, min_v
+    if not (min_v <= 0.0 <= max_v):
+        return None
+    span = max(1e-6, max_v - min_v)
+    y = float(h) - 4.0 - (0.0 - min_v) / span * (float(h) - 8.0)
+    return min(max(y, 0.0), float(h))
+
+
 # ==============================================================================
 # DSP Node Logic (zero allocation on audio thread)
 # ==============================================================================
@@ -78,10 +104,13 @@ class ValuePlotterNode(Node):
         self.out = self.add_output("out", channels=CHANNELS,
                                    help="Pass-through copy of the input, unaltered.")
 
-        self.add_float_param("min_val", -1.0, -100.0, 100.0, unit="",
-                             help="Bottom scale bound.")
-        self.add_float_param("max_val", 1.0, -100.0, 100.0, unit="",
-                             help="Top scale bound.")
+        self.add_float_param("min_val", -1.0, -500.0, 500.0, unit="",
+                             help="Bottom scale bound (manual mode).")
+        self.add_float_param("max_val", 1.0, -500.0, 500.0, unit="",
+                             help="Top scale bound (manual mode).")
+        self.add_bool_param("auto_range", True,
+                            help="Automatically fit the display range to the "
+                                 "signal (UI-side peak-hold, display only).")
 
         # Bounded SPSC telemetry ring buffer (16 slots; overflow drops frames).
         self.monitor_queue = TelemetryRingBuffer(
@@ -106,7 +135,7 @@ class ValuePlotterNode(Node):
         # 4. Sanitize (NaN/inf) into the pre-allocated downsampled buffer.
         torch.nan_to_num(
             self._analysis_buf[0, ::step],
-            nan=0.0, posinf=100.0, neginf=-100.0,
+            nan=0.0, posinf=500.0, neginf=-500.0,
             out=self._downsampled[0],
         )
 
@@ -128,10 +157,17 @@ if GUI_AVAILABLE:
         # column, so a larger window costs no extra drawing time.
         HISTORY_LEN = 1024
 
+        # Automatic range detection (UI-side peak-hold envelope, display only).
+        # Fast attack on new extrema, exponential release toward the recent
+        # window. RELEASE_K assumes the ~30 ms poll cadence (≈1 s tau).
+        AUTO_RELEASE_K = 0.03
+        AUTO_PAD_FRAC = 0.10
+        AUTO_PAD_EPS = 1e-3
+
         def __init__(self, proxy):
             super().__init__()
             self.proxy = proxy
-            self.setMinimumSize(200, 100)
+            self.setMinimumSize(240, 150)
 
             self.bg_color = QColor("#141414")
             self.guide_color = QColor("#323232")
@@ -143,11 +179,57 @@ if GUI_AVAILABLE:
             self._current = 0.0
             self._has_data = False
 
+            # Peak-hold state (UI thread only; None until first data).
+            self._auto_min = None
+            self._auto_max = None
+
             self.timer = QTimer(self)
             self.timer.setInterval(30)
             self.timer.timeout.connect(self.poll)
             self.timer.start()
 
+            # -- Compact range-controls row under the plot ------------------
+            # A custom UI REPLACES the node's auto-generated parameter panel
+            # (ui_system builds generic editors only when there is no custom
+            # widget), so min/max must be embedded here explicitly. All edits
+            # go through proxy.set_parameter() (controller staging path);
+            # this widget never touches engine DSP state directly.
+            self._controls = QWidget(self)
+            row = QHBoxLayout(self._controls)
+            row.setContentsMargins(4, 2, 4, 2)
+            row.setSpacing(6)
+
+            self._min_widget = None
+            self._max_widget = None
+            create = getattr(self.proxy, "create_param_widget", None)
+            if callable(create):
+                for attr in ("_min_widget", "_max_widget"):
+                    pname = "min_val" if attr == "_min_widget" else "max_val"
+                    try:
+                        setattr(self, attr, create(pname))
+                        row.addWidget(getattr(self, attr))
+                    except Exception:
+                        logging.exception(f"param widget '{pname}' failed")
+                        setattr(self, attr, None)
+
+            self._auto_box = QCheckBox("AUTO")
+            self._auto_box.setToolTip(
+                "Automatically fit the display range to the signal "
+                "(peak-hold, display only; manual values are kept)."
+            )
+            self._auto_box.setChecked(bool(self._param_value("auto_range", True)))
+            self._auto_box.toggled.connect(self._on_auto)
+            row.addWidget(self._auto_box)
+
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
+            outer.addStretch(1)
+            outer.addWidget(self._controls)
+
+            self._apply_auto_enabled(self._auto_box.isChecked())
+
+        # -- parameters (UI-side snapshot reads) ---------------------------
         def _param_value(self, name, default):
             node_item = getattr(self.proxy, "node_item", None)
             params = getattr(node_item, "params", None) or {}
@@ -158,6 +240,119 @@ if GUI_AVAILABLE:
                 except (TypeError, ValueError):
                     return default
             return default
+
+        def _auto_enabled(self):
+            return bool(self._param_value("auto_range", True))
+
+        def _apply_auto_enabled(self, auto_on):
+            """Dim the manual editors while AUTO drives the view window."""
+            if self._min_widget is not None:
+                self._min_widget.setEnabled(not auto_on)
+            if self._max_widget is not None:
+                self._max_widget.setEnabled(not auto_on)
+
+        def _on_auto(self, checked):
+            setter = getattr(self.proxy, "set_parameter", None)
+            if callable(setter):
+                try:
+                    setter("auto_range", bool(checked))
+                except Exception:
+                    logging.exception("set_parameter('auto_range') failed")
+            self._apply_auto_enabled(bool(checked))
+
+        def update_from_params(self, simple_params: dict):
+            """Keep embedded controls in sync with backend values.
+
+            Called by NodeItem.update_from_snapshot(); embedded smart widgets
+            are NOT in NodeItem.param_controls, so they must be forwarded here
+            explicitly (same pattern as NamNode/ReverbWidget).
+            """
+            try:
+                if "auto_range" in simple_params:
+                    with QSignalBlocker(self._auto_box):
+                        self._auto_box.setChecked(bool(simple_params["auto_range"]))
+                if "min_val" in simple_params and self._min_widget is not None:
+                    updater = getattr(self._min_widget, "update_from_backend", None)
+                    if callable(updater):
+                        updater(float(simple_params["min_val"]))
+                if "max_val" in simple_params and self._max_widget is not None:
+                    updater = getattr(self._max_widget, "update_from_backend", None)
+                    if callable(updater):
+                        updater(float(simple_params["max_val"]))
+            except (TypeError, ValueError):
+                logging.exception("ValuePlotter update_from_params failed")
+            auto_on = bool(simple_params.get("auto_range", self._auto_box.isChecked()))
+            self._apply_auto_enabled(auto_on)
+
+        # -- display range --------------------------------------------------
+        def _display_range(self):
+            """Effective (min, max) view window for painting.
+
+            AUTO uses the UI-side peak-hold envelope (display-only; the manual
+            parameters are never modified). Manual mode uses min_val/max_val
+            with an inverted-range guard.
+            """
+            if self._auto_enabled() and self._auto_min is not None \
+                    and self._auto_max is not None:
+                lo, hi = float(self._auto_min), float(self._auto_max)
+            else:
+                lo = float(self._param_value("min_val", -1.0))
+                hi = float(self._param_value("max_val", 1.0))
+                if hi < lo:
+                    lo, hi = hi, lo
+            if not (math.isfinite(lo) and math.isfinite(hi)):
+                lo, hi = -1.0, 1.0
+            if hi - lo < 1e-6:
+                c = 0.5 * (lo + hi)
+                lo, hi = c - 5e-7, c + 5e-7
+            return lo, hi
+
+        def _update_auto_range(self, chunk_min, chunk_max):
+            """Peak-hold envelope step from one poll's new-point extrema.
+
+            Attack is immediate (with padding from the current hold span so the
+            trace never touches the rail); release relaxes exponentially toward
+            the padded chunk window. Runs on the UI thread only.
+            """
+            chunk_min = float(chunk_min)
+            chunk_max = float(chunk_max)
+            if not (math.isfinite(chunk_min) and math.isfinite(chunk_max)):
+                return
+            if chunk_max < chunk_min:
+                chunk_min, chunk_max = chunk_max, chunk_min
+            if self._auto_min is None or self._auto_max is None:
+                span = chunk_max - chunk_min
+                pad = span * self.AUTO_PAD_FRAC + self.AUTO_PAD_EPS
+                self._auto_min = chunk_min - pad
+                self._auto_max = chunk_max + pad
+                return
+            span = max(1e-9, float(self._auto_max) - float(self._auto_min))
+            pad = span * self.AUTO_PAD_FRAC + self.AUTO_PAD_EPS
+            k = self.AUTO_RELEASE_K
+            if chunk_min < self._auto_min:
+                self._auto_min = chunk_min - pad
+            else:
+                self._auto_min += ((chunk_min - pad) - self._auto_min) * k
+            if chunk_max > self._auto_max:
+                self._auto_max = chunk_max + pad
+            else:
+                self._auto_max += ((chunk_max + pad) - self._auto_max) * k
+            if self._auto_max - self._auto_min < 1e-6:
+                c = 0.5 * (self._auto_min + self._auto_max)
+                self._auto_min, self._auto_max = c - 5e-7, c + 5e-7
+
+        def _plot_height(self):
+            """Paintable plot height: widget height minus the controls row."""
+            h = self.height()
+            controls = getattr(self, "_controls", None)
+            if controls is not None:
+                try:
+                    ch = controls.height()
+                except RuntimeError:
+                    ch = 0
+                if 0 < ch < h:
+                    return h - ch
+            return h
 
         def poll(self):
             queue = getattr(self.proxy, "monitor_queue", None)
@@ -174,32 +369,46 @@ if GUI_AVAILABLE:
             # only the newest frame would drop ~2-3 of every 4 sampled points
             # and distort the time axis. paintEvent decimates the trace, so a
             # denser history stays cheap to draw.
+            chunk_min = math.inf
+            chunk_max = -math.inf
             for f in frames:
                 # f is shape (1, 8); extend the rolling trace with the 8 points.
-                self._history.extend(float(v) for v in f[0])
+                for v in f[0]:
+                    fv = float(v)
+                    self._history.append(fv)
+                    if math.isfinite(fv):
+                        if fv < chunk_min:
+                            chunk_min = fv
+                        if fv > chunk_max:
+                            chunk_max = fv
             self._current = float(frames[-1][0, -1])
             self._has_data = True
+            if chunk_min <= chunk_max:
+                self._update_auto_range(chunk_min, chunk_max)
             self.update()
 
         def paintEvent(self, event):
             painter = QPainter(self)
             painter.setRenderHint(QPainter.Antialiasing)
             w, h = self.width(), self.height()
+            plot_h = self._plot_height()
 
-            painter.fillRect(self.rect(), self.bg_color)
-
-            min_v = self._param_value("min_val", -1.0)
-            max_v = self._param_value("max_val", 1.0)
+            min_v, max_v = self._display_range()
             span = max(1e-6, max_v - min_v)
 
-            # Dashed center guide.
-            center_y = h / 2.0
-            painter.setPen(QPen(self.guide_color, 1, Qt.DashLine))
-            painter.drawLine(0, int(center_y), w, int(center_y))
+            painter.fillRect(0, 0, w, plot_h, self.bg_color)
 
+            # Dashed zero guide at the true mapped position of 0 (hidden when
+            # 0 is outside the view window).
+            zero_y = _zero_line_y(plot_h, min_v, max_v)
+            if zero_y is not None:
+                painter.setPen(QPen(self.guide_color, 1, Qt.DashLine))
+                painter.drawLine(0, int(round(zero_y)), w, int(round(zero_y)))
+
+            plot_rect = QRect(0, 0, w, plot_h)
             if not self._has_data or not self._history:
                 painter.setPen(self.text_color)
-                painter.drawText(self.rect(), Qt.AlignCenter, "No Signal")
+                painter.drawText(plot_rect, Qt.AlignCenter, "No Signal")
                 return
 
             # Draw at a cost bounded by the widget width:
@@ -211,7 +420,7 @@ if GUI_AVAILABLE:
             n = len(self._history)
             values = np.fromiter(self._history, dtype=np.float64, count=n)
             if n > w:
-                xs, y_top, y_bot = _decimate_columns(values, w, h, min_v, max_v)
+                xs, y_top, y_bot = _decimate_columns(values, w, plot_h, min_v, max_v)
                 lines = [QLineF(float(xi), float(yt), float(xi), float(yb))
                          for xi, yt, yb in zip(xs, y_top, y_bot)]
                 if lines:
@@ -222,8 +431,8 @@ if GUI_AVAILABLE:
                                         Qt.SolidLine, Qt.RoundCap))
                     painter.drawLines(lines)
             else:
-                ys = h - 4 - (values - min_v) / span * (h - 8)
-                np.clip(ys, 0.0, float(h), out=ys)
+                ys = plot_h - 4 - (values - min_v) / span * (plot_h - 8)
+                np.clip(ys, 0.0, float(plot_h), out=ys)
                 xs = np.arange(n) * (w / max(1, n))
                 pts = [QPointF(float(xi), float(yi)) for xi, yi in zip(xs, ys)]
                 if pts:
@@ -234,7 +443,7 @@ if GUI_AVAILABLE:
                                         Qt.SolidLine, Qt.RoundCap))
                     painter.drawPolyline(pts)
 
-            # Current value badge (top-right).
+            # Current value badge (top-right of the plot area).
             painter.setFont(self.label_font)
             badge_text = f"{self._current:+.3f}"
             fm = painter.fontMetrics()
