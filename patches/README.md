@@ -21,7 +21,7 @@ Mic → Mic HPF → Mic Gate → Voice → De-Ess → Out Limiter → Out
 
 * **De-esser defaults to post-WORLD.** Pitch/formant shifting brightens ess, so the
   harshness to tame is created inside stage 3 — treat post placement as canonical.
-* **Pre-WORLD variant** (protects ReIm F0 tracking on extremely sibilant mics):
+* **Pre-WORLD variant** (protects F0 tracking on extremely sibilant mics):
   move De-Ess between Gate and Voice. Expect slightly duller consonants into the
   analysis; A/B both orders on the actual voice.
 * If the WORLD stage runs wet/dry `mix < 1.0`, keep the De-Esser after the blend

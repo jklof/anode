@@ -78,7 +78,7 @@ def test_world_registration_docs_and_telemetry():
     assert cls.label
     assert cls.description
     node = make_node()
-    for port in ("in", "pitch_mod", "formant_mod"):
+    for port in ("in", "pitch_mod", "formant_mod", "f0_in", "gate_in"):
         assert node.inputs[port].help, f"{port} missing help"
     assert node.inputs["pitch_mod"].param_name == "pitch_shift"
     assert node.inputs["formant_mod"].param_name == "formant_shift"
@@ -486,3 +486,95 @@ def test_world_native_processing_budget():
             process_block(node, blk)
         best = min(best, (time.perf_counter() - t0) / n * 1000.0)
     assert best < 6.5, f"best process() {best:.2f} ms exceeds budget"
+
+
+# ---------------------------------------------------------------------------
+# External F0 guidance (e.g. SwiftF0 pitch_out/gate_out -> f0_in/gate_in):
+# NSDF bypass with gated / fallback voicing and disconnect revert.
+# ---------------------------------------------------------------------------
+
+
+def _connect_ext_f0(node, f0_hz, gate=None):
+    """Wire block-constant external F0 (+ optional gate) CV into the node,
+    mimicking a connected upstream CV output slot."""
+    from base import DTYPE as _DTYPE
+
+    f0_tensor = torch.full((1, BLOCK_SIZE), f0_hz, dtype=_DTYPE)
+    node.f0_in.connected_outputs = [object()]
+    node.f0_in.get_tensor = lambda: f0_tensor
+    if gate is not None:
+        gate_tensor = torch.full((1, BLOCK_SIZE), gate, dtype=_DTYPE)
+        node.gate_in.connected_outputs = [object()]
+        node.gate_in.get_tensor = lambda: gate_tensor
+
+
+def test_world_ext_f0_drives_pitch():
+    """External F0 at 440 Hz with a 220 Hz saw input resynthesizes at the
+    external fundamental (pitch_shift = 0)."""
+    node = make_node()
+    assert "f0_in" in node.inputs and "gate_in" in node.inputs
+    set_params(node, pitch_shift=0.0, formant_shift=0.0, mix=1.0, output_gain=0.0)
+    _connect_ext_f0(node, 440.0, gate=1.0)
+    blocks = saw_blocks(220.0, SETTLE_BLOCKS + 16)
+    outs = [process_block(node, b) for b in blocks]
+    tail = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy().astype(np.float64)
+    assert abs(autocorr_pitch(tail) - 440.0) < 10.0
+    assert node._was_f0_connected is True
+
+
+def test_world_ext_gate_unvoiced_devoices():
+    """Gate 0 vetoes the held CV: with f0_in = 440 Hz but gate 0, output
+    must not lock to 440 Hz (unvoiced excitation through the envelope)."""
+    node = make_node()
+    set_params(node, pitch_shift=0.0, formant_shift=0.0, mix=1.0)
+    _connect_ext_f0(node, 440.0, gate=0.0)
+    blocks = saw_blocks(220.0, SETTLE_BLOCKS + 16)
+    outs = [process_block(node, b) for b in blocks]
+    tail = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy().astype(np.float64)
+    assert torch.isfinite(torch.cat(outs, dim=1)).all()
+    assert abs(autocorr_pitch(tail) - 440.0) > 50.0, \
+        "unvoiced gate must not synthesize the held 440 Hz CV"
+
+
+def test_world_ext_f0_disconnect_reverts():
+    """Disconnecting f0_in publishes mode 0 once and reverts to internal
+    tracking (220 Hz saw passes at ~220 Hz with pitch_shift = 0)."""
+    node = make_node()
+    set_params(node, pitch_shift=0.0, formant_shift=0.0, mix=1.0)
+    _connect_ext_f0(node, 440.0, gate=1.0)
+    process_block(node, saw_blocks(220.0, 1)[0])
+    assert node._was_f0_connected is True
+    assert node._last_ext_mode == pytest.approx(1.0)
+
+    node.f0_in.connected_outputs = []
+    node.gate_in.connected_outputs = []
+    blocks = saw_blocks(220.0, SETTLE_BLOCKS + 16)
+    outs = [process_block(node, b) for b in blocks]
+    assert node._was_f0_connected is False
+    assert node._last_ext_mode == pytest.approx(0.0)
+    tail = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy().astype(np.float64)
+    assert abs(autocorr_pitch(tail) - 220.0) < 10.0
+
+
+def test_world_ext_path_zero_allocation():
+    """External-F0 steady state (gated 220 Hz CV): 100 blocks allocate
+    < 64 KB net, matching the internal tracking-path budget."""
+    node = make_node()
+    set_params(node, mix=1.0)
+    _connect_ext_f0(node, 220.0, gate=1.0)
+
+    audio_in = torch.randn((CHANNELS, BLOCK_SIZE), dtype=torch.float32)
+    node.inp.get_tensor = lambda: audio_in
+
+    for _ in range(20):  # warm-up (mode push + pipeline settle)
+        node.process()
+
+    gc.collect()
+    tracemalloc.start()
+    before, _ = tracemalloc.get_traced_memory()
+    for _ in range(100):
+        node.process()
+    growth, _ = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert growth - before < 64 * 1024, \
+        f"net allocation {growth - before} bytes over 100 ext-F0 blocks"

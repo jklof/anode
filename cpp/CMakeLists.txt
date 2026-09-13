@@ -89,10 +89,10 @@ add_library(vocal_transformer SHARED vocal_transformer.cpp)
 target_compile_features(vocal_transformer PRIVATE cxx_std_17)
 copy_target_to_directory(vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
 
-# --- Target: WORLD Voice Transformer (ReIm framing/F0 + WORLD analysis/synth) ---
+# --- Target: WORLD Voice Transformer (native pitch tracking + WORLD analysis/synth) ---
 # WORLD: official vocoder (CheapTrick/D4C/synthesisrealtime), fetched at
-# configure time. ReIm: vendored C99 core in cpp/reim (MIT), used for
-# sample-accurate framing, silence gating, and DIO+IF+SRH F0 tracking.
+# configure time. Pitch tracking uses the shared header-only NSDF tracker
+# in cpp/pitch_tracker.h (no vendored C sources).
 set(WORLD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(WORLD_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/world/CMakeLists.txt")
@@ -108,12 +108,11 @@ else()
     FetchContent_MakeAvailable(WORLD_CORE)
     set(WORLD_SRC_DIR "${world_core_SOURCE_DIR}/src")
 endif()
-file(GLOB REIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/reim/src/*.c")
-add_library(world_transformer SHARED world_transformer.cpp ${REIM_SOURCES})
+add_library(world_transformer SHARED world_transformer.cpp)
 target_link_libraries(world_transformer PRIVATE world)
 target_include_directories(world_transformer PRIVATE
     ${WORLD_SRC_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/reim/include
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_compile_features(world_transformer PRIVATE cxx_std_17)
 copy_target_to_directory(world_transformer "${PROJECT_SOURCE_DIR}/../plugins")
