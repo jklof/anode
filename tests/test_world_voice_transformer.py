@@ -578,3 +578,53 @@ def test_world_ext_path_zero_allocation():
     tracemalloc.stop()
     assert growth - before < 64 * 1024, \
         f"net allocation {growth - before} bytes over 100 ext-F0 blocks"
+
+
+def _low_pitch(x, fmin=40.0, fmax=120.0):
+    """Bass-range periodicity: returns (freq_hz, peak_strength).
+
+    The shared autocorr_pitch() searches up to 900 Hz, where a strong
+    formant ringing on each glottal pulse outscores the true 55 Hz pulse
+    rate. Restricting to <= 120 Hz measures the pulse rate itself. Returns
+    the peak normalized autocorrelation too, so callers can distinguish a
+    voiced pulse train (~0.6) from unvoiced excitation (~0.07)."""
+    x = x - x.mean()
+    ac = np.correlate(x, x, "full")[len(x) - 1:]
+    ac = ac / (ac[0] + 1e-12)
+    lo = int(SAMPLE_RATE / fmax)
+    hi = min(int(SAMPLE_RATE / fmin), len(ac) - 1)
+    lag = lo + int(np.argmax(ac[lo:hi]))
+    return SAMPLE_RATE / lag, float(ac[lag])
+
+
+def test_world_low_bass_voicing():
+    """Fundamentals in [50, 71) Hz (male bass) must stay voiced.
+
+    The voicing-acceptance floor is 50 Hz while CheapTrick/D4C analyze with
+    a 71 Hz floor to preserve N_FFT = 2048; synthesis uses the true F0.
+    A 55 Hz (A1) saw must resynthesize as a 55 Hz pulse train, not collapse
+    to unvoiced excitation (pre-fix: f0 = 0 below the 71 Hz floor).
+
+    Note: bass output is legitimately pulsatile at the block scale (glottal
+    period ~873 samples > BLOCK_SIZE with breathiness = 0), so there is no
+    per-block energy assertion here — only overall energy, pulse-rate F0,
+    and voicing strength. Covers both the internal NSDF path and the
+    external-F0 path."""
+    for ext_f0 in (None, 55.0):
+        node = make_node()
+        set_params(node, pitch_shift=0.0, formant_shift=0.0, mix=1.0,
+                   output_gain=0.0)
+        if ext_f0 is not None:
+            _connect_ext_f0(node, ext_f0, gate=1.0)
+        blocks = saw_blocks(55.0, SETTLE_BLOCKS + 32, n_harm=30, amp=0.3)
+        outs = [process_block(node, b) for b in blocks]
+        assert torch.isfinite(torch.cat(outs, dim=1)).all()
+        tail = torch.cat(outs[SETTLE_BLOCKS:], dim=1)[0].numpy().astype(np.float64)
+        assert float(np.abs(tail).max()) > 0.01, \
+            f"bass output went silent (ext_f0={ext_f0})"
+        f, strength = _low_pitch(tail)
+        assert strength > 0.3, \
+            f"bass output not a voiced pulse train (ext_f0={ext_f0}): " \
+            f"periodicity {strength:.3f} (unvoiced excitation ~0.07)"
+        assert abs(f - 55.0) < 5.0, \
+            f"bass F0 mistracked (ext_f0={ext_f0}): {f:.2f} Hz (want 55)"

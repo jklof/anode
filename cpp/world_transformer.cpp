@@ -19,8 +19,9 @@
 // set_samplerate()/create() and only cleared by reset(). The Python/host
 // path still performs zero per-block allocation (see plugin wrapper).
 //
-// Latency: fixed L_total = 1024 samples (21.3 ms @ 48 kHz) with an F0 floor
-// of 71 Hz (N_FFT = 2048). mix <= 0 is a bit-exact memcpy bypass.
+// Latency: fixed L_total = 1024 samples (21.3 ms @ 48 kHz) with a voicing
+// floor of 50 Hz and a CheapTrick/D4C analysis floor of 71 Hz (N_FFT = 2048).
+// mix <= 0 is a bit-exact memcpy bypass.
 
 #include <cmath>
 #include <cstring>
@@ -62,7 +63,9 @@ constexpr int   kFrameSlots = 64;        // Sp/Ap slot ring (must be >=
                                          // kSynthPointers: the synthesizer
                                          // retains our frame pointers)
 constexpr double kSilenceRms = 1e-4;     // -80 dBFS silence gate
-constexpr double kFoFloor = 71.0;
+constexpr double kFoFloor = 50.0;          // voicing/pitch acceptance floor (~D1)
+constexpr double kAnalysisFoFloor = 71.0;  // CheapTrick/D4C floor preserving N_FFT = 2048
+constexpr double kCheapTrickFoFloor = 71.0;  // sizes the FFT via GetFFTSizeForCheapTrick; keep at 71
 constexpr double kFoCeil = 800.0;
 constexpr double kFramePeriodMs = 5.0;
 
@@ -138,7 +141,7 @@ public:
           profile_(std::getenv("WORLD_PROFILE") != nullptr),
           t_pitch_(0), t_ct_(0), t_d4c_(0), t_synth_(0), hops_(0), blocks_(0) {
         InitializeCheapTrickOption(static_cast<int>(sr_), &ct_opt_);
-        ct_opt_.f0_floor = kFoFloor;
+        ct_opt_.f0_floor = kCheapTrickFoFloor;
         fft_size_ = GetFFTSizeForCheapTrick(static_cast<int>(sr_), &ct_opt_);
         ct_opt_.fft_size = fft_size_;
         numbins_ = fft_size_ / 2 + 1;
@@ -159,7 +162,7 @@ public:
         if (sr <= 0.0f || sr == sr_) return;
         sr_ = sr;
         InitializeCheapTrickOption(static_cast<int>(sr_), &ct_opt_);
-        ct_opt_.f0_floor = kFoFloor;
+        ct_opt_.f0_floor = kCheapTrickFoFloor;
         fft_size_ = GetFFTSizeForCheapTrick(static_cast<int>(sr_), &ct_opt_);
         ct_opt_.fft_size = fft_size_;
         numbins_ = fft_size_ / 2 + 1;
@@ -544,9 +547,14 @@ private:
 
         // 3. Spectral envelope (CheapTrick) + aperiodicity (D4C), single
         //    frame each (f0_length = 1 → O(window), not O(history)).
+        //    Bass voicing: F0 in [50, 71) Hz is fully voiced (true F0 goes
+        //    to synthesis below), but CheapTrick/D4C analyze with a 71 Hz
+        //    floor so the FFT geometry stays at N_FFT = 2048. This envelope
+        //    mistuning is small compared to devoicing the bass register.
         double temporal[1] = { static_cast<double>(kExcerptCenter) /
                                static_cast<double>(sr_) };
-        double f0arr[1] = { f0 };
+        const double f0_analysis = (f0 > 0.0) ? std::max(kAnalysisFoFloor, f0) : 0.0;
+        double f0arr[1] = { f0_analysis };
         double* sp_ptrs[1] = { slot.sp.data() };
         double* ap_ptrs[1] = { slot.ap.data() };
         const int fs = static_cast<int>(sr_);

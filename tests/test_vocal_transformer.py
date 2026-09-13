@@ -1303,3 +1303,93 @@ def test_vocal_transformer_ext_path_zero_allocation():
     growth, _ = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert growth < 64 * 1024, f"net allocation {growth} bytes over 100 ext-F0 blocks"
+
+
+def test_vocal_transformer_pitch_modulation_slew_no_starvation():
+    """Rapid +-24 st pitch-ratio swings must not starve the OLA read head.
+
+    A +24 st -> -24 st step shrinks the frame span 8192 -> 2048 samples,
+    exposing a ~24-frame backlog that drains at net ~2 frames/block under
+    the fixed per-call cap. The fixed emission latency (9216 samples)
+    always covers the worst-case backlog, so no output block may go silent
+    mid-slew or during the drain. Driven via block-rate pitch_mod CV for
+    per-block ratio steps. Locks in the latency-margin invariant against
+    future dispatch changes."""
+    node = make_node()
+    set_params(node, pitch_shift=0.0, mix=1.0, sibilant_bypass=0.0,
+               breathiness=0.0, correction_enable=0.0)
+    blocks = saw_blocks(220.0, SETTLE_BLOCKS + 96, amp=0.3)
+    for b in blocks[:SETTLE_BLOCKS]:
+        process_block(node, b)
+    idx = SETTLE_BLOCKS
+
+    node.pitch_mod.connected_outputs = [object()]  # truthy gate
+    outs = []
+    for i in range(40):
+        cv_val = 24.0 if (i // 2) % 2 == 0 else -24.0
+        cv = torch.full((CHANNELS, BLOCK_SIZE), cv_val, dtype=DTYPE)
+        node.pitch_mod.get_tensor = lambda cv=cv: cv
+        outs.append(process_block(node, blocks[idx + i]))
+        assert torch.isfinite(outs[-1]).all(), \
+            f"non-finite output during slew block {i}"
+    node.pitch_mod.connected_outputs = []
+
+    # No mid-slew block may starve: the pipeline is primed, so every block
+    # must carry significant energy even at the peak backlog.
+    for i, o in enumerate(outs):
+        assert float(o.abs().max()) > 0.005, \
+            f"starved slew block {i} (max {float(o.abs().max()):.5f})"
+
+    tail = [process_block(node, b)
+            for b in blocks[idx + 40:idx + 40 + SETTLE_BLOCKS + 8]]
+    assert torch.isfinite(torch.cat(tail, dim=1)).all()
+    for i, o in enumerate(tail[-8:]):
+        assert float(o.abs().max()) > 0.005, \
+            f"starved tail block {i} (max {float(o.abs().max()):.5f})"
+
+
+def test_vocal_transformer_ext_f0_disconnect_snaps_without_sweep():
+    """Disconnecting f0_in must not glide from the stale external target.
+
+    Lock ext-F0 at 440 Hz (A4, in C Major) with a 50 ms retune glide, then
+    disconnect and feed a 220 Hz tone (A3, also in scale). Without the
+    cold-start snap, target_smoothed starts an octave high (+12 st
+    correction) and sweeps down through ~330 Hz; with the fix the first
+    valid internal lock snaps and every post-latency window sits at ~220 Hz.
+    (target_smoothed is private native state, so this is behavioral.)"""
+    node = make_node()
+    set_params(node, correction_enable=1.0, retune_speed=50.0, mix=1.0,
+               sibilant_bypass=0.0, breathiness=0.0)
+    node.params["scale_root"].set(0)  # C
+    node.params["scale_type"].set(1)  # Major
+    node.sync()
+    _connect_ext_f0(node, 440.0, gate=1.0)
+    for b in tone_blocks(440.0, SETTLE_BLOCKS + 8, amp=0.5):
+        process_block(node, b)
+    assert node._was_f0_connected is True
+
+    node.f0_in.connected_outputs = []
+    node.gate_in.connected_outputs = []
+    blocks220 = tone_blocks(220.0, 48, amp=0.5)
+    outs = [process_block(node, b) for b in blocks220]
+    assert node._was_f0_connected is False
+
+    def win_peak(a, b):
+        x = np.concatenate([o[0].numpy().astype(np.float64) for o in outs[a:b]])
+        spec = np.abs(np.fft.rfft(x))
+        freqs = np.fft.rfftfreq(len(x), 1.0 / SAMPLE_RATE)
+        return float(freqs[np.argmax(spec)])
+
+    late = win_peak(31, 35)
+    assert late == pytest.approx(220.0, abs=12.0), \
+        f"end state must converge to 220 Hz, got {late:.1f}"
+    # No post-latency window may dwell in the sweep corridor (stale +12 st
+    # correction decaying through ~330 Hz). Windows start at 19: output
+    # block 18 is the first fully past the 9216-sample pipeline latency.
+    for a in (19, 21, 23, 25, 27, 29):
+        p = win_peak(a, a + 4)
+        assert not (290.0 < p < 380.0), \
+            f"window [{a}:{a + 4}] swept through stale-target corridor: {p:.1f} Hz"
+    early = win_peak(19, 23)
+    assert early == pytest.approx(220.0, abs=15.0), \
+        f"first post-latency window must already sit at 220 Hz, got {early:.1f}"

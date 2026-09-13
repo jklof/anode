@@ -71,8 +71,9 @@ class WorldVoiceTransformer(FFINode):
     EXT_F0_MODE_OFF = 0.0
     EXT_F0_MODE_GATED = 1.0
     EXT_F0_MODE_FALLBACK = 2.0
-    # Native WORLD F0 floor is 71 Hz (CheapTrick FFT size); CV below that
-    # maps to unvoiced even though the Python pre-qualifier passes >= 50 Hz.
+    # Native voicing floor is 50 Hz; CheapTrick/D4C analyze with a 71 Hz
+    # floor internally to preserve N_FFT = 2048, while synthesis uses the
+    # true fundamental. CV below 50 Hz maps to unvoiced.
     EXT_F0_MIN_HZ = 50.0
 
     # Presets mirror the VocalTransformer schema for the ui_system NodeItem menu.

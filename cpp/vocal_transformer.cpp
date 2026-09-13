@@ -440,6 +440,12 @@ private:
     PitchTracker pitch_tracker_;
     float last_accepted_f0_, jump_pending_f0_;
     int jump_confirm_, voicing_hangover_;
+    // Cold-start flag: set by reset_tracker() (mode changes, disconnects,
+    // correction-enable transitions, full resets). The next valid F0 lock
+    // snaps target_smoothed_semitone_ instead of gliding from the stale
+    // pre-reset target. Unvoiced->voiced recovery WITHOUT a reset keeps the
+    // legato glide intentionally (natural re-entry after pauses).
+    bool tracker_restarted_ = true;
 
     // ---- Per-channel spectral pipeline state --------------------------------
     float in_ring_[kMaxChannels][kRingSize];   // raw input history
@@ -518,6 +524,12 @@ private:
         jump_pending_f0_ = 0.0f;
         jump_confirm_ = 0;
         voicing_hangover_ = 0;
+        current_h1_bin_ = -1;
+        tracker_restarted_ = true;
+        for (int c = 0; c < kMaxChannels; ++c) {
+            last_h1_bin_[c] = -1;
+            h1_hangover_[c] = 0;
+        }
     }
 
     // ---- Retune front end ---------------------------------------------------
@@ -552,6 +564,13 @@ private:
 
         if (retune_speed_ms_ <= 0.1f) {
             target_smoothed_semitone_ = target;
+            tracker_restarted_ = false;
+        } else if (tracker_restarted_) {
+            // Cold-start snap: first valid lock after a reset/disconnect
+            // starts at the new target instead of sweeping from the stale
+            // pre-reset target across the gap boundary.
+            target_smoothed_semitone_ = target;
+            tracker_restarted_ = false;
         } else {
             const float alpha = 1.0f - std::exp(
                 -static_cast<float>(frames) /
