@@ -87,6 +87,8 @@ copy_target_to_directory(neural_amp "${PROJECT_SOURCE_DIR}/../plugins")
 # --- Target: Vocal Transformer (spectral vocal core + retune front end) ---
 add_library(vocal_transformer SHARED vocal_transformer.cpp)
 target_compile_features(vocal_transformer PRIVATE cxx_std_17)
+# Shared NSDF pitch tracker header (cpp/pitch_tracker.h).
+target_include_directories(vocal_transformer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 copy_target_to_directory(vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: WORLD Voice Transformer (native pitch tracking + WORLD analysis/synth) ---

@@ -32,11 +32,14 @@ public:
         ds_rate_ = sr_ / static_cast<float>(kPitchDecim);
         aa_filter_.set_lowpass(1200.0f, 0.7071f, sr_);
         // 50-800 Hz bounds in the decimated domain; clamp to array limits.
+        // max_lag_ is an EXCLUSIVE bound matching the historical inline
+        // implementation (lags < 240, window start = BufSize - 240 - 512),
+        // so behavior at 48 kHz is bit-identical to it.
         min_lag_ = std::max(2, static_cast<int>(ds_rate_ / 800.0f));
-        max_lag_ = std::min(kPitchMaxLag - 1, static_cast<int>(ds_rate_ / 50.0f));
+        max_lag_ = std::min(kPitchMaxLag, static_cast<int>(ds_rate_ / 50.0f));
         if (min_lag_ >= max_lag_) {
             min_lag_ = 15;
-            max_lag_ = kPitchMaxLag - 1;
+            max_lag_ = kPitchMaxLag;
         }
         reset();
     }

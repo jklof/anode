@@ -48,6 +48,8 @@
 #include <algorithm>
 #include <new>
 
+#include "pitch_tracker.h"
+
 #if defined(_WIN32)
     #define EXPORT extern "C" __declspec(dllexport)
 #else
@@ -82,11 +84,11 @@ enum LatencyMode {
     kModeLive = 1,      // N=1024, H=128, L=2560 (53.3 ms), pitch +-12 st
     kModeUltraLive = 2  // N=1024, H=128, L=2048 (42.7 ms), pitch +-7 st
 };
-// Pitch-tracker analysis constants (12 kHz decimated domain).
-constexpr int kPitchDecim = 4;
-constexpr int kPitchBufSize = 1024;
-constexpr int kPitchMinLag = 15;   // 800 Hz @ 12 kHz
-constexpr int kPitchMaxLag = 240;  // 50 Hz @ 12 kHz
+// Pitch-tracker analysis runs in the shared header-only PitchTracker
+// (cpp/pitch_tracker.h): 4:1-decimated NSDF at ~12 kHz, 1.2 kHz AA filter,
+// continuity scoring, harmonic unwinding, octave-jump guard. The voicing
+// continuity members below are retained for the external-F0 bypass path in
+// process(), which implements its own hold logic on the CV.
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kTwoPi = 6.28318530717958647692f;
 constexpr float kXoverLowHz = 3500.0f;    // sibilant bypass raised-cosine band
@@ -112,35 +114,6 @@ inline float wrap_phase(float x) {
     return x - kTwoPi * std::floor((x + kPi) / kTwoPi);
 }
 
-struct Biquad {
-    float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f;
-    float a1 = 0.0f, a2 = 0.0f;
-    float z1 = 0.0f, z2 = 0.0f;
-
-    void reset() { z1 = z2 = 0.0f; }
-
-    void set_lowpass(float fc, float q, float sr) {
-        fc = std::max(20.0f, std::min(0.45f * sr, fc));
-        const float w = kTwoPi * fc / sr;
-        const float c = std::cos(w);
-        const float s = std::sin(w);
-        const float alpha = s / (2.0f * q);
-        const float a0 = 1.0f + alpha;
-        b0 = ((1.0f - c) * 0.5f) / a0;
-        b1 = (1.0f - c) / a0;
-        b2 = b0;
-        a1 = (-2.0f * c) / a0;
-        a2 = (1.0f - alpha) / a0;
-    }
-
-    inline float process(float x) {
-        const float y = b0 * x + z1;
-        z1 = b1 * x - a1 * y + z2;
-        z2 = b2 * x - a2 * y;
-        return y;
-    }
-};
-
 class VocalTransformerProcessor {
 public:
     VocalTransformerProcessor()
@@ -159,7 +132,7 @@ public:
           last_accepted_f0_(0.0f), jump_pending_f0_(0.0f),
           jump_confirm_(0), voicing_hangover_(0),
           current_h1_bin_(-1), rng_state_(kRngSeed) {
-        aa_filter_.set_lowpass(1200.0f, 0.7071f, sr_);
+        pitch_tracker_.set_samplerate(sr_);
         build_tables();
         recompute_tables();
         reset();
@@ -169,11 +142,11 @@ public:
         // Windows are normalized-frequency; sr scales the Hz mapping of the
         // VTLN band boundary, the tilt/H1 shaping bands, and the breath band
         // limits — every table below must be rebuilt when the rate changes.
-        // The pitch-tracker anti-alias filter tracks the rate too; the
+        // The shared pitch tracker tracks the rate too; the
         // transient pipeline is cleared like any other rate change.
         if (sr > 1.0f && sr != sr_) {
             sr_ = sr;
-            aa_filter_.set_lowpass(1200.0f, 0.7071f, sr_);
+            pitch_tracker_.set_samplerate(sr_);
             recompute_tables();
             reset_transient();
         }
@@ -297,10 +270,9 @@ public:
                 // Fallback voicing (no gate wire): the upstream node holds
                 // its last pitch through pauses, so qualify the held CV
                 // against local input energy. Layout note: the native input
-                // is planar (channel blocks), matching track_pitch_and_retune
-                // which reads in[i*kPitchDecim+d] off channel 0 — in[0..frames)
-                // is channel 0 here as well. Spectral (fricative) rejection
-                // happens per-frame in synthesize() via compute_voiced_prob.
+                // is planar (channel blocks); in[0..frames) is channel 0.
+                // Spectral (fricative) rejection happens per-frame in
+                // synthesize() via compute_voiced_prob.
                 float energy = 0.0f;
                 for (int i = 0; i < frames; ++i) energy += in[i] * in[i];
                 const float rms = std::sqrt(
@@ -462,10 +434,10 @@ private:
     long long latency_samples_ = kLatency;
     int max_frames_per_call_ = kMaxFramesPerCall;
 
-    Biquad aa_filter_;
-    float pitch_downsample_buf_[kPitchBufSize];
-    float nsdf_[kPitchMaxLag];
-
+    // Shared NSDF pitch tracker (cpp/pitch_tracker.h). The voicing
+    // continuity members below serve the external-F0 bypass path in
+    // process(), which holds the CV through brief dropouts itself.
+    PitchTracker pitch_tracker_;
     float last_accepted_f0_, jump_pending_f0_;
     int jump_confirm_, voicing_hangover_;
 
@@ -540,9 +512,7 @@ private:
     }
 
     void reset_tracker() {
-        std::memset(pitch_downsample_buf_, 0, sizeof(pitch_downsample_buf_));
-        std::memset(nsdf_, 0, sizeof(nsdf_));
-        aa_filter_.reset();
+        pitch_tracker_.reset();
         detected_f0_ = 0.0f;
         last_accepted_f0_ = 0.0f;
         jump_pending_f0_ = 0.0f;
@@ -553,166 +523,9 @@ private:
     // ---- Retune front end ---------------------------------------------------
 
     void track_pitch_and_retune(const float* in, int frames) {
-        const int ds = frames / kPitchDecim;
-        if (ds > 0 && ds < kPitchBufSize) {
-            std::memmove(pitch_downsample_buf_,
-                         pitch_downsample_buf_ + ds,
-                         static_cast<size_t>(kPitchBufSize - ds) * sizeof(float));
-            for (int i = 0; i < ds; ++i) {
-                float y = 0.0f;
-                for (int d = 0; d < kPitchDecim; ++d)
-                    y = aa_filter_.process(in[i * kPitchDecim + d]);
-                pitch_downsample_buf_[kPitchBufSize - ds + i] = y;
-            }
-        }
-
-        constexpr int n = 512;
-        const int start = kPitchBufSize - kPitchMaxLag - n;
-
-        float energy = 0.0f;
-        for (int j = 0; j < n; ++j) {
-            const float x = pitch_downsample_buf_[start + j];
-            energy += x * x;
-        }
-        const float rms = std::sqrt(energy / static_cast<float>(n));
-
-        if (rms < 0.0015f) {
-            detected_f0_ = 0.0f;
-            last_accepted_f0_ = 0.0f;
-            jump_pending_f0_ = 0.0f;
-            jump_confirm_ = 0;
-            voicing_hangover_ = 0;
-            return;
-        }
-
-        for (int tau = kPitchMinLag; tau < kPitchMaxLag; ++tau) {
-            float num = 0.0f;
-            float den = 1e-9f;
-            for (int j = 0; j < n; ++j) {
-                const float x = pitch_downsample_buf_[start + j];
-                const float y = pitch_downsample_buf_[start + tau + j];
-                num += 2.0f * x * y;
-                den += x * x + y * y;
-            }
-            nsdf_[tau] = num / den;
-        }
-
-        float r_max = 0.0f;
-        for (int tau = kPitchMinLag + 1; tau < kPitchMaxLag - 1; ++tau) {
-            if (nsdf_[tau] > 0.0f &&
-                nsdf_[tau] > nsdf_[tau - 1] &&
-                nsdf_[tau] >= nsdf_[tau + 1])
-                r_max = std::max(r_max, nsdf_[tau]);
-        }
-
-        int best_tau = -1;
-        if (r_max >= 0.42f) {
-            if (last_accepted_f0_ > 50.0f) {
-                // Continuity scoring (one-block Viterbi): speech F0 moves
-                // continuously, so among all viable peaks prefer the one
-                // nearest last block's F0. Upward jumps are penalised hard:
-                // an octave-up lock would feed the retune corrector a false
-                // target and warble the output, while a downward error only
-                // coarsens tracking benignly. Real jumps still win: when the
-                // voice truly moves, the old peak vanishes and the new one
-                // takes r_max unopposed.
-                const float net = std::max(0.35f * r_max, 0.25f);
-                float best_score = -1e30f;
-                for (int tau = kPitchMinLag + 1; tau < kPitchMaxLag - 1; ++tau) {
-                    const float v = nsdf_[tau];
-                    if (v <= 0.0f || v < net) continue;
-                    if (!(v > nsdf_[tau - 1] && v >= nsdf_[tau + 1])) continue;
-                    const float f = (sr_ / static_cast<float>(kPitchDecim)) /
-                                    static_cast<float>(tau);
-                    const float st = 12.0f * std::log2(f / last_accepted_f0_);
-                    const float pen = st > 0.0f ? 0.030f * st : -0.012f * st;
-                    const float score = v - pen;
-                    if (score > best_score) {
-                        best_score = score;
-                        best_tau = tau;
-                    }
-                }
-                // Fall through to MPM acquisition below if nothing scored.
-            }
-            if (best_tau <= 0) {
-                const float threshold = r_max * 0.85f;
-                for (int tau = kPitchMinLag + 1; tau < kPitchMaxLag - 1; ++tau) {
-                    if (nsdf_[tau] > 0.0f &&
-                        nsdf_[tau] > nsdf_[tau - 1] &&
-                        nsdf_[tau] >= nsdf_[tau + 1] &&
-                        nsdf_[tau] >= threshold) {
-                        best_tau = tau;
-                        break;
-                    }
-                }
-            }
-            // Fundamental preference: the smallest-lag pick above is easily
-            // a strong upper harmonic (H2-H6 sit near fundamental level in
-            // real vowels), locking an octave or more sharp. If a small
-            // integer multiple of the candidate is itself a local peak and
-            // clearly higher, the candidate was a harmonic: unwind toward
-            // the fundamental. The margin keeps true high voices (whose
-            // multiples correlate almost as well) from doubling down.
-            for (int iter = 0; iter < 2 && best_tau > 0; ++iter) {
-                bool moved = false;
-                for (int m = 2; m <= 6; ++m) {
-                    const int cand = best_tau * m;
-                    if (cand - 1 < kPitchMinLag || cand + 1 >= kPitchMaxLag)
-                        continue;
-                    if (nsdf_[cand] > nsdf_[best_tau] + 0.04f &&
-                        nsdf_[cand] >= nsdf_[cand - 1] &&
-                        nsdf_[cand] >= nsdf_[cand + 1] &&
-                        nsdf_[cand] >= 0.5f * r_max) {
-                        best_tau = cand;
-                        moved = true;
-                        break;
-                    }
-                }
-                if (!moved) break;
-            }
-        }
-
-        if (best_tau > 0) {
-            const float y0 = nsdf_[best_tau - 1];
-            const float y1 = nsdf_[best_tau];
-            const float y2 = nsdf_[best_tau + 1];
-            float denom = y0 - 2.0f * y1 + y2;
-            if (std::fabs(denom) < 1e-9f) denom = -1e-9f;
-            float delta = 0.5f * (y0 - y2) / denom;
-            delta = std::max(-0.5f, std::min(0.5f, delta));
-            const float tau = static_cast<float>(best_tau) + delta;
-            const float raw_f0 = (sr_ / static_cast<float>(kPitchDecim)) / tau;
-
-            float accepted = raw_f0;
-            if (last_accepted_f0_ > 0.0f) {
-                const float jump_st =
-                    std::fabs(12.0f * std::log2(raw_f0 / last_accepted_f0_));
-                if (jump_st > 6.0f) {
-                    if (jump_pending_f0_ > 0.0f &&
-                        std::fabs(12.0f * std::log2(raw_f0 / jump_pending_f0_)) < 2.0f)
-                        ++jump_confirm_;
-                    else
-                        jump_confirm_ = 1;
-
-                    jump_pending_f0_ = raw_f0;
-                    if (jump_confirm_ < 2)
-                        accepted = last_accepted_f0_;
-                } else {
-                    jump_confirm_ = 0;
-                    jump_pending_f0_ = 0.0f;
-                }
-            }
-
-            last_accepted_f0_ = accepted;
-            detected_f0_ = accepted;
-            voicing_hangover_ = 4;
-        } else if (voicing_hangover_ > 0 && last_accepted_f0_ > 0.0f) {
-            --voicing_hangover_;
-            detected_f0_ = last_accepted_f0_;
-        } else {
-            detected_f0_ = 0.0f;
-            last_accepted_f0_ = 0.0f;
-        }
+        // Internal NSDF tracking via the shared PitchTracker; the retune
+        // target update below is VocalTransformer's own (scale/MIDI + glide).
+        detected_f0_ = pitch_tracker_.process(in, frames);
 
         if (detected_f0_ > 50.0f) {
             update_retune_target(frames);
