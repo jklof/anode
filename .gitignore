@@ -7,3 +7,8 @@ __pycache__/
 *.dylib
 *.so
 *.dll
+
+# Exported neural vocoder weights (built offline via tools/export_vocos_onnx.py;
+# dynamo export splits weights into a separate .onnx.data file)
+models/*.onnx
+models/*.onnx.data
