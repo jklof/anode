@@ -375,8 +375,26 @@ class Node:
         self.inputs: Dict[str, InputSlot] = {}
         self.outputs: Dict[str, OutputSlot] = {}
         self.params: Dict[str, Parameter] = {}
+        # Bypass switch (AGENTS.md §4/§5: a plain bool parameter, not DSP
+        # state). When False the engine skips process() and runs
+        # apply_bypass() instead: audio inputs pass through to outputs with
+        # no DSP cost; sources go silent; sinks consume nothing; MIDI is
+        # dropped. Subclasses must not add a second "enabled" param.
+        self.params["enabled"] = Parameter(True, "bool", owner=self,
+                                           help="When off, the node is bypassed: audio passes through (sources go silent) and no DSP runs.")
         self._nrt_epoch = 0
         self._nrt_inbox = None
+
+    def is_enabled(self) -> bool:
+        """Committed bypass state. True when the node should process normally.
+        Missing key (foreign test doubles) means enabled."""
+        p = self.params.get("enabled")
+        if p is None:
+            return True
+        try:
+            return bool(p.value)
+        except Exception:
+            return True
 
     def add_input(self, name: str, param_name: str = None, help: str = "") -> InputSlot:
         slot = InputSlot(name, self, param_name, help=help)
@@ -502,3 +520,83 @@ class Node:
 
                     self.params[k].set(val)
                     self.params[k].sync()
+
+
+def apply_bypass(node: "Node"):
+    """Steady-state bypass for a disabled node (``enabled == False``).
+
+    Runs on the engine thread in place of ``node.process()``. Allocation-free:
+    only ``get_tensor()`` (pre-allocated scratch), in-place ``copy_``/``zero_``
+    and MIDI ``clear()``. Never uses functional ``out=`` (which would shrink
+    buffers on mono inputs).
+
+    Policy (KISS: no per-node registry):
+
+    * audio in + main audio out (``"out"``, else ``"signal"``): the primary
+      input (``"in"`` if connected, else the first connected true-audio
+      input, else ``"in"`` even if silent) is copied channel-adapted into
+      the main output. Sidechain/modulation inputs are ignored; all other
+      audio outputs are zeroed.
+    * no true-audio input (generators) or no ``"out"``/``"signal"`` output
+      (sinks, CV-only, splitters): all audio outputs are zeroed; sinks with
+      no audio outputs simply do nothing (a recorder records nothing, a
+      device output starves its ring, which underruns to silence).
+    * MIDI outputs are always cleared (dropped, never forwarded): MIDI costs
+      ~nothing, so forwarding would add stuck-note risk for zero CPU saving.
+    """
+    # MIDI is always dropped in bypass (see docstring).
+    for out_slot in node.outputs.values():
+        if getattr(out_slot, "slot_type", "audio") == "midi":
+            out_slot.clear_packet()
+
+    # True-audio inputs only: param-bound slots (mod/freq/trigger CV) are
+    # modulation fallbacks, not a signal path (e.g. SineOscillator's
+    # freq_in/amp_in must not become a passthrough source).
+    primary = None
+    fallback = None
+    first_connected = None
+    for inp in node.inputs.values():
+        if getattr(inp, "slot_type", "audio") != "audio":
+            continue
+        if getattr(inp, "param_name", None) is not None:
+            continue
+        if inp.name == "in":
+            if inp.connected_outputs:
+                primary = inp
+                break
+            if fallback is None:
+                fallback = inp
+        elif first_connected is None and inp.connected_outputs:
+            first_connected = inp
+    if primary is None:
+        primary = first_connected if first_connected is not None else fallback
+
+    main = None
+    for cand in ("out", "signal"):
+        slot = node.outputs.get(cand)
+        if slot is not None and getattr(slot, "slot_type", "audio") == "audio":
+            main = slot
+            break
+
+    if primary is None or main is None:
+        # No passthrough possible (source / sink / CV-only / splitter):
+        # silence every audio output so no stale block survives.
+        for out_slot in node.outputs.values():
+            if getattr(out_slot, "slot_type", "audio") == "audio":
+                out_slot.buffer.zero_()
+        return
+
+    src = primary.get_tensor()
+    dst = main.buffer
+    if src.shape[0] >= dst.shape[0]:
+        dst.copy_(src[:dst.shape[0]])
+    else:
+        # Mono source into a wider output: copy_ broadcasts without
+        # resizing the pre-allocated destination.
+        dst.copy_(src)
+
+    for out_slot in node.outputs.values():
+        if out_slot is main:
+            continue
+        if getattr(out_slot, "slot_type", "audio") == "audio":
+            out_slot.buffer.zero_()

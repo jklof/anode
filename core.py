@@ -9,7 +9,7 @@ import logging
 import concurrent.futures
 from typing import Dict, List, Optional, Tuple
 import plugin_system
-from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE, IClockProvider, Node
+from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE, IClockProvider, Node, apply_bypass
 
 _STRUCTURAL_OPS = frozenset({"add", "del", "conn", "disconn", "restore", "clear", "load", "reload", "clock"})
 
@@ -918,6 +918,17 @@ class Engine:
         except Exception:
             logging.exception("Cmd Error")
 
+    def _process_plan_node(self, node):
+        """Run one planned node for the current block, honoring the bypass
+        switch. Disabled nodes skip DSP via apply_bypass() (no CPU spent in
+        process()); everything else runs normally. Test doubles without
+        is_enabled() are treated as enabled."""
+        is_enabled = node.is_enabled() if hasattr(node, "is_enabled") else True
+        if is_enabled:
+            node.process()
+        else:
+            apply_bypass(node)
+
     def _reset_audio_buffers(self):
         """Zero all audio output buffers and input scratch buffers to prevent
         stuck notes / stale audio on transport start. MIDI slots carry a packet
@@ -995,7 +1006,7 @@ class Engine:
                 for node in plan.nodes:
                     try:
                         t0 = time.perf_counter()
-                        node.process()
+                        self._process_plan_node(node)
                         node.error_msg = None
                         dt = time.perf_counter() - t0
                         self._stats_buffer[node.id] = (dt / block_duration_sec) * 100.0

@@ -840,6 +840,10 @@ class NodeItem(QGraphicsObject):
                 err.setWordWrap(True)
                 self.layout.addWidget(err)
             for p_name, p_data in self.params.items():
+                # The "enabled" bypass switch lives in the context menu (plus
+                # the BYPASSED badge), not as a panel checkbox.
+                if p_name == "enabled":
+                    continue
                 ptype = p_data["type"]
                 meta = p_data["meta"]
                 val = p_data["value"]
@@ -1089,8 +1093,29 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(self.boundingRect(), 5, 5)
 
+        # Bypassed nodes render dimmed with an explicit badge; the switch
+        # itself lives in the context menu.
+        if not bool(self.params.get("enabled", {}).get("value", True)):
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 130))
+            painter.drawRoundedRect(self.boundingRect(), 5, 5)
+            painter.setPen(QPen(QColor("#ffcc66"), 1.5))
+            painter.setFont(QFont("Monospace", 8, QFont.Bold))
+            badge = QRectF(6, Theme.DIMENSIONS["header_height"] / 2 - 8, 62, 16)
+            painter.drawText(badge, Qt.AlignLeft | Qt.AlignVCenter, "BYPASSED")
+
     def contextMenuEvent(self, event):
         menu = QMenu()
+        # Bypass switch: flips the standard "enabled" bool param through the
+        # canonical staged -> engine command path (non-undoable, like all
+        # params). This menu entry is the only UI for the switch.
+        if "enabled" in self.params:
+            currently_enabled = bool(self.params["enabled"].get("value", True))
+            menu.addAction(
+                "Disable node (bypass)" if currently_enabled else "Enable node",
+                lambda: self.controller.set_parameter(self.nid, "enabled", not currently_enabled),
+            )
+            menu.addSeparator()
         if self.can_be_master:
             menu.addAction("Set Master Clock", lambda: self.controller.set_master_clock(self.nid))
 
@@ -1210,6 +1235,10 @@ class NodeItem(QGraphicsObject):
             # Create a small dict with just the updated parameter
             update_dict = {param_name: value}
             self.widget.update_from_params(update_dict)
+
+        # The bypass badge/overlay lives in paint(), not in any widget.
+        if param_name == "enabled":
+            self.update()
 
 
 class NodeHelpWidget(QWidget):

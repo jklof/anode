@@ -254,7 +254,10 @@ def test_restore_command_valid_node():
         assert node.name == "Test Node"
         assert node.__class__.__name__ == "TestNode"
         assert node.pos == (100, 200)
-        assert len(node.params) == 2
+        # Base Node contributes the "enabled" bypass switch on top of the
+        # two node-declared params.
+        assert len(node.params) == 3
+        assert node.params["enabled"].value is True
 
         # Verify parameters were restored
         assert "test_param" in node.params
