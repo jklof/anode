@@ -4,6 +4,7 @@ Verifies registration, primitive geometry, two-part ring wrap with known ramp,
 active wet-path execution under 64 KB heap allocation limit, and save/load state.
 """
 import gc
+import time
 import tracemalloc
 import pytest
 import torch
@@ -12,6 +13,84 @@ import numpy as np
 import plugin_system
 from base import BLOCK_SIZE, CHANNELS, DTYPE, SAMPLE_RATE
 from plugins.vocos_resynthesizer import build_halfband_kernel, build_vocos_mel_filterbank
+
+
+def test_vocos_nrt_load_installs_despite_epoch_bumps():
+    """Regression: the NRT executor's supersede epoch is shared across tags on
+    a node. During engine startup, load_state() and start() used to submit the
+    same load twice; the stale result's destroy-submit then bumped the epoch so
+    the VALID load result was routed to on_nrt_discarded() and destroyed — the
+    session never installed and the node stayed on "Loading Model..." forever.
+    The node must install the result whose plugin epoch still matches."""
+    import os
+    import types
+    from core import NRTExecutor
+    plugin_system.load_plugins("plugins")
+    cls = plugin_system.NODE_REGISTRY.get("VocosResynthesizer")
+    node = cls()
+
+    nrt = NRTExecutor()
+    fake_engine = types.SimpleNamespace(nrt=nrt)
+    fake_graph = types.SimpleNamespace(engine=fake_engine)
+    node.graph = fake_graph
+
+    path = "models/vocos_mel_24k.onnx"
+    if not os.path.exists(path):
+        pytest.skip("vocos ONNX model not exported")
+
+    # load_state() then start(): the same path submitted twice (before the
+    # in-flight dedupe, or via any concurrent path churn).
+    node._load_onnx_model(path)
+    node._load_onnx_model(path)  # second call must dedupe, but drain must be safe either way
+    assert node._loading_path == path
+
+    # Wait for the NRT pool job to actually finish before draining.
+    deadline = time.time() + 30
+    while node in nrt._in_flight and time.time() < deadline:
+        time.sleep(0.1)
+    nrt.drain(node)  # deliver load result(s); destroy submits bump the epoch
+    nrt.drain(node)
+    assert node.session is not None, "session failed to install after load"
+    assert node.current_model_path == path
+    assert node._loading_path == ""
+
+    # Scenario 2: an unrelated submit (e.g. a discard_sess destroy) bumps the
+    # executor epoch while a fresh load is in flight. The load result arrives
+    # "superseded" but its plugin epoch still matches -> must be installed.
+    node.session = None
+    node.current_model_path = ""
+    node._load_onnx_model(path)
+    nrt.submit(node, lambda: ("dummy",), (), tag="discard_sess")  # epoch bump
+    deadline = time.time() + 30
+    while node in nrt._in_flight and time.time() < deadline:
+        time.sleep(0.1)
+    nrt.drain(node)
+    assert node.session is not None, (
+        "valid load result was destroyed because an unrelated submit "
+        "bumped the shared supersede epoch")
+    node.stop()
+
+
+def test_vocos_nrt_discarded_stale_result_destroyed():
+    """A genuinely stale load result (plugin epoch behind) must NOT install."""
+    import types
+    from core import NRTExecutor
+    plugin_system.load_plugins("plugins")
+    cls = plugin_system.NODE_REGISTRY.get("VocosResynthesizer")
+    node = cls()
+    nrt = NRTExecutor()
+    node.graph = types.SimpleNamespace(
+        engine=types.SimpleNamespace(nrt=nrt))
+
+    # Simulate an already-loaded session for path A, then a load for B that
+    # completes late and is superseded: it must be destroyed, not installed.
+    node.session = object()  # sentinel "old session"
+    node.current_model_path = "a.onnx"
+    node._load_epoch = 5
+    node.on_nrt_discarded("load_vocos", True, (object(), 2, "b.onnx"))
+    assert node.current_model_path == "a.onnx"  # unchanged
+    assert node.session is not None
+
 
 
 def test_dsp_primitives_geometry():

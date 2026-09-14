@@ -110,6 +110,7 @@ class VocosResynthesizer(Node):
 
         # 5. Lifecycles, Generation & Thread Safety
         self._load_epoch = 0
+        self._loading_path = ""  # path currently loading (dedupes start vs load_state)
         self._worker_generation = 0
         self.session = None
         self.current_model_path = ""
@@ -138,9 +139,12 @@ class VocosResynthesizer(Node):
         if not ORT_AVAILABLE or not os.path.exists(path):
             self.error_msg = f"Model missing or onnxruntime unavailable: {path}"
             return
+        if path == self._loading_path:
+            return  # already loading this exact path (e.g. load_state + start)
 
         self._load_epoch += 1
         epoch = self._load_epoch
+        self._loading_path = path
 
         def _worker_load():
             try:
@@ -155,6 +159,17 @@ class VocosResynthesizer(Node):
 
         self.submit_nrt(_worker_load, tag="load_vocos")
 
+    def _install_session(self, sess, path: str):
+        """Install a freshly loaded session and retire the previous one."""
+        old_sess = self.session
+        self.session = sess
+        self.current_model_path = path
+        self._loading_path = ""
+        self.error_msg = None
+        if old_sess is not None:
+            self.submit_nrt(self._destroy_session_blocking, old_sess, tag="discard_sess")
+        logger.info(f"Installed Vocos model: {path}")
+
     def on_nrt_complete(self, tag, ok, result):
         if tag == "load_vocos" and ok and result is not None:
             sess, epoch, path = result
@@ -162,19 +177,31 @@ class VocosResynthesizer(Node):
                 if sess is not None:
                     self.submit_nrt(self._destroy_session_blocking, sess, tag="discard_sess")
                 return
-            old_sess = self.session
-            self.session = sess
-            self.current_model_path = path
-            self.error_msg = None
-            if old_sess is not None:
-                self.submit_nrt(self._destroy_session_blocking, old_sess, tag="discard_sess")
-            logger.info(f"Installed Vocos model: {path}")
+            if sess is None:
+                self._loading_path = ""
+                self.error_msg = f"Failed to load model: {path}"
+                return
+            self._install_session(sess, path)
 
     def on_nrt_discarded(self, tag, ok, result):
         if tag == "load_vocos" and ok and result is not None:
-            sess, _, _ = result
-            if sess is not None:
+            sess, epoch, path = result
+            # The executor's supersede epoch is shared across ALL tags on this
+            # node, so being "superseded" does not necessarily mean a newer
+            # load exists: a discard_sess/stop_stream submit made while this
+            # load was in flight also bumps the epoch (e.g. the stale-result
+            # destroy in on_nrt_complete). If this result still matches the
+            # load the user asked for, install it; otherwise destroy it.
+            if (
+                sess is not None
+                and epoch == self._load_epoch
+                and path == self.params["model_path"].value
+            ):
+                self._install_session(sess, path)
+            elif sess is not None:
                 self.submit_nrt(self._destroy_session_blocking, sess, tag="discard_sess")
+            elif path == self._loading_path:
+                self._loading_path = ""
 
     def _worker_loop(self, generation: int):
         """
@@ -272,7 +299,12 @@ class VocosResynthesizer(Node):
             pass
 
         model_p = self.params["model_path"].value
-        if model_p and not self.session:
+        # Only (re)load when the desired path differs from what is loading or
+        # installed. During engine startup, load_state() has already submitted
+        # the load; a second submit here would supersede it and — via the
+        # stale-result destroy submit — ultimately prevent ANY result from
+        # installing (NRTExecutor epoch is shared across tags on this node).
+        if model_p and self.current_model_path != model_p:
             self._load_onnx_model(model_p)
 
         if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
