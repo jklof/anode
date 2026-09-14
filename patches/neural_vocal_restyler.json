@@ -1,0 +1,162 @@
+{
+  "clock_id": "out",
+  "nodes": [
+    {
+      "id": "in",
+      "type": "AudioDeviceInput",
+      "name": "Mic In",
+      "params": {},
+      "pos": [
+        0,
+        200
+      ]
+    },
+    {
+      "id": "hpf",
+      "type": "BiquadFilter",
+      "name": "Mic HPF",
+      "params": {
+        "type": 1,
+        "cutoff": 80.0,
+        "q": 0.707,
+        "gain_db": 0.0
+      },
+      "pos": [
+        220,
+        200
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "NoiseGate",
+      "name": "Noise Gate",
+      "params": {
+        "thresh": -45.0,
+        "ratio": 10.0,
+        "attack": 1.0,
+        "hold": 50.0,
+        "release": 100.0,
+        "range": 60.0
+      },
+      "pos": [
+        440,
+        200
+      ]
+    },
+    {
+      "id": "vox_dsp",
+      "type": "VocalTransformer",
+      "name": "DSP M->F Shifter",
+      "params": {
+        "pitch_shift": 10.0,
+        "formant_shift": 1.5,
+        "gender_morph": 0.85,
+        "breathiness": 0.15,
+        "sibilant_bypass": 0.85,
+        "mix": 1.0
+      },
+      "pos": [
+        660,
+        200
+      ]
+    },
+    {
+      "id": "vocos",
+      "type": "VocosResynthesizer",
+      "name": "Vocos De-Vocoder",
+      "params": {
+        "model_path": "models/vocos_mel_24k.onnx",
+        "mix": 1.0
+      },
+      "pos": [
+        880,
+        200
+      ]
+    },
+    {
+      "id": "deess",
+      "type": "DeEsser",
+      "name": "De-Esser",
+      "params": {
+        "frequency": 6500.0,
+        "threshold": -18.0,
+        "depth": 6.0,
+        "attack_ms": 1.0,
+        "release_ms": 60.0,
+        "mix": 1.0
+      },
+      "pos": [
+        1100,
+        200
+      ]
+    },
+    {
+      "id": "limit",
+      "type": "BrickwallLimiter",
+      "name": "Out Limiter",
+      "params": {
+        "threshold": -0.1,
+        "ceiling": -0.1,
+        "release": 50.0
+      },
+      "pos": [
+        1320,
+        200
+      ]
+    },
+    {
+      "id": "out",
+      "type": "AudioDeviceOutput",
+      "name": "Master Out",
+      "params": {},
+      "pos": [
+        1540,
+        200
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "src_id": "in",
+      "src_port": "out",
+      "dst_id": "hpf",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "hpf",
+      "src_port": "out",
+      "dst_id": "gate",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "gate",
+      "src_port": "out",
+      "dst_id": "vox_dsp",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "vox_dsp",
+      "src_port": "out",
+      "dst_id": "vocos",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "vocos",
+      "src_port": "out",
+      "dst_id": "deess",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "deess",
+      "src_port": "out",
+      "dst_id": "limit",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "limit",
+      "src_port": "out",
+      "dst_id": "out",
+      "dst_port": "audio_in"
+    }
+  ]
+}
