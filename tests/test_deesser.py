@@ -10,6 +10,21 @@ import plugin_system
 from base import BLOCK_SIZE, CHANNELS, DTYPE, SAMPLE_RATE
 
 
+@pytest.fixture(scope="module")
+def qapp():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    inst = QCoreApplication.instance()
+    if inst is None:
+        return QApplication([])
+    if isinstance(inst, QApplication):
+        return inst
+    pytest.skip("a bare QCoreApplication is active; QWidget tests cannot run")
+
+
 def make_node():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("DeEsser")
@@ -496,3 +511,48 @@ def test_deesser_zero_python_allocation_listen_and_auto():
     growth, _ = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert growth - before < 64 * 1024, f"net Python allocation {growth - before} bytes"
+
+
+def test_deesser_widget_updates_sliders_from_params(qapp):
+    """Regression test: update_from_params must update the embedded slider
+    widgets so Auto-Learn tuning moves the UI controls."""
+    from plugins.deesser import DeEsserWidget, GUI_AVAILABLE
+    if not GUI_AVAILABLE:
+        pytest.skip("PySide6 GUI not available")
+
+    from ui_system import ParamWidgetFactory
+
+    node = make_node()
+
+    class _FakeProxy:
+        def __init__(self, n):
+            self.node_item = type("NodeItem", (), {
+                "params": {
+                    k: {"type": v.type, "meta": v.meta, "value": v.value}
+                    for k, v in n.params.items()
+                }
+            })()
+
+        def create_param_widget(self, pname):
+            p = self.node_item.params[pname]
+            return ParamWidgetFactory.create(
+                pname, p["type"], p["meta"], p["value"], lambda v: None
+            )
+
+        def set_parameter(self, name, value):
+            pass
+
+    proxy = _FakeProxy(node)
+    widget = DeEsserWidget(proxy)
+
+    # Initial defaults
+    assert widget.param_widgets["frequency"].current_value == pytest.approx(6500.0)
+    assert widget.param_widgets["threshold"].current_value == pytest.approx(-18.0)
+
+    # Emulate Auto-Learn completing and pushing tuned values
+    widget.update_from_params({"frequency": 7400.0, "threshold": -13.5})
+
+    assert widget.param_widgets["frequency"].current_value == pytest.approx(7400.0)
+    assert "7400" in widget.param_widgets["frequency"].label.text()
+    assert widget.param_widgets["threshold"].current_value == pytest.approx(-13.5)
+    assert "-13.5" in widget.param_widgets["threshold"].label.text()

@@ -354,10 +354,13 @@ if GUI_AVAILABLE:
             # Generic smart parameter widgets (sliders/dials). A custom UI
             # REPLACES the node's auto-generated parameter panel, so the
             # continuous controls must be embedded here explicitly.
+            self.param_widgets = {}  # Retain references for backend updates
             for pname in ("frequency", "threshold", "depth",
                           "attack_ms", "release_ms", "mix"):
                 try:
-                    layout.addWidget(proxy.create_param_widget(pname))
+                    w = proxy.create_param_widget(pname)
+                    self.param_widgets[pname] = w
+                    layout.addWidget(w)
                 except Exception:
                     logging.exception(f"param widget '{pname}' failed")
 
@@ -417,6 +420,14 @@ if GUI_AVAILABLE:
         def update_from_params(self, simple_params: dict):
             self._updating = True
             try:
+                # 1. Update embedded slider widgets (frequency, threshold,
+                #    depth, ...) so Auto-Learn tuning moves the controls.
+                for pname, val in simple_params.items():
+                    widget = self.param_widgets.get(pname)
+                    if widget is not None and hasattr(widget, "update_from_backend"):
+                        widget.update_from_backend(val)
+
+                # 2. Update toggles and modes
                 if "listen" in simple_params:
                     self.cb_listen.setChecked(bool(simple_params["listen"]))
                 if "listen_mode" in simple_params:
