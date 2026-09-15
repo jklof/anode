@@ -47,6 +47,7 @@
 #include <cstring>
 #include <algorithm>
 #include <new>
+#include <cstddef>
 
 #include "pitch_tracker.h"
 

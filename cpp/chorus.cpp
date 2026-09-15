@@ -11,6 +11,8 @@
 
 #include <cmath>
 #include <vector>
+#include <cstddef>
+#include <new>
 
 #if defined(_WIN32)
     #define EXPORT extern "C" __declspec(dllexport)
@@ -143,8 +145,6 @@ private:
     std::vector<float> ring_[2];
 };
 
-extern "C" {
-
 EXPORT void* create() {
     return new ChorusProcessor();
 }
@@ -168,5 +168,3 @@ EXPORT void reset(void* h) {
 EXPORT void process(void* h, const float* in, float* out, int channels, int frames) {
     static_cast<ChorusProcessor*>(h)->process(in, out, channels, frames);
 }
-
-} // extern "C"

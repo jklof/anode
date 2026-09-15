@@ -27,6 +27,7 @@
 #include <cstring>
 #include <algorithm>
 #include <vector>
+#include <cstddef>
 
 #include "signalsmith-stretch.h"
 

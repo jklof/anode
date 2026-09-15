@@ -8,15 +8,17 @@
 #include <stdexcept>
 #include <mutex>
 #include <atomic>
+#include <new>
+#include <cstddef>
 
 // Include NAM core headers
-#include "NAM/dsp.h" 
-#include "NAM/get_dsp.h" 
+#include "NAM/dsp.h"
+#include "NAM/get_dsp.h"
 
 #ifdef _WIN32
-    #define EXPORT __declspec(dllexport)
+#define EXPORT extern "C" __declspec(dllexport)
 #else
-    #define EXPORT
+#define EXPORT extern "C"
 #endif
 
 #ifdef NAM_SAMPLE_FLOAT
@@ -117,20 +119,18 @@ private:
 };
 
 // --- C-ABI ---
-extern "C" {
-    EXPORT void* create() { return new (std::nothrow) NamProcessor(); }
-    EXPORT void destroy(void* handle) { if (handle) delete static_cast<NamProcessor*>(handle); }
-    EXPORT void process(void* handle, float* in, float* out, int ch, int fr) {
-        static_cast<NamProcessor*>(handle)->process(in, out, ch, fr);
-    }
-    EXPORT void set_param(void* handle, int param_id, float value) {}
-    
-    EXPORT int load_model_sync(void* handle, const char* path, double sr, int bs) {
-        if (!handle) return 0;
-        return static_cast<NamProcessor*>(handle)->load_model_sync(path, sr, bs) ? 1 : 0;
-    }
+EXPORT void* create() { return new (std::nothrow) NamProcessor(); }
+EXPORT void destroy(void* handle) { if (handle) delete static_cast<NamProcessor*>(handle); }
+EXPORT void process(void* handle, float* in, float* out, int ch, int fr) {
+    static_cast<NamProcessor*>(handle)->process(in, out, ch, fr);
+}
+EXPORT void set_param(void* handle, int param_id, float value) {}
 
-    EXPORT void reset(void* handle) {
-        static_cast<NamProcessor*>(handle)->reset_state();
-    }
+EXPORT int load_model_sync(void* handle, const char* path, double sr, int bs) {
+    if (!handle) return 0;
+    return static_cast<NamProcessor*>(handle)->load_model_sync(path, sr, bs) ? 1 : 0;
+}
+
+EXPORT void reset(void* handle) {
+    static_cast<NamProcessor*>(handle)->reset_state();
 }

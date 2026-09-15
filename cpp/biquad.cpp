@@ -2,6 +2,7 @@
 #include <cstring>
 #include <algorithm>
 #include <new>
+#include <cstddef>
 
 #if defined(_WIN32)
     #define EXPORT extern "C" __declspec(dllexport)
@@ -165,8 +166,6 @@ private:
     int last_channels_;
 };
 
-extern "C" {
-
 EXPORT void* create() {
     return new (std::nothrow) BiquadProcessor();
 }
@@ -190,5 +189,3 @@ EXPORT void set_samplerate(void* handle, float samplerate) {
 EXPORT void reset(void* handle) {
     if (handle) static_cast<BiquadProcessor*>(handle)->reset();
 }
-
-} // extern "C"

@@ -16,6 +16,9 @@
 #include <cstring>
 #include <algorithm>
 #include <random>
+#include <cstdint>
+#include <cstddef>
+#include <new>
 
 #if defined(_WIN32)
     #define EXPORT extern "C" __declspec(dllexport)
@@ -168,8 +171,6 @@ private:
     uint32_t rng_state_;
 };
 
-extern "C" {
-
 EXPORT void* create() {
     return new (std::nothrow) KarplusProcessor();
 }
@@ -193,5 +194,3 @@ EXPORT void reset(void* handle) {
 EXPORT void process(void* handle, const float* trigger_in, float* out, int channels, int frames) {
     if (handle) static_cast<KarplusProcessor*>(handle)->process(trigger_in, out, channels, frames);
 }
-
-} // extern "C"

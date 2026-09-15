@@ -17,6 +17,8 @@
 #include <cmath>
 #include <algorithm>
 #include <cstring>
+#include <cstddef>
+#include <new>
 
 #if defined(_WIN32)
     #define EXPORT extern "C" __declspec(dllexport)
@@ -143,8 +145,6 @@ private:
     float ap_state_[MAX_CHANNELS][NUM_STAGES];
 };
 
-extern "C" {
-
 EXPORT void* create() {
     return new (std::nothrow) PhaserProcessor();
 }
@@ -168,5 +168,3 @@ EXPORT void reset(void* handle) {
 EXPORT void process(void* handle, const float* in, float* out, int channels, int frames) {
     if (handle) static_cast<PhaserProcessor*>(handle)->process(in, out, channels, frames);
 }
-
-} // extern "C"

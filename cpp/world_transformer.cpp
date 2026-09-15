@@ -29,6 +29,8 @@
 #include <vector>
 #include <chrono>
 #include <cstdio>
+#include <numbers>
+
 
 #include "world/cheaptrick.h"
 #include "world/d4c.h"
@@ -416,13 +418,13 @@ private:
         const double alpha = -std::max(-0.4, std::min(0.4, eff_formant * 0.025));
         const double n1 = static_cast<double>(numbins_ - 1);
         for (int k = 0; k < numbins_; ++k) {
-            const double w = M_PI * static_cast<double>(k) / n1;
+            const double w = std::numbers::pi * static_cast<double>(k) / n1;
             double warped = w;
             if (alpha != 0.0) {
                 warped = w + 2.0 * std::atan((alpha * std::sin(w)) /
                                              (1.0 - alpha * std::cos(w)));
             }
-            double pos = warped / M_PI * n1;
+            double pos = warped / std::numbers::pi * n1;
             if (pos < 0.0) pos = 0.0;
             if (pos > n1) pos = n1;
             warp_table_[static_cast<size_t>(k)] = pos;
@@ -624,7 +626,7 @@ private:
                     const int kb = k1 + d;
                     if (kb >= 1 && kb < numbins_) {
                         const double w =
-                            0.5 * (1.0 + std::cos(M_PI * static_cast<double>(d) / 3.0));
+                            0.5 * (1.0 + std::cos(std::numbers::pi * static_cast<double>(d) / 3.0));
                         slot.sp[static_cast<size_t>(kb)] *= (1.0 + (boost - 1.0) * w);
                     }
                 }
@@ -635,7 +637,7 @@ private:
                         const int kb = k2 + d;
                         if (kb >= 1 && kb < numbins_) {
                             const double w =
-                                0.5 * (1.0 + std::cos(M_PI * static_cast<double>(d) / 3.0));
+                                0.5 * (1.0 + std::cos(std::numbers::pi * static_cast<double>(d) / 3.0));
                             slot.sp[static_cast<size_t>(kb)] *= (1.0 + (cut - 1.0) * w);
                         }
                     }
@@ -654,7 +656,7 @@ private:
                 const double f_hz = static_cast<double>(k) * f_step;
                 if (f_hz >= 1500.0 && f_hz <= 7000.0) {
                     const double mu = (f_hz - 1500.0) / (7000.0 - 1500.0);
-                    const double band_weight = 0.5 * (1.0 - std::cos(2.0 * M_PI * mu));
+                    const double band_weight = 0.5 * (1.0 - std::cos(2.0 * std::numbers::pi * mu));
                     const double injection =
                         static_cast<double>(breathiness_) * 0.45 * band_weight;
                     double a = slot.ap[static_cast<size_t>(k)] + injection;

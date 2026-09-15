@@ -2,6 +2,7 @@
 #include <cmath>
 #include <algorithm>
 #include <new>
+#include <cstddef>
 
 #if defined(_WIN32)
     #define EXPORT extern "C" __declspec(dllexport)

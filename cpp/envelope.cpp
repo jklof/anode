@@ -6,6 +6,8 @@
 // Gate output has hysteresis: opens at thresh, closes below thresh * 0.5.
 
 #include <cmath>
+#include <cstddef>
+#include <new>
 
 #if defined(_WIN32)
     #define EXPORT extern "C" __declspec(dllexport)
@@ -79,8 +81,6 @@ private:
     bool gate_open_;
 };
 
-extern "C" {
-
 EXPORT void* create() {
     return new EnvelopeProcessor();
 }
@@ -106,5 +106,3 @@ EXPORT void process(void* h, const float* in, float* cv, float* gate,
              int channels, int frames) {
     static_cast<EnvelopeProcessor*>(h)->process(in, cv, gate, channels, frames);
 }
-
-} // extern "C"

@@ -30,6 +30,8 @@
 #include <cmath>
 #include <cstring>
 #include <algorithm>
+#include <cstddef>
+#include <new>
 
 #if defined(_WIN32)
     #define EXPORT extern "C" __declspec(dllexport)

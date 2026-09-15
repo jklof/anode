@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.15)
 project(anode_plugins C CXX)
 
+# C++20 everywhere (required for <numbers>, std::numbers::pi, NAM, WORLD).
+# MSVC needs a single global standard: per-target cxx_std_17 mixed with
+# cxx_std_20 breaks <numbers> and causes ODR/std mismatches on Windows.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# MSVC: math constants (M_PI etc.) are opt-in.
+add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:_USE_MATH_DEFINES>)
+add_compile_definitions($<$<CXX_COMPILER_ID:MSVC>:NOMINMAX>)
+
 # Shared (.so) plugins link a static WORLD below; non-PIC archives fail
 # to link on x86-64, so force PIC globally (harmless for the other targets).
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -24,12 +35,22 @@ FetchContent_Declare(
 function(copy_target_to_directory target_name destination_dir)
     add_custom_command(TARGET ${target_name} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory "${destination_dir}"
-        COMMAND ${CMAKE_COMMAND} -E copy
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:${target_name}>"
             "${destination_dir}/$<TARGET_FILE_NAME:${target_name}>"
         COMMENT "Moving ${target_name} to ${destination_dir}"
     )
 endfunction()
+
+# WORLD (vendored or fetched) also needs MSVC warning + C++ hygiene fixes;
+# do this before add_subdirectory so the settings propagate.
+if(MSVC)
+    # WORLD's fft.h redispatches based on FFTW version macros which may be
+    # undefined: C4068 (unknown pragma) + C4668 (undefined macro in #if).
+    # And WORLD compiles C sources as C++ under MSVC; C4068/C4668 off keeps
+    # the third-party build green without touching upstream files.
+    add_compile_options(/wd4068 /wd4668 /wd4244 /wd4267)
+endif()
 
 # --- Target: Delay Processor ---
 add_library(delay SHARED delay.cpp)
@@ -41,34 +62,34 @@ copy_target_to_directory(compressor "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: Biquad Filter (IIR) ---
 add_library(biquad SHARED biquad.cpp)
-target_compile_features(biquad PRIVATE cxx_std_17)
+target_compile_features(biquad PRIVATE cxx_std_20)
 copy_target_to_directory(biquad "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: Linear Phase EQ (FIR) ---
 add_library(fir_eq SHARED fir_eq.cpp)
-target_compile_features(fir_eq PRIVATE cxx_std_17)
+target_compile_features(fir_eq PRIVATE cxx_std_20)
 copy_target_to_directory(fir_eq "${PROJECT_SOURCE_DIR}/../plugins")
 
 
 # --- Target: Envelope Follower (CV/Gate extractor) ---
 add_library(envelope SHARED envelope.cpp)
-target_compile_features(envelope PRIVATE cxx_std_17)
+target_compile_features(envelope PRIVATE cxx_std_20)
 copy_target_to_directory(envelope "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: Chorus / Flanger ---
 add_library(chorus SHARED chorus.cpp)
-target_compile_features(chorus PRIVATE cxx_std_17)
+target_compile_features(chorus PRIVATE cxx_std_20)
 copy_target_to_directory(chorus "${PROJECT_SOURCE_DIR}/../plugins")
 
 
 # --- Target: Karplus-Strong Physical Modeling Synth ---
 add_library(karplus SHARED karplus.cpp)
-target_compile_features(karplus PRIVATE cxx_std_17)
+target_compile_features(karplus PRIVATE cxx_std_20)
 copy_target_to_directory(karplus "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: 6-Stage Stereo Phaser ---
 add_library(phaser SHARED phaser.cpp)
-target_compile_features(phaser PRIVATE cxx_std_17)
+target_compile_features(phaser PRIVATE cxx_std_20)
 copy_target_to_directory(phaser "${PROJECT_SOURCE_DIR}/../plugins")
 
 
@@ -86,7 +107,7 @@ copy_target_to_directory(neural_amp "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: Vocal Transformer (spectral vocal core + retune front end) ---
 add_library(vocal_transformer SHARED vocal_transformer.cpp)
-target_compile_features(vocal_transformer PRIVATE cxx_std_17)
+target_compile_features(vocal_transformer PRIVATE cxx_std_20)
 # Shared NSDF pitch tracker header (cpp/pitch_tracker.h).
 target_include_directories(vocal_transformer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 copy_target_to_directory(vocal_transformer "${PROJECT_SOURCE_DIR}/../plugins")
@@ -116,12 +137,12 @@ target_include_directories(world_transformer PRIVATE
     ${WORLD_SRC_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_compile_features(world_transformer PRIVATE cxx_std_17)
+target_compile_features(world_transformer PRIVATE cxx_std_20)
 copy_target_to_directory(world_transformer "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: De-Esser (split-band dynamic HF attenuator) ---
 add_library(deesser SHARED deesser.cpp)
-target_compile_features(deesser PRIVATE cxx_std_17)
+target_compile_features(deesser PRIVATE cxx_std_20)
 copy_target_to_directory(deesser "${PROJECT_SOURCE_DIR}/../plugins")
 
 # --- Target: Signalsmith Vocal Processor (sub-band pitch/formant shifter) ---
@@ -134,7 +155,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(signalsmith_stretch)
 add_library(signalsmith_vocal SHARED signalsmith_vocal.cpp)
-target_compile_features(signalsmith_vocal PRIVATE cxx_std_17)
+target_compile_features(signalsmith_vocal PRIVATE cxx_std_20)
 target_link_libraries(signalsmith_vocal PRIVATE signalsmith-stretch)
 # The root header (signalsmith-stretch.h) lives at the repo root, while the
 # INTERFACE include dir points at <src>/include: cover both layouts.
