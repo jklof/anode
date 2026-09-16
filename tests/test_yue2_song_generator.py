@@ -736,6 +736,23 @@ def test_seed_button_draws_in_range(qapp):
     assert name == "seed" and 0 <= value < 2 ** 31
 
 
+def test_widget_covers_all_control_params(qapp, node_cls):
+    """Every param widget the custom UI requests must resolve to a real
+    node param — this is what left auto_seed unreachable."""
+    widget = _make_widget(qapp)
+    node = make_node(node_cls)
+    for name in widget.proxy.widgets:
+        assert name in node.params, name
+    assert "auto_seed" in widget.proxy.widgets
+
+
+def test_auto_seed_widget_builds(qapp):
+    from ui_system import ParamWidgetFactory
+    widget = ParamWidgetFactory.create(
+        "auto_seed", "bool", {"help": "draw fresh seed"}, False, lambda v: None)
+    assert widget is not None
+
+
 def test_pick_seed_manual(node_cls):
     node = make_node(node_cls)
     assert node._pick_seed() == 831001

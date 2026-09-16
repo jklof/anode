@@ -355,13 +355,21 @@ class MediaPlayerNode(Node):
         "through a background worker thread with reconnecting ffmpeg demuxing. "
         "The audio thread pulls pre-converted blocks from a bounded queue "
         "without blocking; underruns output silence. Supports play/pause, "
-        "looping, and seeking from its custom UI."
+        "looping, and seeking from its custom UI. A wired uri_in path "
+        "overrides file_path while connected and non-empty; a rising edge "
+        "on trigger_in starts playback (restarting the worker for a changed "
+        "source, resuming otherwise)."
     )
 
     def __init__(self, name=""):
         super().__init__(name)
         self.add_file_param("file_path", "", filter="Audio Files (*.mp3 *.wav *.flac *.m4a);;All (*.*)",
                             help="Media file (or URL) to play; loading happens on a background worker.")
+        self.add_uri_input("uri_in",
+                           help="Wired file path (e.g. from a generator node). While connected and "
+                                "non-empty it overrides file_path; a trigger edge switches to it.")
+        self.add_input("trigger_in",
+                       help="Gate/trigger signal; a rising edge starts playback (same as Play).")
         self.add_bool_param("playing", True,
                             help="Play/pause; when off the node outputs silence but keeps buffering.")
         self.add_bool_param("looping", False,
@@ -393,6 +401,16 @@ class MediaPlayerNode(Node):
         # the command queue would flood with duplicate ("param", ...,
         # "playing", False) commands (one per 512-sample block).
         self._eof_reported = False
+        self._last_trig = 0.0
+        # Source requested by a trigger edge (audio thread writes, engine
+        # thread consumes in on_ui_param_change("playing")). Plain attribute
+        # handoff: both operations are atomic reference swaps, and the engine
+        # side is the only reader. None means "no switch requested".
+        self._pending_uri = None
+
+    def start(self):
+        self._last_trig = 0.0
+        self._pending_uri = None
 
     def _drain_events(self):
         if self._event_queue is None:
@@ -437,7 +455,15 @@ class MediaPlayerNode(Node):
 
         elif param_name == "playing":
             should_play = self.params["playing"].value
-            if should_play and (self.eof or self.worker is None) and self.current_path:
+            # A trigger edge may have requested a source switch (see
+            # process()): handle it here on the engine thread, where worker
+            # lifecycle calls belong.
+            pending = self._pending_uri
+            self._pending_uri = None
+            if pending and pending != self.current_path:
+                self.current_path = pending
+                self._request_restart(pending)
+            elif should_play and (self.eof or self.worker is None) and self.current_path:
                 self._request_restart(self.current_path)
 
         elif param_name == "looping":
@@ -553,6 +579,7 @@ class MediaPlayerNode(Node):
 
     def process(self):
         self._drain_events()
+        self._poll_trigger()
         # If play param is False, we just output silence.
         # But we keep worker alive (it pauses on full queue).
         if not self.params["playing"].value:
@@ -583,6 +610,33 @@ class MediaPlayerNode(Node):
                         )
                     else:
                         self.params["playing"].set(False)
+
+    def _poll_trigger(self):
+        """Rising edge on trigger_in starts playback (same as Play).
+
+        Audio-thread safe: only flag/attribute writes plus one engine
+        command-queue put (unbounded, never blocks) per edge. The source
+        switch itself happens on the engine thread in
+        on_ui_param_change("playing"), where worker lifecycle calls belong.
+        A changed wired URI restarts the worker; otherwise this just
+        resumes. Connected-but-empty URI means upstream is not ready yet:
+        the edge still resumes current playback but requests no switch.
+        """
+        trig = self.inputs["trigger_in"].get_tensor()[0]
+        t_max = float(trig.max().item())
+        edge = self._last_trig <= 0.0 and t_max > 0.0
+        self._last_trig = float(trig[-1].item())
+        if not edge:
+            return
+        uri_in = self.inputs.get("uri_in")
+        if uri_in is not None and uri_in.connected_outputs:
+            uri = uri_in.get_uri()
+            if uri and uri != self.current_path:
+                self._pending_uri = uri
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        if engine is not None:
+            engine.push_command(("param", self.id, "playing", True))
 
     def get_telemetry(self) -> dict:
         self._drain_events()

@@ -143,6 +143,9 @@ class YuE2Widget(QWidget):
         self.btn_seed.clicked.connect(self._on_seed_pressed)
         layout.addWidget(self.btn_seed)
 
+        self.auto_seed_widget = self.proxy.create_param_widget("auto_seed")
+        layout.addWidget(self.auto_seed_widget)
+
         self.btn_download = QPushButton("Download runtime + model (~3.8 GB)")
         self.btn_download.clicked.connect(
             lambda: self.proxy.set_parameter("download", True))
@@ -192,6 +195,7 @@ class YuE2Widget(QWidget):
             ("profile", self.profile_widget),
             ("cot", self.cot_widget),
             ("seed", self.seed_widget),
+            ("auto_seed", self.auto_seed_widget),
         ):
             if key in params:
                 widget.update_from_backend(params[key])
