@@ -15,10 +15,12 @@ class Theme:
         "socket_input": QColor("#ff9900"),
         "socket_output": QColor("#00ccff"),
         "socket_midi": QColor("#E17C05"),
+        "socket_uri": QColor("#9D7BFF"),
         # Wire colors
         "wire_selected": QColor("yellow"),
         "wire_hovered": QColor("#00ccff"),
         "wire_midi": QColor("#E17C05"),
+        "wire_uri": QColor("#9D7BFF"),
         "wire_temp_white": QColor("white"),
         "wire_temp_red": QColor("red"),
         "wire_temp_green": QColor("green"),

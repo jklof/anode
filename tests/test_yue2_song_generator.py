@@ -21,7 +21,7 @@ from audiocpp_backend import (
     _build_yue2_argv,
     run_yue2_gen,
 )
-from base import BLOCK_SIZE, CHANNELS, DTYPE, SAMPLE_RATE
+from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE
 
 
 @pytest.fixture(scope="module")
@@ -47,19 +47,6 @@ def _live():
     """
     import sys
     return sys.modules["yue2_song_generator"]
-
-
-def feed_gate(node, level):
-    trig = torch.full((CHANNELS, BLOCK_SIZE), level, dtype=DTYPE)
-    node.inputs["trigger_in"].get_tensor = lambda t=trig: t
-    node.process()
-
-
-def trigger_rise(node):
-    trig = torch.cat([torch.zeros((CHANNELS, BLOCK_SIZE // 2), dtype=DTYPE),
-                      torch.ones((CHANNELS, BLOCK_SIZE // 2), dtype=DTYPE)], dim=1)
-    node.inputs["trigger_in"].get_tensor = lambda t=trig: t
-    node.process()
 
 
 def write_wav(path, seconds=1.0, sr=SAMPLE_RATE, channels=2):
@@ -225,70 +212,165 @@ def test_runtime_check_ready_missing(tmp_path):
 
 
 # ----------------------------------------------------------------------
-# node: playback kernel
+# node: song URI + ready pulse (generate-only; playback lives in SamplePlayer)
 # ----------------------------------------------------------------------
-def _install_song(node, seconds=1.0):
+def _complete_song(node, wav="x.wav", seconds=1.0):
     data = torch.linspace(0, 1, int(seconds * SAMPLE_RATE),
-                          dtype=DTYPE).unsqueeze(0).repeat(CHANNELS, 1).contiguous()
-    node.on_nrt_complete("gen", True, {"audio": data, "wav": "x.wav",
+                          dtype=torch.float32).unsqueeze(0).repeat(CHANNELS, 1).contiguous()
+    node.on_nrt_complete("gen", True, {"audio": data, "wav": wav,
                                        "metrics": {"rtf": 2.0},
                                        "seed": 1, "cot": "full"})
     return data
 
 
-def test_idle_output_is_exact_zero(node_cls):
+def test_ports_are_uri_and_pulse(node_cls):
     node = make_node(node_cls)
-    node.out.buffer.fill_(0.99)
-    feed_gate(node, 0.0)
-    assert torch.all(node.out.buffer == 0.0)
+    assert node.outputs["song"].slot_type == "uri"
+    assert node.outputs["ready"].slot_type == "audio"
+    assert node.inputs["trigger_in"].slot_type == "audio"
+    assert "out" not in node.outputs
+    assert "loop" not in node.params and "gain" not in node.params
 
 
-def test_complete_installs_without_autoplay(node_cls):
+class _StubEngine:
+    """Minimal engine double: telemetry queue + command capture."""
+
+    def __init__(self):
+        import queue
+        self.output_queue = queue.Queue()
+        self.commands = []
+        self.running = False
+
+    def push_command(self, cmd):
+        self.commands.append(cmd)
+        return len(self.commands)
+
+
+def _attach_engine(node):
+    from types import SimpleNamespace
+    engine = _StubEngine()
+    node.graph = SimpleNamespace(engine=engine)
+    return engine
+
+
+def _attach(node):
+    return _attach_engine(node)
+
+
+def _feed_trigger(node, level):
+    trig = torch.full((CHANNELS, BLOCK_SIZE), level, dtype=torch.float32)
+    node.inputs["trigger_in"].get_tensor = lambda t=trig: t
+    node.process()
+
+
+def test_trigger_edge_queues_single_generate(node_cls):
     node = make_node(node_cls)
-    data = _install_song(node)
-    assert node._audio_data is not None
-    assert node._is_playing is False
+    engine = _attach_engine(node)
+    _feed_trigger(node, 0.0)
+    assert engine.commands == []
+    _feed_trigger(node, 1.0)  # rising edge
+    assert engine.commands == [("param", node.id, "generate", True)]
+    _feed_trigger(node, 1.0)  # sustained high: no repeat
+    _feed_trigger(node, 1.0)
+    assert len(engine.commands) == 1
+    _feed_trigger(node, 0.0)
+    _feed_trigger(node, 1.0)  # new edge after release
+    assert len(engine.commands) == 2
+
+
+def test_trigger_without_engine_is_noop(node_cls):
+    node = make_node(node_cls)
+    _feed_trigger(node, 0.0)
+    _feed_trigger(node, 1.0)  # must not raise headless
+    assert node._status == "Idle"
+
+
+def test_complete_publishes_uri_and_pulses_once(node_cls):
+    node = make_node(node_cls)
+    _complete_song(node, wav="x.wav")
+    assert node.outputs["song"].uri == "x.wav"
     assert node._status == "Ready"
     assert node.error_msg is None
     assert node.params["last_wav"].value == "x.wav"
-    feed_gate(node, 0.0)
-    assert torch.all(node.out.buffer == 0.0)
-    assert data.shape == (CHANNELS, SAMPLE_RATE)
+    node.process()  # first block after completion: full 1.0 pulse
+    assert torch.all(node.ready.buffer == 1.0)
+    node.process()  # afterwards: silence, never retriggers
+    assert torch.all(node.ready.buffer == 0.0)
 
 
-def test_trigger_plays_and_stops_at_end(node_cls):
+def test_pulse_cleared_on_start(node_cls):
     node = make_node(node_cls)
-    _install_song(node, seconds=0.05)  # 2400 samples < 5 blocks
-    trigger_rise(node)
-    assert node._is_playing
-    assert torch.any(node.out.buffer != 0.0)
-    for _ in range(10):
-        feed_gate(node, 1.0)
-    assert node._is_playing is False
-    assert torch.all(node.out.buffer == 0.0)
+    _complete_song(node)
+    node.start()
+    node.process()
+    assert torch.all(node.ready.buffer == 0.0)
 
 
-def test_loop_wraps(node_cls):
+def test_relink_sets_uri_without_pulse(node_cls):
     node = make_node(node_cls)
-    _install_song(node, seconds=0.05)
-    node.params["loop"].set(True)
-    node.params["loop"].sync()
-    trigger_rise(node)
-    for _ in range(10):
-        feed_gate(node, 1.0)
-    assert node._is_playing is True
+    data = torch.zeros((CHANNELS, 100), dtype=torch.float32)
+    node.on_nrt_complete("relink", True, {"audio": data, "wav": "r.wav",
+                                          "metrics": {}, "seed": None, "cot": None})
+    assert node.outputs["song"].uri == "r.wav"
+    assert node._status == "Ready"
+    node.process()
+    assert torch.all(node.ready.buffer == 0.0)
 
 
-def test_gain_applied(node_cls):
+def test_relink_missing_clears_uri(node_cls):
     node = make_node(node_cls)
-    data = torch.full((CHANNELS, SAMPLE_RATE), 0.5, dtype=DTYPE)
-    node.on_nrt_complete("gen", True, {"audio": data, "wav": "x",
-                                       "metrics": {}, "seed": 1, "cot": "off"})
-    node.params["gain"].set(0.5)
-    node.params["gain"].sync()
-    trigger_rise(node)
-    assert torch.allclose(node.out.buffer[:, :BLOCK_SIZE // 2],
-                          torch.full((CHANNELS, BLOCK_SIZE // 2), 0.25))
+    node.outputs["song"].uri = "stale.wav"
+    node.on_nrt_complete("relink", False, FileNotFoundError("gone"))
+    assert node.outputs["song"].uri == ""
+    assert node._status == "Idle"
+
+
+def _wire_uri(node, uri):
+    """Connect the node's abc_uri input to a scratch URI output carrying uri."""
+    from base import OutputSlot
+    helper = OutputSlot("helper", node, slot_type="uri")
+    helper.uri = uri
+    node.inputs["abc_uri"].connect(helper)
+    return helper
+
+
+def test_abc_uri_overrides_param(node_cls, tmp_path):
+    wired = tmp_path / "wired.abc"
+    wired.write_text("X:1\n", encoding="utf-8")
+    param_score = tmp_path / "param.abc"
+    param_score.write_text("X:1\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["abc_file"].set(str(param_score))
+    node.params["abc_file"].sync()
+    _wire_uri(node, str(wired))
+    assert node._resolve_score() == str(wired)
+
+
+def test_abc_uri_empty_means_not_ready(node_cls, tmp_path):
+    param_score = tmp_path / "param.abc"
+    param_score.write_text("X:1\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["abc_file"].set(str(param_score))
+    node.params["abc_file"].sync()
+    _wire_uri(node, "")
+    with pytest.raises(ValueError, match="transcribe first"):
+        node._resolve_score()
+
+
+def test_abc_uri_missing_file_rejected(node_cls, tmp_path):
+    node = make_node(node_cls)
+    _wire_uri(node, str(tmp_path / "gone.abc"))
+    with pytest.raises(ValueError, match="not found"):
+        node._resolve_score()
+
+
+def test_abc_param_used_when_unwired(node_cls, tmp_path):
+    param_score = tmp_path / "param.abc"
+    param_score.write_text("X:1\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["abc_file"].set(str(param_score))
+    node.params["abc_file"].sync()
+    assert node._resolve_score() == str(param_score)
 
 
 def test_complete_failure_sets_error(node_cls):
@@ -305,16 +387,15 @@ def test_complete_cancelled_is_not_an_error(node_cls):
     assert node.error_msg is None
 
 
-def test_no_net_allocation_while_playing(node_cls):
+def test_no_net_allocation_emitting_pulse(node_cls):
     node = make_node(node_cls)
-    _install_song(node)
-    trigger_rise(node)
+    _complete_song(node)
     import gc
     gc.collect()
     tracemalloc.start()
     before, _ = tracemalloc.get_traced_memory()
     for _ in range(50):
-        feed_gate(node, 1.0)
+        node.process()
     growth, _ = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert growth < 128 * 1024, f"net allocation {growth} bytes over 50 blocks"
@@ -348,12 +429,14 @@ def test_save_load_relinks(node_cls, tmp_path):
 
     node2 = make_node(node_cls)
     node2.load_state(snapshot)  # headless: no engine, no auto-submit
-    assert node2._audio_data is None
+    assert node2.outputs["song"].uri == ""
     # Drive the relink path directly (as the NRT worker would).
     result = node2._relink_nrt(None, str(wav))
     node2.on_nrt_complete("relink", True, result)
-    assert node2._audio_data.shape == (CHANNELS, int(0.2 * SAMPLE_RATE))
+    assert node2.outputs["song"].uri == str(wav)
     assert node2._status == "Ready"
+    node2.process()  # relink must not pulse
+    assert torch.all(node2.ready.buffer == 0.0)
 
 
 def test_relink_missing_file_goes_idle(node_cls, tmp_path):
@@ -440,22 +523,6 @@ def test_fetch_failure_and_cancel(node_cls):
     node.on_nrt_complete("fetch", False, DownloadCancelled("stop"))
     assert node._status == "Cancelled"
     assert node.error_msg is None
-
-
-class _StubEngine:
-    """Minimal engine double: only what AudioCppJob._push_telemetry needs."""
-
-    def __init__(self):
-        import queue
-        self.output_queue = queue.Queue()
-        self.running = False
-
-
-def _attach(node):
-    from types import SimpleNamespace
-    engine = _StubEngine()
-    node.graph = SimpleNamespace(engine=engine)
-    return engine
 
 
 def test_push_telemetry_schema(node_cls):

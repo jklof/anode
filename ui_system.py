@@ -134,6 +134,8 @@ class SocketItem(QGraphicsItem):
         self.setCursor(QCursor(Qt.CrossCursor))
         if self.slot_type == "midi":
             self._base_color = Theme.COLORS["socket_midi"]
+        elif self.slot_type == "uri":
+            self._base_color = Theme.COLORS["socket_uri"]
         else:
             self._base_color = Theme.COLORS["socket_input"] if is_input else Theme.COLORS["socket_output"]
         self._hovered = False
@@ -270,10 +272,13 @@ class ConnectionItem(QGraphicsPathItem):
         elif self.hovered:
             pen = QPen(Theme.COLORS["wire_hovered"], 4)
         else:
-            start_is_midi = getattr(self.start_item, "slot_type", "audio") == "midi"
-            if start_is_midi:
+            start_slot = getattr(self.start_item, "slot_type", "audio")
+            if start_slot == "midi":
                 # MIDI wires: solid dedicated color (no signal-gradient).
                 pen = QPen(Theme.COLORS["wire_midi"], 2)
+            elif start_slot == "uri":
+                # URI wires carry file references, not signals: solid color.
+                pen = QPen(Theme.COLORS["wire_uri"], 2)
             else:
                 # Use gradient for normal wires to visualize signal flow
                 gradient = QLinearGradient(self.p1, self.p2)
@@ -1337,6 +1342,8 @@ class NodeHelpWidget(QWidget):
             for name, info in doc["outputs"].items():
                 if info.get("slot_type") == "midi":
                     ch_str = "MIDI"
+                elif info.get("slot_type") == "uri":
+                    ch_str = "URI"
                 else:
                     ch_str = "Stereo" if info.get("channels", 2) == 2 else "Mono"
                 html += f"<tr style='border-bottom: 1px solid #2a2a2a;'><td width='30%' style='padding: 4px; font-weight: bold; color: #fff;'>{name} <span style='font-size: 10px; color: #888;'>({ch_str})</span></td><td style='padding: 4px; color: #ccc;'>{info['help']}</td></tr>"

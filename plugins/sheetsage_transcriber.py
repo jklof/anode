@@ -244,8 +244,10 @@ class SheetSage2Transcriber(AudioCppJob):
     description = (
         "Offline audio-to-ABC transcription (SheetSage2 GGUF via the in-tree "
         "audio.cpp sidecar). A recording becomes a melody+chord score for "
-        "review and for cover rendering in YuE2SongGenerator (abc_file + "
-        "cot=melody). Runs on a background NRT worker (~0.8x realtime, "
+        "review and for cover rendering: wire the melody URI output to "
+        "YuE2SongGenerator's abc_uri input (or pick a kept score file) with "
+        "cot=melody. Publishes score/melody URI outputs with a one-block "
+        "pulse on done. Runs on a background NRT worker (~0.8x realtime, "
         "~7.6 GB peak VRAM for a 4 min song — close other GPU apps). "
         "Lyrics are NOT transcribed; words stay manual. Needs "
         "tools/audiocpp/fetch_audiocpp.py and "
@@ -255,6 +257,12 @@ class SheetSage2Transcriber(AudioCppJob):
 
     def __init__(self, name=""):
         super().__init__(name)
+        self.add_uri_output("score",
+                            help="Kept full score path (melody + chords); published on completion and on patch-load relink.")
+        self.add_uri_output("melody",
+                            help="Kept melody-only score path for cot=melody covers (empty when strip_chords is off).")
+        self.done = self.add_output("done", channels=1,
+                                    help="One-block 1.0 pulse when a new score is ready (wire to a trigger input).")
         self.add_file_param("audio_file", "", filter=AUDIO_FILTER,
                             help="Recording to transcribe (WAV/FLAC/OGG/MP3); converted on the background worker.")
         self.add_menu_param("weight_type", list(SHEETSAGE_WEIGHT_TYPES), initial_idx=0,
@@ -274,17 +282,28 @@ class SheetSage2Transcriber(AudioCppJob):
         # Last kept score, for save/load re-linking. Written on completion.
         self.add_string_param("last_abc", "",
                               help="Path of the last transcribed score; re-linked on patch load.")
+        self.add_string_param("last_melody", "",
+                              help="Path of the last melody-only score variant; re-linked on patch load.")
 
         self._abc_text = None
         self._abc_path = ""
+        self._done_pulse = False  # emitted as a one-block pulse on done
         self._status = "Idle"
         self._status_detail = "No transcription yet"
 
     # ------------------------------------------------------------------
     # engine/control thread
     # ------------------------------------------------------------------
+    def start(self):
+        self._done_pulse = False
+
     def process(self):
-        """Analysis node: no audio ports, nothing to do per block."""
+        """Emit the one-block done pulse; otherwise nothing per block."""
+        buf = self.done.buffer
+        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
+        if self._done_pulse:
+            self._done_pulse = False
+            buf.fill_(1.0)
 
     def _restage(self, name, value):
         self.params[name].set(value)
@@ -498,6 +517,10 @@ class SheetSage2Transcriber(AudioCppJob):
             if not self._abc_text.strip():
                 self._fail("Worker returned an empty score.")
                 return
+            self.outputs["score"].uri = self._abc_path
+            melody_path = result.get("melody_path") or ""
+            self.outputs["melody"].uri = melody_path
+            self._done_pulse = True
             self.error_msg = None
             sections = result.get("sections", [])
             self._status = "Ready"
@@ -508,6 +531,8 @@ class SheetSage2Transcriber(AudioCppJob):
             )
             self.params["last_abc"].set(self._abc_path)
             self.params["last_abc"].sync()
+            self.params["last_melody"].set(melody_path)
+            self.params["last_melody"].sync()
         elif tag == "fetch_progress":
             if ok:
                 self._status = "Downloading"
@@ -543,11 +568,15 @@ class SheetSage2Transcriber(AudioCppJob):
     def load_state(self, data: dict):
         super().load_state(data)
         # Scores are small text: re-link synchronously on the control thread.
+        # No done pulse: a re-linked score is not newly ready.
         abc = self.params["last_abc"].value if "last_abc" in self.params else ""
+        melody = self.params["last_melody"].value if "last_melody" in self.params else ""
         if abc and Path(abc).exists():
             try:
                 self._abc_text = Path(abc).read_text(encoding="utf-8")
                 self._abc_path = abc
+                self.outputs["score"].uri = abc
+                self.outputs["melody"].uri = melody if melody and Path(melody).exists() else ""
                 self._status = "Ready"
                 self._status_detail = f"Re-linked {Path(abc).name}"
                 self.error_msg = None
@@ -555,6 +584,8 @@ class SheetSage2Transcriber(AudioCppJob):
                 self._status = "Idle"
                 self._status_detail = "Previous score is missing; transcribe again"
         elif abc:
+            self.outputs["score"].uri = ""
+            self.outputs["melody"].uri = ""
             self._status = "Idle"
             self._status_detail = "Previous score is missing; transcribe again"
 

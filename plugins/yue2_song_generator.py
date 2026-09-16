@@ -53,7 +53,7 @@ from download_util import (
     fetch_all,
     format_bytes,
 )
-from base import SAMPLE_RATE, CHANNELS, BLOCK_SIZE, DTYPE
+from base import SAMPLE_RATE, CHANNELS
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,12 @@ class YuE2SongGenerator(AudioCppJob):
         "Offline lyrics-to-song generator (YuE2-3B GGUF via the in-tree "
         "audio.cpp sidecar). Generation runs on a background NRT worker "
         "(~2x realtime, ~4.3 GB peak VRAM with Q4_K_M on an 8 GB GPU) and "
-        "the finished song plays back from RAM on trigger. Missing "
+        "publishes the kept song on the song URI output with a one-block "
+        "pulse on ready for auto-chaining (e.g. into SamplePlayer). "
+        "Generation starts from the Generate button or a rising edge on "
+        "trigger_in (e.g. wired from a done pulse); a new edge restarts "
+        "generation, cancelling the previous run. "
+        "Playback lives in SamplePlayer; this node holds no audio. Missing "
         "runtime/models can be fetched from the node itself (Download "
         "button: resumable background download with progress) or via "
         "tools/audiocpp/fetch_audiocpp.py and "
@@ -215,9 +220,15 @@ class YuE2SongGenerator(AudioCppJob):
     def __init__(self, name=""):
         super().__init__(name)
         self.add_input("trigger_in",
-                       help="Gate/trigger signal; a rising edge above 0 restarts song playback.")
-        self.out = self.add_output("out", channels=CHANNELS,
-                                   help="Stereo generated song (silence while idle).")
+                       help="Gate/trigger signal; a rising edge stages a background generation "
+                            "(same as the Generate button), e.g. wired from a done pulse.")
+        self.add_uri_input("abc_uri",
+                           help="Wired score path (e.g. from SheetSage2Transcriber). While connected "
+                                "and non-empty it overrides abc_file; snapshots at Generate time.")
+        self.add_uri_output("song",
+                            help="Kept song WAV path; published on completion and on patch-load relink.")
+        self.ready = self.add_output("ready", channels=1,
+                                     help="One-block 1.0 pulse when a new song is ready (wire to a trigger input).")
 
         self.add_string_param("style",
                               "English, indie pop, bright acoustic guitar, soft drums, warm lead vocal",
@@ -225,7 +236,8 @@ class YuE2SongGenerator(AudioCppJob):
         self.add_file_param("lyrics_file", "", filter="Text Files (*.txt *.md);;All Files (*.*)",
                             help="Lyrics file with section tags like [Verse]/[Chorus]; read by the background worker.")
         self.add_file_param("abc_file", "", filter="ABC Files (*.abc);;All Files (*.*)",
-                            help="Optional melody/chord score for covers; requires cot=melody or full.")
+                            help="Optional melody/chord score for covers; requires cot=melody or full. "
+                                 "A connected abc_uri input overrides this.")
         self.add_menu_param("profile", [label for label, _ in PROFILES], initial_idx=0,
                             help="GGUF precision profile; larger profiles need more VRAM.")
         self.add_menu_param("cot", list(COT_MODES), initial_idx=2,
@@ -244,17 +256,11 @@ class YuE2SongGenerator(AudioCppJob):
                             help="Transient trigger: downloads missing runtime/models in the background (resumable), then resets itself.")
         self.add_bool_param("cancel", False,
                             help="Transient trigger: terminates the in-flight generation.")
-        self.add_bool_param("loop", False,
-                            help="Loop the generated song continuously instead of stopping at the end.")
-        self.add_float_param("gain", 1.0, 0.0, 2.0, unit="x",
-                             help="Output gain applied after playback.")
         # Last kept song, for save/load re-linking. Written on completion.
         self.add_string_param("last_wav", "",
                               help="Path of the last generated song; re-linked on patch load.")
 
-        self._audio_data = None      # (2, N) contiguous float32, installed by NRT
-        self._read_pos = 0
-        self._is_playing = False
+        self._ready_pulse = False  # emitted as a one-block pulse on ready
         self._last_trig = 0.0
         self._status = "Idle"
         self._status_detail = "No song generated"
@@ -263,8 +269,7 @@ class YuE2SongGenerator(AudioCppJob):
     # engine/control thread
     # ------------------------------------------------------------------
     def start(self):
-        self._read_pos = 0
-        self._is_playing = False
+        self._ready_pulse = False
         self._last_trig = 0.0
 
     def _restage(self, name, value):
@@ -277,6 +282,23 @@ class YuE2SongGenerator(AudioCppJob):
         if not d.is_absolute():
             d = REPO_ROOT / d
         return d
+
+    def _resolve_score(self):
+        """Wired abc_uri wins over the abc_file param (both snapshot at
+        Generate time). Raises ValueError with a clear message."""
+        abc_in = self.inputs.get("abc_uri")
+        if abc_in is not None and abc_in.connected_outputs:
+            wired = abc_in.get_uri()
+            if not wired:
+                raise ValueError(
+                    "Wired score is empty — transcribe first, then generate.")
+            if not Path(wired).exists():
+                raise ValueError(f"Wired score file not found: {wired}")
+            return wired
+        abc_file = self.params["abc_file"].value or None
+        if abc_file and not Path(abc_file).exists():
+            raise ValueError(f"ABC score file not found: {abc_file}")
+        return abc_file
 
     def _build_spec(self):
         """Snapshot committed params into a worker spec. Raises ValueError."""
@@ -295,9 +317,7 @@ class YuE2SongGenerator(AudioCppJob):
         lyrics_file = self.params["lyrics_file"].value
         if not lyrics_file or not Path(lyrics_file).exists():
             raise ValueError("Pick a lyrics file first (lyrics_file is empty or missing).")
-        abc_file = self.params["abc_file"].value or None
-        if abc_file and not Path(abc_file).exists():
-            raise ValueError(f"ABC score file not found: {abc_file}")
+        abc_file = self._resolve_score()
         style = self.params["style"].value
         if not style or not style.strip():
             raise ValueError("Style prompt is empty.")
@@ -489,11 +509,14 @@ class YuE2SongGenerator(AudioCppJob):
             if audio is None or audio.ndim != 2 or audio.shape[0] != CHANNELS:
                 self._fail(f"Worker returned an invalid audio tensor: {type(audio)}")
                 return
-            self._audio_data = audio.contiguous()
-            self._read_pos = 0
-            self._is_playing = False  # wait for a trigger (no autoplay)
+            # Generate-only node: the decode above only validates the kept
+            # WAV and measures its duration. Playback lives in SamplePlayer;
+            # downstream discovers the song through the song URI output and
+            # the one-block pulse on ready.
+            self.outputs["song"].uri = result["wav"]
+            self._ready_pulse = True
             self.error_msg = None
-            secs = self._audio_data.shape[1] / SAMPLE_RATE
+            secs = audio.shape[1] / SAMPLE_RATE
             rtf = result["metrics"].get("rtf")
             self._status = "Ready"
             self._status_detail = (
@@ -504,14 +527,15 @@ class YuE2SongGenerator(AudioCppJob):
             self.params["last_wav"].sync()
         elif tag == "relink":
             if ok and isinstance(result.get("audio"), torch.Tensor):
-                self._audio_data = result["audio"].contiguous()
-                self._read_pos = 0
-                self._is_playing = False
+                self.outputs["song"].uri = result["wav"]
+                # No pulse: a re-linked song is not newly ready, so a wired
+                # SamplePlayer must not autoplay on patch load.
                 self.error_msg = None
-                secs = self._audio_data.shape[1] / SAMPLE_RATE
+                secs = result["audio"].shape[1] / SAMPLE_RATE
                 self._status = "Ready"
                 self._status_detail = f"Re-linked {secs:.1f} s song"
             else:
+                self.outputs["song"].uri = ""
                 self._status = "Idle"
                 self._status_detail = "Previous song file is missing; generate again"
                 self.error_msg = None
@@ -562,40 +586,32 @@ class YuE2SongGenerator(AudioCppJob):
         return {"status": self._status, "audio": self._status_detail}
 
     # ------------------------------------------------------------------
-    # audio thread: RAM-cached playback only (allocation-free)
+    # audio thread: one-block ready pulse + trigger edge detect (both
+    # allocation-free; no file I/O, no param writes here)
     # ------------------------------------------------------------------
     def process(self):
-        out = self.out.buffer
-        out.zero_()  # anti-ghost: idle silence, no stale tail
+        buf = self.ready.buffer
+        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
+        if self._ready_pulse:
+            self._ready_pulse = False
+            buf.fill_(1.0)
         trig = self.inputs["trigger_in"].get_tensor()[0]
-
         t_max = float(trig.max().item())
         if self._last_trig <= 0.0 and t_max > 0.0:
-            self._is_playing = True
-            self._read_pos = 0
+            self._request_generate()
         self._last_trig = float(trig[-1].item())
 
-        data = self._audio_data
-        if data is None or not self._is_playing:
-            return
-        pos = self._read_pos
-        total = data.shape[1]
-        if pos >= total:
-            if self.params["loop"].value:
-                pos = 0
-            else:
-                self._is_playing = False
-                return
-        take = BLOCK_SIZE if pos + BLOCK_SIZE <= total else total - pos
-        out[:, :take].copy_(data[:, pos:pos + take])  # views only, no alloc
-        pos += take
-        if pos >= total:
-            if self.params["loop"].value:
-                pos = 0
-            else:
-                self._is_playing = False
-        self._read_pos = pos
+    def _request_generate(self):
+        """Ask the engine thread to stage a generation (one-shot per edge).
 
-        gain = self.params["gain"].value
-        if gain != 1.0:
-            out.mul_(gain)
+        The audio thread must never build the job spec (file existence
+        checks) or touch params directly (AGENTS.md section 5); instead it
+        queues a ("param", ...) command — the unbounded command queue never
+        blocks — and the engine thread runs the normal Generate path,
+        including validation, cancel-previous, and instant telemetry.
+        """
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        if engine is None:
+            return
+        engine.push_command(("param", self.id, "generate", True))

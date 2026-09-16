@@ -230,6 +230,14 @@ class OutputSlot:
             self.buffer = torch.zeros((channels, BLOCK_SIZE), dtype=DTYPE)
         elif self.slot_type == "midi":
             self.packet = MIDIPacket()
+        elif self.slot_type == "uri":
+            # Control-side file reference (plain string, no per-block data).
+            # The owning node assigns it between blocks; consumers pull it
+            # via InputSlot.get_uri() (e.g. on a trigger edge) and must do
+            # any file I/O on an NRT worker, never in process().
+            self.uri = ""
+        else:
+            raise ValueError(f"OutputSlot '{name}': unknown slot_type {slot_type!r}")
 
     def clear_packet(self):
         """For MIDI outputs: reset the output packet at the top of process()."""
@@ -250,6 +258,10 @@ class InputSlot:
             self._scratch = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
         elif self.slot_type == "midi":
             self._scratch_packet = MIDIPacket()
+        elif self.slot_type == "uri":
+            pass  # pull semantics via get_uri(); no per-block storage
+        else:
+            raise ValueError(f"InputSlot '{name}': unknown slot_type {slot_type!r}")
 
     def connect(self, target: OutputSlot):
         if target not in self.connected_outputs:
@@ -314,6 +326,22 @@ class InputSlot:
             if getattr(out, "slot_type", "audio") == "midi":
                 self._scratch_packet.messages.extend(out.packet.messages)
         return self._scratch_packet
+
+    def get_uri(self) -> str:
+        """Pull the file reference from the first connected URI output.
+
+        Control-side discovery only (plain string, no per-block data): the
+        caller decides what the change means (e.g. a trigger edge loading a
+        new file on an NRT worker). Returns "" when unconnected or when the
+        producer has not published a path yet. For URI input slots only;
+        returns "" otherwise.
+        """
+        if getattr(self, "slot_type", "audio") != "uri":
+            return ""
+        for out in self.connected_outputs:
+            if getattr(out, "slot_type", "audio") == "uri":
+                return getattr(out, "uri", "") or ""
+        return ""
 
 
 class Parameter:
@@ -432,6 +460,16 @@ class Node:
 
     def add_midi_output(self, name: str, help: str = "") -> OutputSlot:
         slot = OutputSlot(name, self, help=help, slot_type="midi")
+        self.outputs[name] = slot
+        return slot
+
+    def add_uri_input(self, name: str, help: str = "") -> InputSlot:
+        slot = InputSlot(name, self, help=help, slot_type="uri")
+        self.inputs[name] = slot
+        return slot
+
+    def add_uri_output(self, name: str, help: str = "") -> OutputSlot:
+        slot = OutputSlot(name, self, help=help, slot_type="uri")
         self.outputs[name] = slot
         return slot
 

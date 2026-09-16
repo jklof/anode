@@ -153,14 +153,31 @@ class Graph:
         src_slot = src.outputs[src_port]
         buf = getattr(src_slot, "buffer", None)
 
-        # Enforce slot type compatibility (audio to audio, midi to midi). A
-        # MIDI stream must never be wired into an audio input or vice versa.
+        # Enforce slot type compatibility (audio to audio, midi to midi,
+        # uri to uri). Streams must never be wired across types.
         src_type = getattr(src_slot, "slot_type", "audio")
         dst_type = getattr(dst.inputs[dst_port], "slot_type", "audio")
         if src_type != dst_type:
             logging.warning(
                 f"Connection rejected: Type mismatch between {src.name}.{src_port} "
                 f"({src_type}) and {dst.name}.{dst_port} ({dst_type})"
+            )
+            return False
+
+        # A re-drag of the existing edge stays a silent no-op (InputSlot
+        # dedups below); only genuinely new edges are validated further.
+        if src_slot in dst.inputs[dst_port].connected_outputs:
+            return True
+
+        # URI inputs carry a single file reference (get_uri reads the
+        # connection). Unlike audio (summed) or MIDI (aggregated), a second
+        # wire has no meaningful merge and would sit silently dead, so
+        # reject it here instead of drawing a meaningless connection.
+        if dst_type == "uri" and dst.inputs[dst_port].connected_outputs:
+            logging.warning(
+                f"Connection rejected: {dst.name}.{dst_port} already has a "
+                f"URI source; disconnect it before wiring "
+                f"{src.name}.{src_port}"
             )
             return False
 

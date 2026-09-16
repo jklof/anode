@@ -182,3 +182,118 @@ def test_sample_player_no_net_allocation_while_playing(player_cls):
     growth, _ = tracemalloc.get_traced_memory()
     tracemalloc.stop()
     assert growth < 128 * 1024, f"net allocation {growth} bytes over 50 blocks"
+
+
+def _write_song(tmp_path, name="song.wav", seconds=0.5):
+    import numpy as np
+    n = int(seconds * SAMPLE_RATE)
+    t = np.linspace(0, 1, n, dtype=np.float32)
+    sf.write(str(tmp_path / name), np.stack([t, t], axis=1), SAMPLE_RATE)
+    return str(tmp_path / name)
+
+
+def _wire_uri(node, uri):
+    from base import OutputSlot
+    helper = OutputSlot("helper", node, slot_type="uri")
+    helper.uri = uri
+    node.inputs["uri_in"].connect(helper)
+    return helper
+
+
+def test_uri_input_registered(player_cls):
+    node = make_node(player_cls)
+    assert node.inputs["uri_in"].slot_type == "uri"
+
+
+def test_trigger_with_new_uri_loads_and_autoplays(player_cls, tmp_path):
+    node = make_node(player_cls)
+    uri = _write_song(tmp_path)
+    _wire_uri(node, uri)
+    trigger_rise(node)  # headless: submit_nrt no-ops, but flags are set
+    assert node._pending_autoplay is True
+    assert node._submitted_source == uri
+    # Drive the worker directly (as the NRT pool would).
+    data = node._load_file_nrt(uri)
+    node.on_nrt_complete("load", True, data)
+    assert node._is_playing is True
+    assert node._read_pos == 0.0
+    assert node._loaded_source == uri
+    feed_gate(node, 1.0)
+    assert torch.any(node.out.buffer != 0.0)
+
+
+def test_trigger_with_same_uri_restarts_without_reload(player_cls, tmp_path):
+    node = make_node(player_cls)
+    uri = _write_song(tmp_path)
+    _wire_uri(node, uri)
+    trigger_rise(node)
+    node.on_nrt_complete("load", True, node._load_file_nrt(uri))
+    assert node._is_playing is True
+    for _ in range(5):
+        feed_gate(node, 1.0)
+    assert node._read_pos > 0
+    node._pending_autoplay = False
+    node._last_trig = 0.0  # simulate a fresh gate edge
+    trigger_rise(node)  # same URI: plain restart, no new load requested
+    assert node._pending_autoplay is False
+    assert node._read_pos <= BLOCK_SIZE + 1.0, "retrigger must reset read position"
+    assert node._is_playing is True
+
+
+def test_connected_empty_uri_ignores_edge(player_cls):
+    node = make_node(player_cls)
+    _wire_uri(node, "")
+    trigger_rise(node)
+    assert node._is_playing is False
+    assert torch.all(node.out.buffer == 0.0)
+
+
+def test_param_load_still_waits_for_trigger(player_cls, tmp_path):
+    node = make_node(player_cls)
+    uri = _write_song(tmp_path)
+    node.params["sample_path"].set(uri)
+    node.params["sample_path"].sync()
+    node.on_ui_param_change("sample_path")
+    node.on_nrt_complete("load", True, node._load_file_nrt(uri))
+    assert node._is_playing is False
+    assert node._loaded_source == uri
+
+
+def _install_tensor(node, frames):
+    data = torch.linspace(0, 1, frames, dtype=DTYPE).unsqueeze(0).repeat(CHANNELS, 1).contiguous()
+    node.on_nrt_complete("load", True, data)
+    return data
+
+
+def test_final_block_does_not_overrun(player_cls):
+    """Regression: the last block's read positions exceed the sample end;
+    only idx_b was clamped, so gather() died with index==size OOB."""
+    node = make_node(player_cls)
+    _install_tensor(node, 600)  # spans 2 blocks; second runs past the end
+    trigger_rise(node)
+    feed_gate(node, 1.0)
+    feed_gate(node, 1.0)  # must not raise; song ends here
+    assert node._is_playing is False
+    assert torch.all(node.out.buffer == 0.0)
+
+
+def test_final_block_pitched_up_does_not_overrun(player_cls):
+    node = make_node(player_cls)
+    _install_tensor(node, 600)
+    node.params["pitch"].set(12.0)  # speed 2: overshoot is larger
+    node.params["pitch"].sync()
+    trigger_rise(node)
+    for _ in range(4):
+        feed_gate(node, 1.0)  # must not raise
+    assert node._is_playing is False
+
+
+def test_loop_wrap_does_not_overrun(player_cls):
+    node = make_node(player_cls)
+    _install_tensor(node, 600)
+    node.params["loop"].set(True)
+    node.params["loop"].sync()
+    trigger_rise(node)
+    for _ in range(10):  # crosses the wrap boundary repeatedly
+        feed_gate(node, 1.0)  # must not raise
+    assert node._is_playing is True

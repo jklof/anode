@@ -38,7 +38,7 @@ Do not introduce per-node block sizes or silently change the global format.
 
 Node port channel counts are part of the port contract. Channel adaptation must be explicit and deterministic.
 
-Ports are additionally typed: `slot_type` is `audio` or `midi`. Audio ports carry a `(channels, BLOCK_SIZE)` tensor buffer; MIDI ports carry a `MIDIPacket` (a list of `(sample_offset, mido.Message)` sorted ascending by sample offset) instead of a numeric buffer. Never wire an audio output into a MIDI input (or vice versa); `Graph.connect()` rejects mismatched types.
+Ports are additionally typed: `slot_type` is `audio`, `midi`, or `uri`. Audio ports carry a `(channels, BLOCK_SIZE)` tensor buffer; MIDI ports carry a `MIDIPacket` (a list of `(sample_offset, mido.Message)` sorted ascending by sample offset) instead of a numeric buffer; URI ports carry a plain file-path string (`.uri`, pulled via `InputSlot.get_uri()`) with no per-block data. Never wire ports of different types together; `Graph.connect()` rejects mismatched types.
 
 Channel adaptation policy (mono source into a wider input):
 
@@ -203,11 +203,13 @@ The graph is a DAG.
 * self-loops
 * connections that would introduce a cycle
 * invalid node/port references
-* connections between mismatched port types (audio vs midi)
+* connections between mismatched port types (audio vs midi vs uri)
+* a second wire into an occupied URI input (single file reference; audio
+  sums and MIDI aggregates, but a second URI would sit silently dead)
 
 Invalid topology should be rejected at connection time rather than merely detected during execution-order generation.
 
-When code iterates all ports generically (e.g. the engine's startup buffer reset), it must respect `slot_type`: only audio slots have `.buffer` / `._scratch`; MIDI slots have `.packet` / `._scratch_packet`. Blindly touching `.buffer` on every output slot raises `AttributeError` on MIDI nodes.
+When code iterates all ports generically (e.g. the engine's startup buffer reset), it must respect `slot_type`: only audio slots have `.buffer` / `._scratch`; MIDI slots have `.packet` / `._scratch_packet`; URI slots have only `.uri`. Blindly touching `.buffer` on every output slot raises `AttributeError` on MIDI nodes.
 
 Graph mutations should go through the command/control mechanism.
 

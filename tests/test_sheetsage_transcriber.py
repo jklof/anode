@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import soundfile as sf
+import torch
 
 import plugin_system
 import audiocpp_backend as backend
@@ -326,6 +327,43 @@ def test_complete_installs_score(node_cls):
     assert node.params["last_abc"].value == "s.abc"
     telem = node.get_telemetry()
     assert telem["status"] == "Ready" and "s.abc" in telem["audio"]
+
+
+def test_complete_publishes_uris_and_pulses_once(node_cls):
+    node = make_node(node_cls)
+    node.on_nrt_complete("job", True, {"abc": SAMPLE_ABC, "abc_path": "s.abc",
+                                       "melody_path": "m.abc", "metrics": {},
+                                       "sections": ["intro"]})
+    assert node.outputs["score"].uri == "s.abc"
+    assert node.outputs["melody"].uri == "m.abc"
+    node.process()
+    assert torch.all(node.done.buffer == 1.0)
+    node.process()
+    assert torch.all(node.done.buffer == 0.0)
+
+
+def test_complete_without_melody_leaves_melody_empty(node_cls):
+    node = make_node(node_cls)
+    _install_score(node)  # melody_path None
+    assert node.outputs["score"].uri == "s.abc"
+    assert node.outputs["melody"].uri == ""
+
+
+def test_relink_sets_uris_without_pulse(node_cls, tmp_path):
+    score = tmp_path / "kept.abc"
+    score.write_text(SAMPLE_ABC, encoding="utf-8")
+    melody = tmp_path / "kept-melody.abc"
+    melody.write_text("X:1\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["last_abc"].set(str(score))
+    node.params["last_abc"].sync()
+    node.params["last_melody"].set(str(melody))
+    node.params["last_melody"].sync()
+    node.load_state(node.to_dict())
+    assert node.outputs["score"].uri == str(score)
+    assert node.outputs["melody"].uri == str(melody)
+    node.process()
+    assert torch.all(node.done.buffer == 0.0)
 
 
 def test_complete_failure_and_cancel(node_cls):

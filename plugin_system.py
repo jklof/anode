@@ -139,6 +139,12 @@ def get_node_documentation(node_type: str) -> dict:
                     "slot_type": "midi",
                     "channels": 0,
                 }
+            elif slot_type == "uri":
+                outputs[k] = {
+                    "help": getattr(v, "help", ""),
+                    "slot_type": "uri",
+                    "channels": 0,
+                }
             else:
                 channels = getattr(
                     v, "channels", getattr(getattr(v, "buffer", None), "shape", (CHANNELS,))[0]

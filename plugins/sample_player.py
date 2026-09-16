@@ -42,14 +42,20 @@ class SamplePlayer(Node):
         "RAM-cached one-shot/looping sampler. Files are decoded and resampled to "
         "48 kHz on a background NRT worker; playback uses a vectorized fractional-"
         "read kernel with linear interpolation. Playback starts on the first rising "
-        "edge of the trigger input (block-granular detection). Loading does not "
-        "auto-play; load failures surface via node error status."
+        "edge of the trigger input (block-granular detection). A wired uri_in path "
+        "overrides sample_path: trigger edges load changed paths in the background "
+        "and auto-play them once ready. Param loads never auto-play; load failures "
+        "surface via node error status."
     )
 
     def __init__(self, name=""):
         super().__init__(name)
         self.add_input("trigger_in",
                        help="Gate/trigger signal; a rising edge above 0 restarts playback from the start.")
+        self.add_uri_input("uri_in",
+                           help="Wired file path (e.g. from a generator node). While connected and "
+                                "non-empty it overrides sample_path: a trigger edge loads a changed "
+                                "path on a background worker and auto-plays it once ready.")
         self.out = self.add_output("out", channels=CHANNELS,
                                    help="Stereo sample playback (silence while idle).")
 
@@ -67,6 +73,9 @@ class SamplePlayer(Node):
         self._is_playing = False
         self._last_trig = 0.0
         self._current_path = ""
+        self._loaded_source = None   # uri/param path that produced _audio_data
+        self._submitted_source = None
+        self._pending_autoplay = False  # set by uri-triggered loads only
 
         # Vectorized fractional-read kernel scratches
         self._arange = torch.arange(BLOCK_SIZE, dtype=DTYPE)
@@ -97,6 +106,8 @@ class SamplePlayer(Node):
         path = self.params["sample_path"].get_staging_safe()
         if path and path != self._current_path:
             self._current_path = path
+            self._pending_autoplay = False  # param loads wait for a trigger
+            self._submitted_source = path
             self.submit_nrt(self._load_file_nrt, path, tag="load")
 
     def _load_file_nrt(self, path):
@@ -122,23 +133,56 @@ class SamplePlayer(Node):
             return
         if ok:
             self._audio_data = result
-            self._read_pos = 0.0
-            self._is_playing = False                      # wait for a trigger
+            self._loaded_source = self._submitted_source
             self.error_msg = None
+            if self._pending_autoplay:
+                # Trigger-initiated URI load: start at once instead of
+                # waiting for a second edge that will never come.
+                self._pending_autoplay = False
+                self._read_pos = 0.0
+                self._is_playing = True
+            else:
+                self._read_pos = 0.0
+                self._is_playing = False                      # wait for a trigger
         else:
+            self._pending_autoplay = False
             self.error_msg = f"Sample load failed: {result}"
 
     # ------------------------------------------------------------------
     # Audio thread
     # ------------------------------------------------------------------
+    def _on_trigger_edge(self):
+        """Rising gate edge. With a wired, non-empty URI this loads a
+        changed path in the background (autoplaying on completion) and
+        restarts an already-loaded one; otherwise legacy restart. File I/O
+        itself stays on the NRT worker — only the submit happens here, and
+        submit_nrt never blocks."""
+        uri_in = self.inputs.get("uri_in")
+        uri = ""
+        if uri_in is not None and uri_in.connected_outputs:
+            uri = uri_in.get_uri()
+        if uri:
+            if uri != self._loaded_source or self._audio_data is None:
+                self._current_path = uri
+                self._pending_autoplay = True
+                self._submitted_source = uri
+                self.submit_nrt(self._load_file_nrt, uri, tag="load")
+            else:
+                self._is_playing = True
+                self._read_pos = 0.0
+        elif uri_in is None or not uri_in.connected_outputs:
+            # Unwired: legacy restart of the param-loaded sample.
+            self._is_playing = True
+            self._read_pos = 0.0
+        # Connected-but-empty URI (upstream not ready yet): ignore the edge.
+
     def process(self):
         out = self.out.buffer
         trig = self.inputs["trigger_in"].get_tensor()[0]
 
         t_max = float(trig.max().item())
         if self._last_trig <= 0.0 and t_max > 0.0:
-            self._is_playing = True
-            self._read_pos = 0.0
+            self._on_trigger_edge()
         self._last_trig = float(trig[-1].item())
 
         out.zero_()                                       # anti-ghost: idle silence
@@ -164,6 +208,11 @@ class SamplePlayer(Node):
         if is_loop:
             self._idx_b.remainder_(num)
         else:
+            # The final block's positions run past the end of the sample;
+            # _frac-out samples are muted by _weight below, but the gather
+            # indices themselves must stay in bounds (positions are
+            # read_pos + k*speed with all terms >= 0, so only the top clamps).
+            self._idx_a.clamp_(max=num - 1)
             self._idx_b.clamp_(max=num - 1)
         self._frac.copy_(self._pos).sub_(self._floor)
         torch.sub(1.0, self._frac, out=self._frac_inv)
