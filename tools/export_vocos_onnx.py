@@ -7,10 +7,21 @@ Export-only dependencies (NOT runtime deps, NOT in environment.yml):
     conda run -n anode-dev pip install vocos onnx onnxscript
 
 Notes:
-- The legacy TorchScript exporter cannot be used here: Vocos's iSTFT head
-  uses complex tensors and fails with
-  ``RuntimeError: Unknown number type: complex``. This script therefore
-  uses the dynamo-based exporter (``dynamo=True``, requires ``onnxscript``).
+- Vocos's iSTFT head builds a complex64 spectrogram (mag * (cos p + i sin p))
+  and runs torch.istft/torch.fft.irfft on it. Neither the legacy TorchScript
+  exporter (``RuntimeError: Unknown number type: complex``) nor the dynamo
+  exporter (``No ONNX function found for prims.convert_element_type`` with a
+  complex-valued input) can translate complex ops, so the head is swapped for
+  ExportISTFTHead before export: identical math (real/imag split, real-IDFT
+  matrix multiply, Hann window, fold overlap-add, divide by OLA(window^2),
+  center trim) using float32 real ops only. Parity vs torch.istft is ~5e-6.
+- The wrapper calls backbone+head directly instead of Vocos.decode():
+  decode() runs under @torch.inference_mode and torch.export's
+  functionalization fails on the resulting inference tensors
+  (``Cannot set version_counter for inference tensor``).
+- Shapes are exported static (1, 100, 8): torch.export's shape-env rejects
+  dynamic batch/frames for this model (backbone constraints), and the runtime
+  node always feeds exactly (1, 100, CONTEXT_FRAMES=8) anyway.
 - The dynamo graph passes ``onnx.checker`` but ONNX Runtime rejects it:
   onnxscript emits ``ScatterND`` with int32 index tensors while the ONNX
   spec (and ORT) require int64. This is fixed by a graph post-processing
@@ -28,6 +39,70 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 from vocos import Vocos
+
+
+class ExportISTFTHead(torch.nn.Module):
+    """Real-valued drop-in for vocos.heads.ISTFTHead (export only).
+
+    The stock head builds a complex64 spectrum (mag * (cos p + i sin p)) and
+    runs torch.istft on it; no ONNX exporter translates complex dtypes, so
+    this replays the identical math with float32 real ops: split magnitude /
+    phase into real/imag planes, inverse-DFT each frame with a precomputed
+    real basis (matmul), Hann-window, fold overlap-add, divide by
+    OLA(window^2), center-trim n_fft//2 per side. Matches torch.istft
+    (center=True) to ~5e-6. The trained ``out`` Linear is reused unchanged.
+    """
+
+    def __init__(self, orig_head):
+        super().__init__()
+        self.out = orig_head.out
+        istft = orig_head.istft
+        self.n_fft = int(istft.n_fft)
+        self.hop_length = int(istft.hop_length)
+        self.win_length = int(istft.win_length)
+        window = istft.window.detach().clone().float()
+        self.register_buffer("window", window)
+        k = torch.arange(self.n_fft, dtype=torch.float32)
+        ang = 2.0 * torch.pi * torch.outer(k, k) / float(self.n_fft)
+        self.register_buffer("dft_cos", torch.cos(ang))
+        self.register_buffer("dft_sin", torch.sin(ang))
+
+    def forward(self, x):
+        x = self.out(x).transpose(1, 2)
+        mag, p = x.chunk(2, dim=1)
+        mag = torch.exp(mag)
+        mag = torch.clip(mag, max=1e2)
+        s_re = mag * torch.cos(p)
+        s_im = mag * torch.sin(p)
+        return self.real_istft(s_re, s_im)
+
+    def real_istft(self, s_re, s_im):
+        # Full conjugate-symmetric spectrum as separate real/imag planes.
+        fr = torch.cat([s_re, s_re[:, 1:-1, :].flip(1)], dim=1)
+        fi = torch.cat([s_im, (-s_im[:, 1:-1, :]).flip(1)], dim=1)
+        fr_t = fr.transpose(1, 2)
+        fi_t = fi.transpose(1, 2)
+        frame_t = torch.matmul(fr_t, self.dft_cos) - torch.matmul(fi_t, self.dft_sin)
+        ifft = frame_t.transpose(1, 2) / float(self.n_fft)
+        ifft = ifft * self.window[None, :, None]
+        t_frames = s_re.shape[2]
+        output_size = (t_frames - 1) * self.hop_length + self.win_length
+        y = torch.nn.functional.fold(
+            ifft, output_size=(1, output_size),
+            kernel_size=(1, self.win_length), stride=(1, self.hop_length),
+        )
+        y = y[:, 0, 0, :]
+        w2 = self.window.square().expand(t_frames, -1).transpose(0, 1).unsqueeze(0)
+        env = torch.nn.functional.fold(
+            w2, output_size=(1, output_size),
+            kernel_size=(1, self.win_length), stride=(1, self.hop_length),
+        )
+        env = env[:, 0, 0, :]
+        y = y / env
+        pad = self.n_fft // 2
+        return y[:, pad:output_size - pad]
+
+
 def _elem_type(model, name):
     """Return the element type of a graph/initializer or None if unknown."""
     for vi in list(model.graph.input) + list(model.graph.output) + list(model.graph.value_info):
@@ -169,13 +244,20 @@ def fix_dft_irfft(model):
     return replaced
 
 
-def export_and_benchmark():
+def export_and_benchmark(context_frames=8, stride=1):
+    """Export one model variant. Live uses 8 static frames (stride 1); the
+    studio quality mode needs a 24-frame window (stride 4), which must be a
+    separate static-shape export (torch.export rejects dynamic frames)."""
     os.makedirs("models", exist_ok=True)
-    onnx_path = "models/vocos_mel_24k.onnx"
+    suffix = "" if context_frames == 8 else f"_w{context_frames}"
+    onnx_path = f"models/vocos_mel_24k{suffix}.onnx"
 
-    print("1. Loading pretrained Vocos model (charactr/vocos-mel-24khz)...")
+    print(f"1. Loading pretrained Vocos model (charactr/vocos-mel-24khz)...")
     vocos = Vocos.from_pretrained("charactr/vocos-mel-24khz")
     vocos.eval()
+    # Swap the complex iSTFT head for a real-valued equivalent (see class
+    # note below); the trained Linear weights are reused unchanged.
+    vocos.head = ExportISTFTHead(vocos.head)
 
     class VocosWrapper(torch.nn.Module):
         def __init__(self, model):
@@ -183,24 +265,21 @@ def export_and_benchmark():
             self.model = model
 
         def forward(self, mel):
-            # mel shape: (batch=1, n_mels=100, frames)
-            return self.model.decode(mel)
+            # mel shape: (batch=1, n_mels=100, frames=context_frames)
+            # Bypass Vocos.decode() (@torch.inference_mode): inference
+            # tensors break torch.export functionalization.
+            return self.model.head(self.model.backbone(mel))
 
     wrapper = VocosWrapper(vocos)
-    context_frames = 8
     dummy_mel = torch.randn(1, 100, context_frames, dtype=torch.float32)
 
-    print("2. Exporting to ONNX (dynamo exporter; legacy fails on complex istft)...")
+    print("2. Exporting to ONNX (dynamo exporter, real-valued iSTFT head)...")
     torch.onnx.export(
         wrapper,
         (dummy_mel,),
         onnx_path,
         input_names=["mel"],
         output_names=["audio"],
-        dynamic_axes={
-            "mel": {0: "batch", 2: "frames"},
-            "audio": {0: "batch", 1: "samples"},
-        },
         dynamo=True,
     )
 
@@ -240,16 +319,24 @@ def export_and_benchmark():
 
     median_ms = float(np.median(times))
     p95_ms = float(np.percentile(times, 95))
-    deadline_ms = (512 / 48000.0) * 1000.0  # 10.67 ms
+    # Strided inference runs once per `stride` blocks, so its budget is
+    # stride block periods (studio: 4 x 10.67 ms).
+    deadline_ms = (512 / 48000.0) * 1000.0 * stride
     print(f"Latency: Median = {median_ms:.2f} ms, p95 = {p95_ms:.2f} ms (Deadline: {deadline_ms:.2f} ms)")
 
     if p95_ms > deadline_ms:
         raise RuntimeError(
-            f"Benchmark gate failed: p95 latency ({p95_ms:.2f} ms) exceeds 10.67 ms deadline! "
+            f"Benchmark gate failed: p95 latency ({p95_ms:.2f} ms) exceeds "
+            f"{deadline_ms:.2f} ms deadline! "
             "Increase infer-stride or reduce context frames before proceeding."
         )
     print("Benchmark gate PASSED.")
 
 
 if __name__ == "__main__":
-    export_and_benchmark()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--context", type=int, default=8)
+    ap.add_argument("--stride", type=int, default=1)
+    args = ap.parse_args()
+    export_and_benchmark(args.context, args.stride)

@@ -33,3 +33,5 @@ dependencies:
       - swift-f0
       - pylibrb
       - vocos
+      - onnx
+      - onnxscript

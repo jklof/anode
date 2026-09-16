@@ -1,3 +1,14 @@
+import os
+# Cap BLAS/OpenMP fan-out before those runtimes initialize (import order!).
+# ANode DSP runs fixed 512-sample blocks: sub-millisecond torch/numpy ops
+# never amortize multi-thread fan-out, and the default spin-waiting pools
+# were measured burning ~6 CPU cores for ~0.2 ms of per-hop worker frontend
+# while starving the single-threaded ONNX inference next to them. Native
+# C++ DSP manages its own threads and is unaffected.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OMP_WAIT_POLICY", "passive")
+
 import torch
 import numpy as np
 import uuid
@@ -5,6 +16,14 @@ import abc
 import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Tuple
+
+# Same rationale as above, applied to torch's own intra/inter-op pools.
+# Must run before any parallel torch region executes.
+torch.set_num_threads(1)
+try:
+    torch.set_num_interop_threads(1)
+except Exception:
+    pass
 
 # --- Configuration ---
 BLOCK_SIZE = 512

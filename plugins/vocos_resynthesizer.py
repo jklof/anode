@@ -40,16 +40,39 @@ def build_halfband_kernel():
 
 def build_vocos_mel_filterbank():
     from torchaudio.functional import melscale_fbanks
+    # Must match charactr/vocos-mel-24khz's own MelScale exactly
+    # (norm=None, mel_scale="htk"): Slaney area-normalization attenuates the
+    # mel energies ~34x, the backbone reads near-silence, and with mix=1.0
+    # the node outputs digital silence despite healthy input.
     fb = melscale_fbanks(
         n_freqs=VOCOS_N_FFT // 2 + 1,
         f_min=VOCOS_FMIN,
         f_max=VOCOS_FMAX,
         n_mels=VOCOS_N_MELS,
         sample_rate=VOCOS_SR,
-        norm="slaney",
-        mel_scale="slaney"
+        norm=None,
+        mel_scale="htk"
     )
     return fb.T.contiguous()
+
+
+def _pop_newest(queue_in):
+    """Pop all pending input indices, return the newest one.
+
+    Freshness over completeness: if inference fell behind (ORT warmup, CPU
+    jitter), skipping stale hops and processing the newest keeps wet aligned
+    with dry. Without this, any transient lag becomes a permanent backlog:
+    wet plays ever-more-stale while dry stays at design latency
+    (partial-mix comb/slapback), and the queue eventually fills and drops
+    (wet/dry chattering pops).
+    """
+    idx_in, ok = queue_in.try_pop()
+    while ok:
+        nxt, ok2 = queue_in.try_pop()
+        if not ok2:
+            break
+        idx_in = nxt
+    return idx_in, ok
 
 
 class VocosResynthesizer(Node):
@@ -60,13 +83,38 @@ class VocosResynthesizer(Node):
         "shifted vocal audio, extracts 100-band log-mel representations at 24 kHz, "
         "and reconstructs natural vocal waveforms via an iSTFT neural head. Eliminates "
         "metallic phase vocoder artifacts while preserving vocal articulation. "
-        "Features latency-aligned dry/wet crossfade."
+        "Features latency-aligned dry/wet crossfade. Live mode (44 ms) keeps an "
+        "audible frame-rate buzz on harmonic input; Studio mode (161 ms) is clean."
     )
 
     CONTEXT_FRAMES = 8
-    LOOKAHEAD_FRAMES = 2
-    # Latency: (LOOKAHEAD_FRAMES + 1 queue buffer) * 512 + 62 FIR samples = 1598 samples (33.3 ms)
+    LOOKAHEAD_FRAMES = 3
+    # Inference runs every INFER_STRIDE input hops and emits that many taken
+    # hops per run (4, 5, 6 -> frames newest-3, newest-2, newest-1). The worker
+    # cannot sustain one full inference per 10.67 ms block on typical CPUs
+    # (~7-14 ms measured all-in); striding brings the average pace to
+    # ~2.5-5 ms/block with headroom to spare. LATENCY_SAMPLES accounts for
+    # the oldest taken frame (see below); hops from one decode share its
+    # ISTFT, so intra-burst seams are continuous.
+    INFER_STRIDE = 3
+    # Output-hop indices taken per inference (hop j <-> context frame j).
+    TAKE_HOPS = (4, 5, 6)
+    # Latency: (LOOKAHEAD_FRAMES + 1 queue buffer) * 512 + 62 FIR samples = 2110 samples (44.0 ms)
     LATENCY_SAMPLES = (LOOKAHEAD_FRAMES + 1) * BLOCK_SIZE + 62
+
+    # Inference window presets (class defaults above == "live"). The Vocos
+    # checkpoint phase-locks to short inference windows: 8-frame windows
+    # imprint a ~93.75 Hz buzz on harmonic content (measured ratio ~0.3-0.5
+    # vs signal). Clean output needs ~12+ frames of future context, which
+    # costs latency: "studio" trades 44 ms -> 161 ms for ~-35 dB buzz.
+    # latency_blocks covers oldest-taken-frame age + 1 queue buffer;
+    # LATENCY_SAMPLES = latency_blocks * BLOCK_SIZE + 62 FIR.
+    QUALITY_MODES = (
+        {"label": "Live (44 ms)", "window": 8, "stride": 3,
+         "take": (4, 5, 6), "latency_blocks": 4},
+        {"label": "Studio (161 ms)", "window": 24, "stride": 4,
+         "take": (9, 10, 11, 12), "latency_blocks": 15},
+    )
 
     def __init__(self, name=""):
         super().__init__(name)
@@ -79,12 +127,25 @@ class VocosResynthesizer(Node):
         self.add_file_param(
             "model_path", "models/vocos_mel_24k.onnx",
             filter="ONNX Models (*.onnx)",
-            help="Pretrained Vocos 24kHz ONNX model file."
+            help="Pretrained Vocos 24kHz ONNX model file (Live quality)."
+        )
+        self.add_file_param(
+            "studio_model_path", "models/vocos_mel_24k_w24.onnx",
+            filter="ONNX Models (*.onnx)",
+            help="24-frame Vocos ONNX model file (Studio quality). "
+                 "Export with tools/export_vocos_onnx.py --context 24 --stride 4."
         )
         self.add_float_param(
             "mix", 1.0, 0.0, 1.0,
             help="Dry/wet crossfade (0 = latency-aligned input, 1 = neural resynthesis)."
         )
+        self.add_menu_param(
+            "quality", [m["label"] for m in self.QUALITY_MODES], 0,
+            help="Live: 44 ms latency, audible frame-rate buzz on harmonic input. "
+                 "Studio: 161 ms latency, clean (wide inference window). "
+                 "Switching causes a brief dropout."
+        )
+        self._apply_quality()
 
         # 3. Audio Thread Scratchpads (Zero Allocations in process())
         self.in_ring_size = 16384  # Must be a power of 2 and multiple of 512
@@ -116,19 +177,58 @@ class VocosResynthesizer(Node):
         self.current_model_path = ""
         self.worker_thread = None
         self.stop_event = threading.Event()
+        # Wakes the worker when the audio thread enqueues a hop (see
+        # process()/start()/stop()). A fixed sleep here overshoots 2-15 ms
+        # on coarse platform timers and makes the worker chronically late.
+        self._wake_event = threading.Event()
+
+    def _apply_quality(self):
+        """(Re)compute instance inference config from the quality menu index.
+
+        Runs on control/UI contexts (init, param change, load_state); the
+        worker picks the values up live each iteration and rebuilds its mel
+        context when the window size changes. Switching modes causes a brief
+        dropout (dry delay jumps, wet context refills).
+        """
+        try:
+            idx = int(self.params["quality"].value)
+        except Exception:
+            idx = 0
+        idx = max(0, min(idx, len(self.QUALITY_MODES) - 1))
+        mode = self.QUALITY_MODES[idx]
+        self.CONTEXT_FRAMES = mode["window"]
+        self.INFER_STRIDE = mode["stride"]
+        self.TAKE_HOPS = mode["take"]
+        self.LATENCY_SAMPLES = mode["latency_blocks"] * BLOCK_SIZE + 62
+
+    def _active_model_path(self) -> str:
+        """ONNX file for the current quality mode (single session: switching
+        quality reloads the other variant, ~1-2 s gap)."""
+        try:
+            studio = int(self.params["quality"].value) == 1
+        except Exception:
+            studio = False
+        key = "studio_model_path" if studio else "model_path"
+        return self.params[key].value if key in self.params else ""
+
+    def _maybe_reload_model(self):
+        path = self._active_model_path()
+        if path and path != self.current_model_path:
+            self._load_onnx_model(path)
 
     def on_ui_param_change(self, param_name: str):
-        if param_name == "model_path":
-            path = self.params["model_path"].value
-            if path and path != self.current_model_path:
-                self._load_onnx_model(path)
+        if param_name == "quality":
+            self._apply_quality()
+            self._maybe_reload_model()
+            return
+        if param_name in ("model_path", "studio_model_path"):
+            self._maybe_reload_model()
+            return
 
     def load_state(self, data: dict):
         super().load_state(data)
-        if "model_path" in self.params:
-            path = self.params["model_path"].value
-            if path and path != self.current_model_path:
-                self._load_onnx_model(path)
+        self._apply_quality()
+        self._maybe_reload_model()
 
     def _destroy_session_blocking(self, sess):
         """NRT background deallocation of the ONNX session."""
@@ -219,15 +319,29 @@ class VocosResynthesizer(Node):
 
         analysis_ring = torch.zeros(VOCOS_N_FFT, dtype=torch.float32)
         mel_context = np.full((1, VOCOS_N_MELS, self.CONTEXT_FRAMES), -11.5129, dtype=np.float32)
+        hop_counter = 0
 
         while not self.stop_event.is_set():
-            idx_in, ok = self.queue_in.try_pop()
+            idx_in, ok = _pop_newest(self.queue_in)
             if not ok:
-                self.stop_event.wait(0.002)
-                continue
+                # Idle: sleep until process() signals a new hop. The
+                # clear-then-recheck closes the lost-wakeup race (a push
+                # before the recheck is seen; a push after it follows its
+                # own set()). The timeout is a backstop only.
+                self._wake_event.clear()
+                idx_in, ok = _pop_newest(self.queue_in)
+                if not ok:
+                    self._wake_event.wait(0.050)
+                    continue
 
             if generation != self._worker_generation:
                 break  # Stale generation; exit thread immediately
+
+            # Live quality-mode switch: rebuild the mel context when the
+            # window size changed (allocates only on switch, NRT thread).
+            window = self.CONTEXT_FRAMES
+            if mel_context.shape[2] != window:
+                mel_context = np.full((1, VOCOS_N_MELS, window), -11.5129, dtype=np.float32)
 
             chunk_48k = torch.from_numpy(self.pool_in[idx_in])
 
@@ -246,8 +360,17 @@ class VocosResynthesizer(Node):
             # 3. Roll context and append newest frame
             mel_context[:, :, :-1] = mel_context[:, :, 1:]
             mel_context[0, :, -1] = mel_frame
+            hop_counter += 1
 
             if self.session is None:
+                continue
+
+            # Strided inference: frontend runs per hop (states stay
+            # continuous), the model runs every INFER_STRIDE hops and emits
+            # that many taken hops. Same average pace at ~half the
+            # per-block cost; hops from one decode share its ISTFT, so the
+            # intra-pair seam is continuous.
+            if hop_counter % self.INFER_STRIDE != 0:
                 continue
 
             # 4. ONNX Inference
@@ -255,29 +378,28 @@ class VocosResynthesizer(Node):
                 ort_outs = self.session.run(None, {"mel": mel_context})
                 audio_24k = ort_outs[0][0]  # Shape: (samples,)
 
-                # Dynamic bounds-checked slice computation
-                target_idx = audio_24k.shape[0] - (self.LOOKAHEAD_FRAMES + 1) * VOCOS_HOP
-                if 0 <= target_idx <= audio_24k.shape[0] - VOCOS_HOP:
-                    synth_hop_24k = torch.from_numpy(audio_24k[target_idx:target_idx + VOCOS_HOP])
-                else:
-                    logger.warning(
-                        f"Vocos output size ({audio_24k.shape[0]}) incompatible with "
-                        f"lookahead {self.LOOKAHEAD_FRAMES}; target_idx={target_idx}"
-                    )
-                    continue
+                for take in self.TAKE_HOPS:
+                    take_idx = take * VOCOS_HOP
+                    if not 0 <= take_idx <= audio_24k.shape[0] - VOCOS_HOP:
+                        logger.warning(
+                            f"Vocos output size ({audio_24k.shape[0]}) incompatible with "
+                            f"take hop {take}"
+                        )
+                        break
 
-                # 5. Resample 24 kHz (256) -> 48 kHz (512)
-                stuffed = torch.zeros(BLOCK_SIZE, dtype=torch.float32)
-                stuffed[::2] = synth_hop_24k
-                up_in = torch.cat([up_state[0, 0], stuffed]).view(1, 1, -1)
-                up_state[0, 0].copy_(stuffed[-(hb_taps - 1):])
-                synth_hop_48k = torch.nn.functional.conv1d(up_in, resampler_hb, stride=1)[0, 0, :BLOCK_SIZE] * 2.0
+                    # 5. Resample 24 kHz (256) -> 48 kHz (512)
+                    synth_hop_24k = torch.from_numpy(audio_24k[take_idx:take_idx + VOCOS_HOP])
+                    stuffed = torch.zeros(BLOCK_SIZE, dtype=torch.float32)
+                    stuffed[::2] = synth_hop_24k
+                    up_in = torch.cat([up_state[0, 0], stuffed]).view(1, 1, -1)
+                    up_state[0, 0].copy_(stuffed[-(hb_taps - 1):])
+                    synth_hop_48k = torch.nn.functional.conv1d(up_in, resampler_hb, stride=1)[0, 0, :BLOCK_SIZE] * 2.0
 
-                idx_out = self.pool_seq_out % len(self.pool_out)
-                self.pool_seq_out += 1
-                np.copyto(self.pool_out[idx_out], synth_hop_48k.numpy())
-                if not self.queue_out.try_push(idx_out):
-                    self.drops_out += 1
+                    idx_out = self.pool_seq_out % len(self.pool_out)
+                    self.pool_seq_out += 1
+                    np.copyto(self.pool_out[idx_out], synth_hop_48k.numpy())
+                    if not self.queue_out.try_push(idx_out):
+                        self.drops_out += 1
             except Exception as e:
                 logger.debug(f"Vocos inference error: {e}")
 
@@ -298,12 +420,12 @@ class VocosResynthesizer(Node):
         while self.queue_out.try_pop()[1]:
             pass
 
-        model_p = self.params["model_path"].value
         # Only (re)load when the desired path differs from what is loading or
         # installed. During engine startup, load_state() has already submitted
         # the load; a second submit here would supersede it and — via the
         # stale-result destroy submit — ultimately prevent ANY result from
         # installing (NRTExecutor epoch is shared across tags on this node).
+        model_p = self._active_model_path()
         if model_p and self.current_model_path != model_p:
             self._load_onnx_model(model_p)
 
@@ -315,6 +437,7 @@ class VocosResynthesizer(Node):
 
     def stop(self):
         self.stop_event.set()
+        self._wake_event.set()  # release a worker parked in the idle wait
         if self.worker_thread is not None:
             if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
                 self.graph.engine.nrt.stop_stream(self, lambda: self.stop_event.set(), self.worker_thread)
@@ -353,6 +476,8 @@ class VocosResynthesizer(Node):
         np.copyto(self.pool_in[idx_in], self.buf_mono.numpy())
         if not self.queue_in.try_push(idx_in):
             self.drops_in += 1
+        # Uncontended set (~100 ns, no wait): wakes the worker promptly.
+        self._wake_event.set()
 
         # 3. Two-Part Vectorized Ring Read (Safe against circular boundary wrap)
         rp = (wp - self.LATENCY_SAMPLES) & self.in_ring_mask

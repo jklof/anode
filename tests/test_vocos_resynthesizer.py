@@ -11,8 +11,53 @@ import torch
 import numpy as np
 
 import plugin_system
-from base import BLOCK_SIZE, CHANNELS, DTYPE, SAMPLE_RATE
-from plugins.vocos_resynthesizer import build_halfband_kernel, build_vocos_mel_filterbank
+from base import BLOCK_SIZE, CHANNELS, DTYPE, SAMPLE_RATE, SPSCRingBuffer
+from plugins.vocos_resynthesizer import (
+    build_halfband_kernel, build_vocos_mel_filterbank, _pop_newest,
+)
+from plugins.vocos_resynthesizer import VocosResynthesizer
+
+
+def test_stride_latency_bookkeeping():
+    """Taken hops must land exactly latency_blocks before playout so wet
+    aligns with the dry delay line (LATENCY_SAMPLES), in every quality mode.
+    Hop j <-> context frame j; a burst emitted during block N plays N+1..,
+    so latency_blocks == window - oldest_take uniformly."""
+    plugin_system.load_plugins("plugins")
+    cls = plugin_system.NODE_REGISTRY.get("VocosResynthesizer")
+    node = cls()
+    assert (node.CONTEXT_FRAMES, node.INFER_STRIDE, node.TAKE_HOPS,
+            node.LATENCY_SAMPLES) == (8, 3, (4, 5, 6), 4 * BLOCK_SIZE + 62)
+    node.params["quality"].set(1)
+    node.params["quality"].sync()
+    node.on_ui_param_change("quality")
+    assert (node.CONTEXT_FRAMES, node.INFER_STRIDE, node.TAKE_HOPS,
+            node.LATENCY_SAMPLES) == (24, 4, (9, 10, 11, 12), 15 * BLOCK_SIZE + 62)
+    for mode in cls.QUALITY_MODES:
+        w, k, take, lb = mode["window"], mode["stride"], mode["take"], mode["latency_blocks"]
+        assert len(take) == k  # one emitted hop per stride step
+        assert max(take) <= w - 2  # decodes of w frames yield w-1 hops
+        assert lb == w - min(take)  # oldest take sets the uniform latency
+
+
+def test_pop_newest_skips_stale_backlog():
+    """_pop_newest returns the newest pending index (empty -> (None, False)),
+    so a lagging worker fast-forwards instead of building a permanent
+    stale backlog."""
+    q = SPSCRingBuffer(capacity=8)
+    assert _pop_newest(q) == (None, False)
+    for i in range(5):
+        assert q.try_push(i) is True
+    assert _pop_newest(q) == (4, True)
+    assert _pop_newest(q) == (None, False)
+
+
+def test_thread_pools_capped_single():
+    """base.py must cap BLAS/OpenMP fan-out: 512-sample block DSP never
+    amortizes it, and spinning pools were measured burning ~6 CPU cores
+    while starving the single-threaded ONNX worker next to them."""
+    import torch as _t
+    assert _t.get_num_threads() == 1
 
 
 def test_vocos_nrt_load_installs_despite_epoch_bumps():
@@ -112,7 +157,9 @@ def test_vocos_registration_and_docs():
     assert "in" in doc["inputs"]
     assert "out" in doc["outputs"]
     assert "model_path" in doc["params"]
+    assert "studio_model_path" in doc["params"]
     assert "mix" in doc["params"]
+    assert "quality" in doc["params"]
 
 
 def test_delay_ring_two_part_wrap_with_known_ramp():
@@ -127,10 +174,13 @@ def test_delay_ring_two_part_wrap_with_known_ramp():
     ramp = torch.arange(node.in_ring_size, dtype=DTYPE).repeat(CHANNELS, 1)
     node.in_delay_ring.copy_(ramp)
 
-    # Position wp so rp lands at 16322 (crosses boundary: 62 samples at tail, 450 at head)
-    node.write_pos = 1536
-    rp = (1536 - node.LATENCY_SAMPLES) & node.in_ring_mask
-    assert rp == 16322
+    # Position wp so rp lands 62 samples before the ring end (crosses
+    # boundary: 62 samples at tail, 450 at head). Derived from
+    # LATENCY_SAMPLES rather than hardcoded so latency retunes keep working.
+    rp_want = node.in_ring_size - 62
+    node.write_pos = (rp_want + node.LATENCY_SAMPLES) & node.in_ring_mask
+    rp = (node.write_pos - node.LATENCY_SAMPLES) & node.in_ring_mask
+    assert rp == rp_want
 
     blk = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
     node.inp.get_tensor = lambda: blk
@@ -193,9 +243,16 @@ def test_vocos_save_load_roundtrip():
     # Empty model path in test avoids missing file warnings
     node.params["model_path"].set("")
     node.params["mix"].set(0.65)
+    node.params["quality"].set(1)
+    node.params["quality"].sync()
+    node.on_ui_param_change("quality")
+    assert node.LATENCY_SAMPLES == 15 * BLOCK_SIZE + 62
+    assert node._active_model_path() == node.params["studio_model_path"].value
     state = node.to_dict()
 
     restored = cls()
     restored.load_state(state)
     assert restored.params["mix"].value == pytest.approx(0.65)
     assert restored.params["model_path"].value == ""
+    assert restored.params["quality"].value == 1
+    assert restored.LATENCY_SAMPLES == 15 * BLOCK_SIZE + 62

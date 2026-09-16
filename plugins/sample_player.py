@@ -124,6 +124,7 @@ class SamplePlayer(Node):
             self._audio_data = result
             self._read_pos = 0.0
             self._is_playing = False                      # wait for a trigger
+            self.error_msg = None
         else:
             self.error_msg = f"Sample load failed: {result}"
 

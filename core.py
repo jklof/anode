@@ -482,11 +482,29 @@ class Engine:
         # Per-node processing stats. Lives on the Engine (not _worker locals) so
         # entries can be pruned when nodes are deleted.
         self._stats_buffer = {}
+        # Ids whose error_msg was set by the processing loop itself. Only
+        # those are auto-cleared on recovery: async (NRT/UI) errors are owned
+        # by their context and must survive successful blocks.
+        self._process_error_ids = set()
+        # Last error state broadcast to the UI; a change triggers a snapshot
+        # so async failures/recoveries surface without a structural change.
+        self._last_error_sent = {}
         self._active_plan = self.graph.compile_execution_plan()
         # Monotonic command identity: every pushed command gets a unique id so
         # results (e.g. connect_rejected) can be associated with the exact
         # originating request.
         self._next_cmd_id = 0
+
+    def _emit_snapshot_on_error_change(self, plan) -> bool:
+        """Emit a snapshot when any planned node's error changed since the
+        last broadcast, so async (NRT) failures and recoveries reach the UI
+        without waiting for a structural change. Returns True if emitted."""
+        current = {n.id: n.error_msg for n in plan.nodes}
+        if current != self._last_error_sent:
+            self._last_error_sent = current
+            self._emit_snapshot()
+            return True
+        return False
 
     def _drain_nrt_all(self):
         if self.nrt:
@@ -646,6 +664,8 @@ class Engine:
                 # Prune stale telemetry so dead node ids don't accumulate or
                 # skew the global CPU average.
                 self._stats_buffer.pop(nid, None)
+                self._process_error_ids.discard(nid)
+                self._last_error_sent.pop(nid, None)
                 try:
                     self.output_queue.put_nowait({"type": "node_removed", "node_id": nid})
                 except Exception:
@@ -1007,12 +1027,15 @@ class Engine:
                     try:
                         t0 = time.perf_counter()
                         self._process_plan_node(node)
-                        node.error_msg = None
+                        if node.id in self._process_error_ids:
+                            node.error_msg = None
+                            self._process_error_ids.discard(node.id)
                         dt = time.perf_counter() - t0
                         self._stats_buffer[node.id] = (dt / block_duration_sec) * 100.0
                     except Exception as e:
                         logging.exception(f"Error processing node {node.name} (id: {node.id}): {e}")
                         node.error_msg = str(e)
+                        self._process_error_ids.add(node.id)
 
                 # Check if any node marked structure as dirty during the current block processing
                 if self.graph.structure_dirty:
@@ -1023,6 +1046,7 @@ class Engine:
                 now = time.perf_counter()
                 if now >= next_telemetry_time:
                     self._drain_nrt_all()
+                    self._emit_snapshot_on_error_change(plan)
                     stats_buffer = self._stats_buffer
                     global_cpu = sum(stats_buffer.values()) / len(stats_buffer) if stats_buffer else 0.0
                     node_data = {"__cpu__": stats_buffer.copy()}
