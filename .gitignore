@@ -21,3 +21,8 @@ tools/audiocpp/bin/
 models/YuE2-3B-GGUF/*.gguf
 models/YuE2-3B-GGUF/sidecars/
 models/YuE2-3B-GGUF/outputs/
+
+# SheetSage2 GGUF weights (fetched via tools/audiocpp/fetch_sheetsage2_gguf.py);
+# per-transcription outputs are local provenance records, never committed.
+models/SheetSage2-GGUF/*.gguf
+models/SheetSage2-GGUF/outputs/

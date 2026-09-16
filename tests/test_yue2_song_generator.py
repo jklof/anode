@@ -36,6 +36,19 @@ def make_node(node_cls):
     return node_cls()
 
 
+def _live():
+    """Live top-level plugin module object.
+
+    load_plugins() imports node files WITHOUT the plugins. package prefix,
+    so ``import plugins.yue2_song_generator`` would bind an unpatched
+    duplicate. Anything that patches module state (or relies on patched
+    state) must go through this object; requires the node_cls fixture to
+    have run first.
+    """
+    import sys
+    return sys.modules["yue2_song_generator"]
+
+
 def feed_gate(node, level):
     trig = torch.full((CHANNELS, BLOCK_SIZE), level, dtype=DTYPE)
     node.inputs["trigger_in"].get_tensor = lambda t=trig: t
@@ -314,13 +327,13 @@ def test_build_spec_rejects_missing_backend(node_cls, tmp_path, monkeypatch):
     node = make_node(node_cls)
     monkeypatch.setattr(node, "_resolve_model_dir",
                         lambda: tmp_path / "YuE2-3B-GGUF")
-    with pytest.raises(ValueError, match="fetch_audiocpp"):
+    with pytest.raises(ValueError, match="fetch_"):
         node._build_spec()
 
 
-def test_load_song_wav_mono_to_stereo(tmp_path):
+def test_load_song_wav_mono_to_stereo(node_cls, tmp_path):
     p = write_wav(tmp_path / "m.wav", seconds=0.2, channels=1)
-    from plugins.yue2_song_generator import load_song_wav
+    load_song_wav = _live().load_song_wav
     t = load_song_wav(p)
     assert t.shape == (CHANNELS, int(0.2 * SAMPLE_RATE))
     assert torch.allclose(t[0], t[1])
@@ -363,7 +376,7 @@ def test_relink_missing_file_goes_idle(node_cls, tmp_path):
 def test_gpu_smoke_cot_off(node_cls, tmp_path):
     import subprocess as sp
     import threading
-    from plugins.yue2_song_generator import load_song_wav
+    load_song_wav = _live().load_song_wav
     node = make_node(node_cls)
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("[Verse]\nSoft morning light.\n[Chorus]\nSing with the sunrise.\n",
@@ -384,3 +397,288 @@ def test_gpu_smoke_cot_off(node_cls, tmp_path):
         ["nvidia-smi", "--query-gpu=memory.used",
          "--format=csv,noheader,nounits"]).decode().strip().splitlines()[0])
     assert peak < 6144, f"unexpected VRAM peak: {peak} MiB"
+
+
+# ----------------------------------------------------------------------
+# background fetch (no network: payloads assembled by hand)
+# ----------------------------------------------------------------------
+def _fetch_payload(url, dest, content: bytes):
+    import hashlib
+    return {
+        "runtime": [],
+        "staging": str(dest.parent / "staging"),
+        "bin_dir": str(dest.parent / "bin"),
+        "models": [{"url": url, "dest": str(dest), "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                    "label": dest.name}],
+    }
+
+
+def test_fetch_progress_updates_status(node_cls):
+    node = make_node(node_cls)
+    node.on_nrt_complete("fetch_progress", True,
+                         {"label": "f.bin", "done": 512, "total": 1024,
+                          "state": "downloading"})
+    assert node._status == "Downloading"
+    assert "50.0%" in node._status_detail
+
+
+def test_fetch_complete_goes_idle(node_cls):
+    node = make_node(node_cls)
+    node.on_nrt_complete("fetch", True, {"fetched": ["a", "b"]})
+    assert node._status == "Idle"
+    assert "Generate" in node._status_detail
+    assert node.error_msg is None
+
+
+def test_fetch_failure_and_cancel(node_cls):
+    from download_util import DownloadCancelled
+    node = make_node(node_cls)
+    node.on_nrt_complete("fetch", False, RuntimeError("net down"))
+    assert node._status == "Error"
+    assert "net down" in node.error_msg
+    node.on_nrt_complete("fetch", False, DownloadCancelled("stop"))
+    assert node._status == "Cancelled"
+    assert node.error_msg is None
+
+
+class _StubEngine:
+    """Minimal engine double: only what AudioCppJob._push_telemetry needs."""
+
+    def __init__(self):
+        import queue
+        self.output_queue = queue.Queue()
+        self.running = False
+
+
+def _attach(node):
+    from types import SimpleNamespace
+    engine = _StubEngine()
+    node.graph = SimpleNamespace(engine=engine)
+    return engine
+
+
+def test_push_telemetry_schema(node_cls):
+    """The pushed message must match the engine's own telemetry schema
+    (controller routes {"type": "telemetry", "node_data": ...} to widgets)."""
+    node = make_node(node_cls)
+    engine = _attach(node)
+    node._status = "Downloading"
+    node._status_detail = "f.bin: 50.0% (512 B / 1.0 KB)"
+    node._push_telemetry()
+    msg = engine.output_queue.get_nowait()
+    assert msg["type"] == "telemetry"
+    assert msg["node_data"][node.id] == node.get_telemetry()
+
+
+def test_push_telemetry_no_engine_is_noop(node_cls):
+    node = make_node(node_cls)
+    node._push_telemetry()  # must not raise without a graph
+
+
+def test_download_nothing_missing_pushes_feedback(node_cls, tmp_path, monkeypatch):
+    """The reported bug: Download with everything fetched gave zero UI
+    feedback while stopped (no NRT traffic -> no telemetry emission)."""
+    import sys
+
+    import download_util
+
+    mod = sys.modules["yue2_song_generator"]
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.root = tmp_path / "tools" / "audiocpp"
+            self.bin_dir = self.root / "bin"
+            self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
+
+    monkeypatch.setattr(mod, "AudioCppRuntime", StubRuntime)
+    node = make_node(node_cls)
+    engine = _attach(node)
+    # CLI "present" + size-correct model dir -> nothing to fetch.
+    (tmp_path / "bin").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "bin" / "audiocpp_cli.exe").write_text("x")
+    node.params["model_dir"].set(str(tmp_path / "models" / "YuE2-3B-GGUF"))
+    node.params["model_dir"].sync()
+    for spec in mod.yue2_fetch_specs(tmp_path / "models" / "YuE2-3B-GGUF"):
+        spec.dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(spec.dest, "wb") as f:
+            f.truncate(spec.size)
+    # Size-correct placeholders: relax content hashes (tested in
+    # test_download_util.py against real bytes).
+    from pathlib import Path as _Path
+    monkeypatch.setattr(
+        download_util, "_verify",
+        lambda p, s, h: _Path(p).is_file() and (s is None or _Path(p).stat().st_size == s))
+    node.params["download"].set(True)
+    node.params["download"].sync()
+    node.on_ui_param_change("download")
+    assert node.params["download"].value is False  # transient restaged
+    assert node._status_detail == "Everything already downloaded"
+    msg = engine.output_queue.get_nowait()
+    assert msg["node_data"][node.id]["audio"] == "Everything already downloaded"
+
+
+def test_fetch_worker_downloads_file(node_cls, tmp_path):
+    import http.server
+    import threading
+
+    content = bytes(range(256)) * 64
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+
+        def log_message(self, *args):
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = httpd.server_address[1]
+        node = make_node(node_cls)
+        dest = tmp_path / "models" / "f.bin"
+        payload = _fetch_payload(f"http://127.0.0.1:{port}/f.bin", dest, content)
+        result = node._fetch_nrt(threading.Event(), payload)
+        assert result == {"fetched": [dest.name]}
+        assert dest.read_bytes() == content
+        node.on_nrt_complete("fetch", True, result)
+        assert node._status == "Idle"
+    finally:
+        httpd.shutdown()
+
+
+def test_build_fetch_payload_lists_missing(node_cls, tmp_path, monkeypatch):
+    import sys
+
+    import download_util
+    # NB: load_plugins() imports node files as top-level modules, so the
+    # live module is sys.modules["yue2_song_generator"], not
+    # plugins.yue2_song_generator (a duplicate import would not affect the
+    # registered class).
+    mod = sys.modules["yue2_song_generator"]
+    from pathlib import Path as _Path
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.root = tmp_path / "tools" / "audiocpp"
+            self.bin_dir = self.root / "bin"
+            self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
+
+    monkeypatch.setattr(mod, "AudioCppRuntime", StubRuntime)
+    node = make_node(node_cls)
+    node.params["model_dir"].set(str(tmp_path / "models" / "YuE2-3B-GGUF"))
+    node.params["model_dir"].sync()
+    payload = node._build_fetch_payload()
+    assert len(payload["runtime"]) == 2  # CLI absent: both zips pending
+    assert len(payload["models"]) == 6
+    # CLI present + size-correct model dir -> nothing to fetch. (Content
+    # hashes are the real pins, unfakeable here, so relax to size-only.)
+    (tmp_path / "bin").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "bin" / "audiocpp_cli.exe").write_text("x")
+    for spec in mod.yue2_fetch_specs(tmp_path / "models" / "YuE2-3B-GGUF"):
+        spec.dest.parent.mkdir(parents=True, exist_ok=True)
+        # Size-correct placeholder without writing gigabytes: truncate
+        # extends cheaply and stat() reports the extended size.
+        with open(spec.dest, "wb") as f:
+            f.truncate(spec.size)
+    monkeypatch.setattr(
+        download_util, "_verify",
+        lambda p, s, h: _Path(p).is_file() and (s is None or _Path(p).stat().st_size == s))
+    payload = node._build_fetch_payload()
+    assert payload["runtime"] == []
+    assert payload["models"] == []
+
+
+# ----------------------------------------------------------------------
+# prompt staleness + seed controls (widget-level, offscreen)
+# ----------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def qapp():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    inst = QCoreApplication.instance()
+    if inst is None:
+        return QApplication([])
+    if isinstance(inst, QApplication):
+        return inst
+    pytest.skip("a bare QCoreApplication is active; QWidget tests cannot run")
+
+
+def test_string_widget_commits_on_focus_loss(qapp):
+    """Typed-but-unconfirmed text must not silently diverge: editingFinished
+    (focus loss) commits like Return does."""
+    from ui_system import StringParamWidget
+    seen = []
+    w = StringParamWidget("style", {}, "old", seen.append)
+    w.line_edit.setText("heavy metal")
+    assert seen == []
+    w.line_edit.editingFinished.emit()
+    assert seen == ["heavy metal"]
+    # No-op when nothing changed.
+    w.line_edit.editingFinished.emit()
+    assert seen == ["heavy metal"]
+
+
+class _StubProxy:
+    """Records set_parameter calls; hands out stub widgets."""
+
+    def __init__(self):
+        self.calls = []
+        self.widgets = {}
+
+    def set_parameter(self, name, value):
+        self.calls.append((name, value))
+
+    def create_param_widget(self, name):
+        from types import SimpleNamespace
+        from PySide6.QtWidgets import QWidget
+        w = QWidget()
+        if name == "style":
+            w.line_edit = SimpleNamespace(text=lambda: "typed style")
+        self.widgets[name] = w
+        return w
+
+
+def _make_widget(qapp):
+    import sys
+    mod = sys.modules["yue2_song_generator"]
+    return mod.YuE2Widget(_StubProxy())
+
+
+def test_generate_commits_style_before_trigger(qapp):
+    """Clicking Generate must apply the editor text before the trigger, so
+    the debounced flush can never order them stale-first."""
+    widget = _make_widget(qapp)
+    widget._on_generate_pressed()
+    assert widget.proxy.calls[0] == ("style", "typed style")
+    assert widget.proxy.calls[1] == ("generate", True)
+
+
+def test_seed_button_draws_in_range(qapp):
+    widget = _make_widget(qapp)
+    widget._on_seed_pressed()
+    assert len(widget.proxy.calls) == 1
+    name, value = widget.proxy.calls[0]
+    assert name == "seed" and 0 <= value < 2 ** 31
+
+
+def test_pick_seed_manual(node_cls):
+    node = make_node(node_cls)
+    assert node._pick_seed() == 831001
+
+
+def test_pick_seed_auto_writes_back(node_cls):
+    node = make_node(node_cls)
+    node.params["auto_seed"].set(True)
+    node.params["auto_seed"].sync()
+    seeds = {node._pick_seed() for _ in range(20)}
+    assert all(0 <= s < 2 ** 31 for s in seeds)
+    assert len(seeds) > 1  # random, not stuck
+    assert node.params["seed"].value in seeds  # written back

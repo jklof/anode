@@ -20,6 +20,7 @@ This module has no Qt dependency and performs no audio processing itself:
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -28,11 +29,216 @@ import threading
 from pathlib import Path
 
 from base import Node
+from download_util import DownloadSpec, fetch_all
 
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent
 AUDIOCPP_PIN_VERSION = "v0.8.0"
+
+AUDIOCPP_RELEASE_BASE = (
+    "https://github.com/0xShug0/audio.cpp/releases/download/v0.8.0"
+)
+# Pinned runtime archives (Windows x64 + CUDA 13.3 track: the
+# Blackwell/sm_120-capable build). (filename, size bytes, sha256).
+RUNTIME_ARCHIVES = [
+    ("audio-v0.8.0-bin-windows-x64-cuda13.3.zip", 269563691,
+     "98ccbc3f5e6c73a6ffffa7ae32e1e204f4d12b15cac8a7901fb6be24d943fde6"),
+    ("audio-v0.8.0-cudart-windows-x64-cuda13.3.zip", 575457454,
+     "17fc9b2098d8167b6207be838e15187412f070429b6174b7353404e7131897fc"),
+]
+
+YUE2_HF_BASE = "https://huggingface.co/ngquocvinh/YuE2-3B-GGUF/resolve/main"
+# (repo-relative path, size bytes, sha256). Weights are CC BY-NC 4.0.
+YUE2_FILES = [
+    ("yue2-3b-q4_k_m.gguf", 2877774656,
+     "24315e53105cb3418b095d1e42e7276bf54b17100c51a43a4d0e37efdeed823d"),
+    ("yue2-vae-f16.gguf", 265226496,
+     "81e05a79e78ce5cb8deb1d87e17b73e5d205b440be2bd510ae62acf37b300ddb"),
+    ("sidecars/yue2-model-config.json", 959,
+     "ad3477bbef890bf98ae196c1e4b44779494a6231c4ab66f32708eabadf265329"),
+    ("sidecars/yue2-generation-config.json", 466,
+     "203830cebde6e3644eb291925362990d198e66c3b6006cd11f1aaa21904bcc61"),
+    ("sidecars/yue2-qwen.tiktoken", 2561218,
+     "b2b1b8dfb5cc5f024bafc373121c6aba3f66f9a5a0269e243470a1de16a33186"),
+    ("sidecars/yue2-vae-config.json", 1378,
+     "f0191bb9694009956de44e0c361a6f1334760be4c8f848e599bde242a54a0970"),
+]
+
+
+def runtime_fetch_specs(root=None):
+    """DownloadSpecs for the runtime archives + their staging directory.
+
+    Archives extract into ``bin/`` via :func:`install_runtime_archives`.
+    Raises RuntimeError on platforms without a pinned build.
+    """
+    import sys
+    if sys.platform != "win32":
+        raise RuntimeError(
+            "No pinned audio.cpp build for this platform. Download manually "
+            "from https://github.com/0xShug0/audio.cpp/releases and extract "
+            "under tools/audiocpp/bin/ (see tools/audiocpp/README.md)."
+        )
+    root = Path(root) if root is not None else REPO_ROOT / "tools" / "audiocpp"
+    staging = root / "_dl"
+    specs = [DownloadSpec(f"{AUDIOCPP_RELEASE_BASE}/{name}", staging / name,
+                          size, sha, label=f"audio.cpp runtime: {name}")
+             for name, size, sha in RUNTIME_ARCHIVES]
+    return specs, staging
+
+
+def install_runtime_archives(staging, bin_dir):
+    """Extract verified runtime zips into bin_dir. NRT/worker-side only
+    (disk I/O); removes the staging directory afterwards."""
+    import zipfile
+    staging, bin_dir = Path(staging), Path(bin_dir)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for archive in sorted(staging.glob("*.zip")):
+        with zipfile.ZipFile(archive) as z:
+            z.extractall(bin_dir)
+    shutil.rmtree(staging, ignore_errors=True)
+    return bin_dir
+
+
+def yue2_fetch_specs(model_dir):
+    """DownloadSpecs for the YuE2 GGUF model + sidecars."""
+    model_dir = Path(model_dir)
+    return [DownloadSpec(f"{YUE2_HF_BASE}/{rel}", model_dir / rel,
+                         size, sha, label=f"YuE2 model: {rel}")
+            for rel, size, sha in YUE2_FILES]
+
+
+def missing_specs(specs):
+    """Subset of specs whose destination does not verify. Cheap checks."""
+    from download_util import _verify
+    return [s for s in specs
+            if not _verify(s.dest, s.size, s.sha256)]
+
+
+SHEETSAGE_HF_BASE = "https://huggingface.co/audio-cpp/SheetSage2-GGUF/resolve/main"
+# (repo-relative path, size bytes, sha256). Upstream publishes no hash for
+# this file, so integrity is size-checked only.
+SHEETSAGE_FILES = [
+    ("sheetsage2-orig.gguf", 2708224512, None),
+]
+SHEETSAGE_GGUF = "sheetsage2-orig.gguf"
+SHEETSAGE_DEFAULT_MAX_TOKENS = 5120
+# Weight dtypes the CLI actually accepts (its --help also names q8_0, but
+# v0.8.0 rejects it at runtime).
+SHEETSAGE_WEIGHT_TYPES = ("native", "f32", "f16", "bf16", "q4_0", "q4_k")
+
+
+def sheetsage_fetch_specs(model_dir):
+    """DownloadSpecs for the SheetSage2 GGUF model (self-contained)."""
+    model_dir = Path(model_dir)
+    return [DownloadSpec(f"{SHEETSAGE_HF_BASE}/{rel}", model_dir / rel,
+                         size, sha, label=f"SheetSage2 model: {rel}")
+            for rel, size, sha in SHEETSAGE_FILES]
+
+
+_HEADER_LINE_RE = re.compile(r"^[A-Za-z]:")
+_CHORD_RE = re.compile(r'"[^"\n]*"')
+
+
+def strip_abc_chords(abc_text):
+    """Return the ABC with chord symbols removed (melody-only variant).
+
+    Chord symbols are `"Name"` quoted strings on music lines. Header lines
+    (``X:``/``T:``/``K:``/…), ``%`` comments and ``w:`` lyric lines pass
+    through untouched. Pure function; the YuE2 cover recipe wants a
+    chord-free score for ``cot=melody``.
+    """
+    out = []
+    for line in abc_text.splitlines():
+        stripped = line.strip()
+        if (not stripped or stripped.startswith("%")
+                or stripped.startswith("w:") or _HEADER_LINE_RE.match(stripped)):
+            out.append(line)
+        else:
+            out.append(_CHORD_RE.sub("", line))
+    return "\n".join(out) + "\n"
+
+
+def _build_sheetsage_argv(cli, model_dir, *, audio_wav, weight_type,
+                          max_tokens, out_abc):
+    """Pure argv builder (no process). Tested without a GPU."""
+    if weight_type not in SHEETSAGE_WEIGHT_TYPES:
+        raise ValueError(f"weight_type must be one of {SHEETSAGE_WEIGHT_TYPES}")
+    if (not isinstance(max_tokens, int) or isinstance(max_tokens, bool)
+            or max_tokens < 1):
+        raise ValueError("max_tokens must be a positive integer")
+    return [
+        str(cli), "--task", "midi", "--family", "sheetsage2",
+        "--model", str(model_dir), "--backend", "cuda", "--threads", "8",
+        "--session-option", f"sheetsage2.weight_type={weight_type}",
+        "--request-option", f"max_tokens={max_tokens}",
+        "--audio", str(audio_wav),
+        "--text-out", str(out_abc), "--metrics",
+    ]
+
+
+def run_sheetsage_transcribe(cli, model_dir, *, audio_wav, weight_type="native",
+                             max_tokens=SHEETSAGE_DEFAULT_MAX_TOKENS,
+                             out_abc, cancel_event=None, timeout_s=3600):
+    """Transcribe one recording to an ABC score file. Blocking; NRT only.
+
+    Returns ``{"abc": str, "metrics": dict}``. Raises
+    :class:`GenerationCancelled` on cancellation, ``RuntimeError`` /
+    ``ValueError`` / ``FileNotFoundError`` on failure.
+    """
+    cli, model_dir = Path(cli), Path(model_dir)
+    audio_wav, out_abc = Path(audio_wav), Path(out_abc)
+    if not cli.exists():
+        raise FileNotFoundError(f"audiocpp_cli not found: {cli}")
+    if not (model_dir / SHEETSAGE_GGUF).exists():
+        raise FileNotFoundError(
+            f"SheetSage2 weights not downloaded: {model_dir / SHEETSAGE_GGUF} "
+            "(run tools/audiocpp/fetch_sheetsage2_gguf.py)"
+        )
+    if not audio_wav.exists():
+        raise FileNotFoundError(f"input audio not found: {audio_wav}")
+    argv = _build_sheetsage_argv(cli, model_dir, audio_wav=audio_wav,
+                                 weight_type=weight_type, max_tokens=max_tokens,
+                                 out_abc=out_abc)
+    out_abc.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, **_no_window_kwargs(),
+        )
+    except OSError as e:
+        raise RuntimeError(f"failed to launch audio.cpp: {e}")
+    try:
+        elapsed = 0.0
+        step = 0.5
+        output_tail = ""
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelled("transcription cancelled")
+            try:
+                # May be retried after TimeoutExpired; returns full output.
+                output_tail, _ = proc.communicate(timeout=step)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed += step
+                if elapsed >= timeout_s:
+                    raise TimeoutError(
+                        f"SheetSage2 transcription exceeded {timeout_s}s; terminating"
+                    )
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"audio.cpp exited with code {proc.returncode}: "
+            f"{output_tail[-2000:].strip()}"
+        )
+    if not out_abc.exists():
+        raise RuntimeError("audio.cpp reported success but wrote no ABC file")
+    return {"abc": str(out_abc), "metrics": _parse_metrics(output_tail)}
 
 
 class GenerationCancelled(RuntimeError):
@@ -226,6 +432,35 @@ class AudioCppJob(Node):
 
     def remove(self):
         self._cancel_job()
+
+    def _push_telemetry(self):
+        """Deliver the current get_telemetry() snapshot to the UI now.
+
+        Engine telemetry normally reaches widgets on the ~100 ms tick
+        (running) or via NRT-drain coupling (stopped, controller.py).
+        Button presses that produce no NRT traffic — e.g. Download with
+        everything already fetched, or a rejected Generate — would
+        otherwise leave the widget labels frozen, so the param handler
+        pushes explicitly. Same {"type": "telemetry"} schema the engine
+        itself emits; dropped when the output queue is full. Call only
+        from engine/control contexts (param handlers, NRT completion),
+        never from process().
+        """
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        if engine is None:
+            return
+        try:
+            data = self.get_telemetry()
+        except Exception:
+            return
+        if not data:
+            return
+        try:
+            engine.output_queue.put_nowait(
+                {"type": "telemetry", "node_data": {self.id: data}})
+        except queue.Full:
+            pass
 
     def on_nrt_discarded(self, tag, ok, result):
         self._cleanup_discarded(tag, ok, result)

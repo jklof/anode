@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Fetch YuE2 GGUF weights into models/YuE2-3B-GGUF/.
+"""Fetch SheetSage2 GGUF weights into models/SheetSage2-GGUF/.
 
-Interrupt-safe and resumable: Ctrl+C keeps `.part` files and re-running
+Interrupt-safe and resumable: Ctrl+C keeps the `.part` file and re-running
 continues where it stopped. Stdlib only; run from the repo root:
 
-    python tools/audiocpp/fetch_yue2_gguf.py
+    python tools/audiocpp/fetch_sheetsage2_gguf.py
 
-Downloads the Q4_K_M main model (~2.7 GiB, measured ~4.3 GB peak VRAM for
-a 77 s song on an 8 GB laptop GPU) plus the F16 VAE and required sidecars.
-Weights are CC BY-NC 4.0 (non-commercial).
+Single self-contained file (no sidecars upstream). No publisher hash is
+available, so integrity is checked by exact file size. Weights are
+CC BY-NC 4.0 (non-commercial).
 """
 import sys
 from pathlib import Path
@@ -16,7 +16,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from audiocpp_backend import REPO_ROOT as _ROOT, yue2_fetch_specs
+from audiocpp_backend import REPO_ROOT as _ROOT, sheetsage_fetch_specs
 from download_util import (
     ConsoleProgress,
     DownloadCancelled,
@@ -27,10 +27,10 @@ from download_util import (
 
 
 def main() -> int:
-    specs = yue2_fetch_specs(_ROOT / "models" / "YuE2-3B-GGUF")
+    specs = sheetsage_fetch_specs(_ROOT / "models" / "SheetSage2-GGUF")
     pending = missing_specs(specs)
     if not pending:
-        print("All YuE2 model files already present.")
+        print("SheetSage2 model file already present.")
         return 0
     try:
         fetch_all(pending, progress_cb=ConsoleProgress())
@@ -40,7 +40,7 @@ def main() -> int:
     except DownloadError as e:
         print(f"\nFailed: {e}")
         return 1
-    print("Weights are CC BY-NC 4.0 (non-commercial); see models/YuE2-3B-GGUF/README.md.")
+    print("Weights are CC BY-NC 4.0 (non-commercial); see models/SheetSage2-GGUF/README.md.")
     return 0
 
 

@@ -590,6 +590,10 @@ class StringParamWidget(QWidget):
         # Line edit
         self.line_edit = QLineEdit(self.current_value)
         self.line_edit.returnPressed.connect(self._on_return_pressed)
+        # Commit on focus loss too: otherwise typed text that was never
+        # confirmed with Return silently diverges from the staged value
+        # (e.g. typing a prompt and clicking a node action button).
+        self.line_edit.editingFinished.connect(self._on_editing_finished)
         self.layout.addWidget(self.line_edit)
 
         # --- Tooltip ---
@@ -601,6 +605,13 @@ class StringParamWidget(QWidget):
         """Handle line edit return key press."""
         text = self.line_edit.text()
         self.callback(text)
+
+    def _on_editing_finished(self):
+        """Handle focus loss (and Return): commit unconfirmed text."""
+        text = self.line_edit.text()
+        if text != self.current_value:
+            self.current_value = text
+            self.callback(text)
 
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
