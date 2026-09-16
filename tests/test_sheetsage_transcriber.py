@@ -237,23 +237,13 @@ def test_load_input_wav_normalizes(node_cls, tmp_path):
 
 
 def test_load_input_wav_mp3(node_cls, tmp_path):
-    av = pytest.importorskip("av")
+    pytest.importorskip("av")
+    from audio_io import encode_mp3_file
     load_input_wav = _live().load_input_wav
     mp3 = tmp_path / "src.mp3"
     try:
-        container = av.open(str(mp3), mode="w")
-        stream = container.add_stream("libmp3lame", rate=44100)
-        stream.channels = 2
-        layout = "stereo"
-        samples = np.zeros((2, 4410), dtype=np.float32)
-        frame = av.AudioFrame.from_ndarray(samples, format="fltp", layout=layout)
-        frame.sample_rate = 44100
-        for packet in stream.encode(frame):
-            container.mux(packet)
-        for packet in stream.encode():
-            container.mux(packet)
-        container.close()
-    except Exception as e:
+        encode_mp3_file(mp3, np.zeros((2, 4410), dtype=np.float32), 44100)
+    except RuntimeError as e:
         pytest.skip(f"mp3 encoder unavailable: {e}")
     out = load_input_wav(mp3, tmp_path / "out.wav")
     data, sr = sf.read(str(out), dtype="float32", always_2d=True)
@@ -267,12 +257,10 @@ def test_load_input_wav_missing(node_cls, tmp_path):
 
 
 def test_load_input_wav_mixed_frame_layouts(node_cls, tmp_path, monkeypatch):
-    # node_cls fixture first: it loads the plugins, so the live top-level
-    # module object exists in sys.modules (see NB below).
-    """Regression: PyAV frame layouts are not guaranteed uniform (mixed
-    planar/packed or trailing mono flush frames broke a bulk
-    concatenate with 'all input array dimensions ... must match')."""
-    import sys
+    # node_cls fixture first: it loads the plugins.
+    # Regression: PyAV frame layouts are not guaranteed uniform (mixed
+    # planar/packed or trailing mono flush frames broke a bulk
+    # concatenate with 'all input array dimensions ... must match').
     import types
     load_input_wav = _live().load_input_wav
 
@@ -296,10 +284,9 @@ def test_load_input_wav_mixed_frame_layouts(node_cls, tmp_path, monkeypatch):
             return iter([FakeFrame(stereo), FakeFrame(planar), FakeFrame(mono_flush)])
 
     fake_av = types.SimpleNamespace(open=lambda *a, **k: FakeContainer())
-    # NB: the live module is sys.modules["sheetsage_transcriber"]
-    # (load_plugins imports node files top-level); patch that object.
-    mod = sys.modules["sheetsage_transcriber"]
-    monkeypatch.setattr(mod, "av", fake_av, raising=False)
+    # Decoding lives in audio_io now; patch its decoder handle.
+    import audio_io
+    monkeypatch.setattr(audio_io, "av", fake_av, raising=False)
     src = tmp_path / "mixed.mp3"
     src.write_bytes(b"fake")
     out = load_input_wav(src, tmp_path / "out.wav")

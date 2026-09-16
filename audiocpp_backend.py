@@ -462,6 +462,25 @@ class AudioCppJob(Node):
         except queue.Full:
             pass
 
+    def _refresh_ui(self):
+        """Push telemetry now AND refresh the node header/snapshot state.
+
+        _push_telemetry() only updates custom-widget labels; the red error
+        badge (and param confirmations) come from snapshots, which the
+        engine emits for structural ops, on error change while running, or
+        on NRT drain while stopped — none of which fire for a bare button
+        press. So a cleared error_msg would keep its red box (or a fresh
+        one stay invisible) until something else snapshots. Requesting a
+        snapshot here makes press->feedback immediate in both engine
+        states. Button-press rare; same cost class as structural ops.
+        """
+        self._push_telemetry()
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        emit = getattr(engine, "_emit_snapshot", None)
+        if callable(emit):
+            emit()
+
     def on_nrt_discarded(self, tag, ok, result):
         self._cleanup_discarded(tag, ok, result)
 

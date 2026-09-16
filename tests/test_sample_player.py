@@ -297,3 +297,19 @@ def test_loop_wrap_does_not_overrun(player_cls):
     for _ in range(10):  # crosses the wrap boundary repeatedly
         feed_gate(node, 1.0)  # must not raise
     assert node._is_playing is True
+
+
+def test_mp3_loads_through_node_loader(player_cls, tmp_path):
+    """The file filter advertises MP3: the loader must deliver it, not just
+    WAV/FLAC/OGG (previously failed in _load_file_nrt)."""
+    pytest.importorskip("av")
+    import numpy as np
+    from audio_io import encode_mp3_file
+    mp3 = tmp_path / "s.mp3"
+    try:
+        encode_mp3_file(mp3, np.zeros((2, 4800), dtype=np.float32), 48000)
+    except RuntimeError as e:
+        pytest.skip(f"mp3 encoder unavailable: {e}")
+    node = make_node(player_cls)
+    data = node._load_file_nrt(str(mp3))
+    assert data.shape[0] == CHANNELS and data.shape[1] > 0

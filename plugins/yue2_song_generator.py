@@ -24,6 +24,7 @@ scores via `abc_file` until a newer runtime is pinned.
 import logging
 import random
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -58,13 +59,6 @@ from base import SAMPLE_RATE, CHANNELS
 logger = logging.getLogger(__name__)
 
 try:
-    import soundfile as sf
-    _SF_AVAILABLE = True
-except ImportError:
-    sf = None
-    _SF_AVAILABLE = False
-
-try:
     import resampy
     _RESAMPY_AVAILABLE = True
 except ImportError:
@@ -72,6 +66,7 @@ except ImportError:
     _RESAMPY_AVAILABLE = False
 
 COT_MODES = ("off", "melody", "full")
+FORMATS = ("mp3", "wav")
 PROFILES = (
     ("Q4_K_M (8 GB VRAM)", "yue2-3b-q4_k_m.gguf"),
     ("Q8_0 (16 GB VRAM)", "yue2-3b-q8_0.gguf"),
@@ -80,22 +75,16 @@ PROFILES = (
 VAE_GGUF = "yue2-vae-f16.gguf"
 
 
-def load_song_wav(path):
-    """Decode a song WAV into a (2, N) contiguous float32 CPU tensor.
+def load_song_file(path):
+    """Decode a kept song (WAV or MP3) into a (2, N) contiguous float32 CPU
+    tensor at the engine rate.
 
     Pure helper (no node state): the NRT worker calls this, tests call it
     directly. Raises RuntimeError with a human-readable message on failure.
     """
-    if sf is None:
-        raise RuntimeError(
-            "YuE2SongGenerator: 'soundfile' is required but is not installed"
-        )
-    try:
-        data, sr = sf.read(str(path), dtype="float32", always_2d=True)
-    except Exception as e:
-        raise RuntimeError(f"could not decode {path}: {e}")
     import numpy as np
-    audio = data.T
+    from audio_io import decode_audio_file
+    audio, sr = decode_audio_file(path)
     if audio.shape[0] == 1:
         audio = np.vstack([audio[0], audio[0]])  # mono -> stereo dup
     else:
@@ -134,6 +123,8 @@ class YuE2Widget(QWidget):
         layout.addWidget(self.abc_widget)
         self.profile_widget = self.proxy.create_param_widget("profile")
         layout.addWidget(self.profile_widget)
+        self.format_widget = self.proxy.create_param_widget("format")
+        layout.addWidget(self.format_widget)
         self.cot_widget = self.proxy.create_param_widget("cot")
         layout.addWidget(self.cot_widget)
         self.seed_widget = self.proxy.create_param_widget("seed")
@@ -193,6 +184,7 @@ class YuE2Widget(QWidget):
             ("lyrics_file", self.lyrics_widget),
             ("abc_file", self.abc_widget),
             ("profile", self.profile_widget),
+            ("format", self.format_widget),
             ("cot", self.cot_widget),
             ("seed", self.seed_widget),
             ("auto_seed", self.auto_seed_widget),
@@ -230,7 +222,7 @@ class YuE2SongGenerator(AudioCppJob):
                            help="Wired score path (e.g. from SheetSage2Transcriber). While connected "
                                 "and non-empty it overrides abc_file; snapshots at Generate time.")
         self.add_uri_output("song",
-                            help="Kept song WAV path; published on completion and on patch-load relink.")
+                            help="Kept song path (MP3 or WAV per format); published on completion and on patch-load relink.")
         self.ready = self.add_output("ready", channels=1,
                                      help="One-block 1.0 pulse when a new song is ready (wire to a trigger input).")
 
@@ -244,6 +236,9 @@ class YuE2SongGenerator(AudioCppJob):
                                  "A connected abc_uri input overrides this.")
         self.add_menu_param("profile", [label for label, _ in PROFILES], initial_idx=0,
                             help="GGUF precision profile; larger profiles need more VRAM.")
+        self.add_menu_param("format", ["MP3 (320 kbps)", "WAV (lossless)"], initial_idx=0,
+                            help="Kept song format — exactly one file is kept. MP3 shares cheaply; "
+                                 "WAV keeps full quality for further processing.")
         self.add_menu_param("cot", list(COT_MODES), initial_idx=2,
                             help="Symbolic planning: off = direct, melody = melody plan, full = melody+chords.")
         # Capped at 2**31 - 1: IntParamWidget is a 32-bit QSpinBox
@@ -261,11 +256,14 @@ class YuE2SongGenerator(AudioCppJob):
         self.add_bool_param("cancel", False,
                             help="Transient trigger: terminates the in-flight generation.")
         # Last kept song, for save/load re-linking. Written on completion.
+        # The key stays "last_wav" for saved-patch compatibility; the value
+        # is whatever format was kept (song.mp3 or song.wav).
         self.add_string_param("last_wav", "",
-                              help="Path of the last generated song; re-linked on patch load.")
+                              help="Path of the last generated song (MP3 or WAV); re-linked on patch load.")
 
         self._ready_pulse = False  # emitted as a one-block pulse on ready
         self._last_trig = 0.0
+        self._gen_t0 = None  # monotonic start of the in-flight job (elapsed display)
         self._status = "Idle"
         self._status_detail = "No song generated"
 
@@ -334,6 +332,7 @@ class YuE2SongGenerator(AudioCppJob):
             "cot": COT_MODES[int(self.params["cot"].value)],
             "seed": self._pick_seed(),
             "main_gguf": main_gguf,
+            "format": FORMATS[int(self.params["format"].value)],
         }
 
     def _pick_seed(self):
@@ -385,51 +384,55 @@ class YuE2SongGenerator(AudioCppJob):
                 spec = self._build_spec()
             except ValueError as e:
                 self._fail(str(e))
-                self._push_telemetry()
+                self._refresh_ui()
                 return
             self.error_msg = None
             self._status = "Generating"
             self._status_detail = f"seed {spec['seed']}, {spec['cot']}, {spec['main_gguf']}…"
+            self._gen_t0 = time.monotonic()
             self.submit_job("gen", self._generate_nrt, spec)
-            self._push_telemetry()
+            self._refresh_ui()
         elif param_name == "cancel":
             if self.params["cancel"].value:
                 self._restage("cancel", False)
                 self._cancel_job()
+                self._gen_t0 = None
                 if self._status in ("Generating", "Downloading"):
                     self._status = "Cancelled"
                     self._status_detail = "Cancelled by user"
-                self._push_telemetry()
+                self._refresh_ui()
         elif param_name == "download":
             if not self.params["download"].value:
                 return
             self._restage("download", False)
             if getattr(self, "graph", None) is None or self.graph.engine is None:
                 self._fail("Node is not attached to an engine.")
-                self._push_telemetry()
+                self._refresh_ui()
                 return
             try:
                 payload = self._build_fetch_payload()
             except ValueError as e:
                 self._fail(str(e))
-                self._push_telemetry()
+                self._refresh_ui()
                 return
             if not payload["runtime"] and not payload["models"]:
                 self.error_msg = None
                 self._status = "Idle"
                 self._status_detail = "Everything already downloaded"
-                self._push_telemetry()
+                self._refresh_ui()
                 return
             self.error_msg = None
             self._status = "Downloading"
             self._status_detail = "Starting download…"
             self.submit_job("fetch", self._fetch_nrt, payload)
-            self._push_telemetry()
+            self._refresh_ui()
 
     def _fail(self, message):
+        self._gen_t0 = None
         self._status = "Error"
         self._status_detail = message
         self.error_msg = message
+        logger.error(f"YuE2SongGenerator {self.name}: {message}")
 
     # ------------------------------------------------------------------
     # NRT worker
@@ -448,21 +451,38 @@ class YuE2SongGenerator(AudioCppJob):
                 vae_gguf=VAE_GGUF, abc_file=spec["abc_file"], out_wav=out_wav,
                 cancel_event=cancel_event,
             )
-            audio = load_song_wav(gen["wav"])
+            audio = load_song_file(gen["wav"])
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             keep = Path(spec["model_dir"]) / "outputs" / f"{stamp}_seed{spec['seed']}_{spec['cot']}"
-            self.keep_artifacts(run_dir, keep, ["song.wav"])
-            self.write_json(keep / "request.json", {
-                "style": spec["style"], "lyrics_file": spec["lyrics_file"],
-                "abc_file": spec["abc_file"], "cot": spec["cot"],
-                "seed": spec["seed"], "profile": spec["main_gguf"],
-            })
-            self.write_json(keep / "metrics.json", gen["metrics"])
-            return {"audio": audio, "wav": str(keep / "song.wav"),
+            kept_song = self._keep_song(run_dir, keep, audio, spec, gen["metrics"])
+            return {"audio": audio, "wav": str(kept_song),
                     "metrics": gen["metrics"], "seed": spec["seed"], "cot": spec["cot"]}
         except BaseException:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
+
+    def _keep_song(self, run_dir, keep, audio, spec, metrics):
+        """Keep exactly one song file plus provenance records. Returns kept path."""
+        if spec["format"] == "mp3":
+            # Encode MP3 from the validated tensor straight into the keep
+            # dir (libmp3lame 320k); the CLI WAV stays in run_dir and is
+            # cleaned up with it.
+            from audio_io import encode_mp3_file
+            keep.mkdir(parents=True, exist_ok=True)
+            encode_mp3_file(keep / "song.mp3", audio.numpy(), SAMPLE_RATE)
+            kept_song = keep / "song.mp3"
+            self.keep_artifacts(run_dir, keep, [])
+        else:
+            kept_song = keep / "song.wav"
+            self.keep_artifacts(run_dir, keep, ["song.wav"])
+        self.write_json(keep / "request.json", {
+            "style": spec["style"], "lyrics_file": spec["lyrics_file"],
+            "abc_file": spec["abc_file"], "cot": spec["cot"],
+            "seed": spec["seed"], "profile": spec["main_gguf"],
+            "format": spec["format"],
+        })
+        self.write_json(keep / "metrics.json", metrics)
+        return kept_song
 
     def _fetch_nrt(self, cancel_event, payload):
         """Download missing runtime/models with inbox progress. NRT only."""
@@ -496,11 +516,12 @@ class YuE2SongGenerator(AudioCppJob):
         return {"fetched": fetched}
 
     def _relink_nrt(self, cancel_event, wav_path):
-        return {"audio": load_song_wav(wav_path), "wav": wav_path,
+        return {"audio": load_song_file(wav_path), "wav": wav_path,
                 "metrics": {}, "seed": None, "cot": None}
 
     def on_nrt_complete(self, tag, ok, result):
         if tag == "gen":
+            self._gen_t0 = None  # terminal state either way; stops the elapsed clock
             if not ok:
                 if isinstance(result, GenerationCancelled):
                     self._status = "Cancelled"
@@ -587,7 +608,14 @@ class YuE2SongGenerator(AudioCppJob):
             # Headless (tests): caller drives _relink_nrt directly.
 
     def get_telemetry(self) -> dict:
-        return {"status": self._status, "audio": self._status_detail}
+        detail = self._status_detail
+        if self._status == "Generating" and self._gen_t0 is not None:
+            # Slow-vs-stuck discriminator: the CLI emits no progress, so a
+            # silent tail (e.g. VAE decode of a long song under memory
+            # pressure) is otherwise indistinguishable from a hung job.
+            elapsed = time.monotonic() - self._gen_t0
+            detail = f"{detail} ({elapsed:.0f} s elapsed)"
+        return {"status": self._status, "audio": detail}
 
     # ------------------------------------------------------------------
     # audio thread: one-block ready pulse + trigger edge detect (both

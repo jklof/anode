@@ -21,13 +21,6 @@ import torch
 from base import Node, SAMPLE_RATE, CHANNELS, BLOCK_SIZE, DTYPE
 
 try:
-    import soundfile as sf
-    _SF_AVAILABLE = True
-except ImportError:
-    sf = None
-    _SF_AVAILABLE = False
-
-try:
     import resampy
     _RESAMPY_AVAILABLE = True
 except ImportError:
@@ -101,22 +94,21 @@ class SamplePlayer(Node):
     # NRT load path
     # ------------------------------------------------------------------
     def on_ui_param_change(self, param_name):
-        if param_name != "sample_path" or not _SF_AVAILABLE:
+        if param_name != "sample_path":
             return
         path = self.params["sample_path"].get_staging_safe()
         if path and path != self._current_path:
             self._current_path = path
             self._pending_autoplay = False  # param loads wait for a trigger
             self._submitted_source = path
+            # Decoding happens on the worker (decode_audio_file raises a
+            # clear error there if no decoder is installed).
             self.submit_nrt(self._load_file_nrt, path, tag="load")
 
     def _load_file_nrt(self, path):
-        if sf is None:
-            raise RuntimeError(
-                "SamplePlayer: 'soundfile' is required to load samples but is not installed"
-            )
-        data, sr = sf.read(path, dtype="float32", always_2d=True)
-        data = data.T[:CHANNELS].copy()
+        from audio_io import decode_audio_file
+        data, sr = decode_audio_file(path)  # WAV/FLAC/OGG via soundfile, MP3 via PyAV
+        data = data[:CHANNELS].copy()
         if data.shape[0] == 1:
             data = np.vstack([data[0], data[0]])          # mono -> stereo dup
         if sr != SAMPLE_RATE:

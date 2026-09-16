@@ -58,95 +58,28 @@ from download_util import (
 logger = logging.getLogger(__name__)
 
 try:
-    import soundfile as sf
-    _SF_AVAILABLE = True
-except ImportError:
-    sf = None
-    _SF_AVAILABLE = False
-
-try:
     import resampy
     _RESAMPY_AVAILABLE = True
 except ImportError:
     resampy = None
     _RESAMPY_AVAILABLE = False
 
-try:
-    import av
-    _AV_AVAILABLE = True
-except ImportError:
-    av = None
-    _AV_AVAILABLE = False
-
 INPUT_RATE = 48000
 INPUT_CHANNELS = 2
 AUDIO_FILTER = "Audio Files (*.wav *.flac *.ogg *.mp3);;All Files (*.*)"
-
-
-def _orient_channels(data):
-    """Orient a decoded array to (channels, samples). Decoders disagree on
-    axis order, so assume the small dim (<= 8) is channels."""
-    import numpy as np
-    data = np.asarray(data)
-    if data.ndim == 1:
-        return data[None, :]
-    if data.ndim != 2:
-        raise ValueError(f"unsupported decoded shape {data.shape}")
-    if data.shape[0] <= 8:
-        return data
-    return data.T
 
 
 def load_input_wav(src_path, out_wav):
     """Decode an audio file to a 48 kHz stereo WAV for the transcriber.
 
     Pure helper (no node state): the NRT worker calls this, tests call it
-    directly. WAV/FLAC/OGG go through soundfile; MP3 (and anything else
-    soundfile rejects) falls back to PyAV. Raises RuntimeError on failure.
+    directly. Decoding is shared with SamplePlayer (audio_io): WAV/FLAC/OGG
+    via soundfile, MP3 via PyAV. Raises RuntimeError on failure.
     """
     import numpy as np
-    src_path, out_wav = Path(src_path), Path(out_wav)
-    if not src_path.exists():
-        raise RuntimeError(f"input audio not found: {src_path}")
-    audio, sr = None, None
-    if src_path.suffix.lower() != ".mp3" and sf is not None:
-        try:
-            data, sr = sf.read(str(src_path), dtype="float32", always_2d=True)
-            audio = _orient_channels(data.T).astype(np.float32)
-        except Exception:
-            audio, sr = None, None
-    if audio is None:
-        if not _AV_AVAILABLE:
-            raise RuntimeError(
-                f"could not decode {src_path.name} with soundfile and PyAV "
-                "is not installed (MP3 needs PyAV)"
-            )
-        try:
-            container = av.open(str(src_path))
-            stream = container.streams.audio[0]
-            sr = stream.sample_rate
-            # Orient frame-by-frame: PyAV frame layouts are not guaranteed
-            # uniform (mixed planar/packed or trailing mono flush frames
-            # break a single bulk concatenate).
-            parts = []
-            for frame in container.decode(audio=0):
-                parts.append(_orient_channels(frame.to_ndarray()).astype(np.float32))
-            if not parts:
-                raise RuntimeError(f"no audio frames decoded from {src_path.name}")
-            channels = max(p.shape[0] for p in parts)
-            aligned = []
-            for p in parts:
-                if p.shape[0] == 1 and channels > 1:
-                    p = np.repeat(p, channels, axis=0)  # mono flush frame
-                if p.shape[0] != channels:
-                    raise RuntimeError(
-                        f"inconsistent channel counts while decoding {src_path.name}")
-                aligned.append(p)
-            audio = np.concatenate(aligned, axis=-1)
-        except RuntimeError:
-            raise
-        except Exception as e:
-            raise RuntimeError(f"could not decode {src_path.name}: {e}")
+    from audio_io import decode_audio_file, write_wav_file
+    src_path = Path(src_path)
+    audio, sr = decode_audio_file(src_path)
     if audio.shape[0] == 1:
         audio = np.vstack([audio[0], audio[0]])  # mono -> stereo dup
     else:
@@ -158,11 +91,7 @@ def load_input_wav(src_path, out_wav):
                 "and 'resampy' is not installed"
             )
         audio = resampy.resample(audio, sr, INPUT_RATE, axis=-1)
-    if sf is None:  # pragma: no cover - soundfile is a hard app dependency
-        raise RuntimeError("'soundfile' is required to write the input WAV")
-    out_wav.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(out_wav), np.ascontiguousarray(audio.T), INPUT_RATE)
-    return out_wav
+    return write_wav_file(out_wav, audio, INPUT_RATE)
 
 
 def section_names(abc_text):
@@ -320,11 +249,12 @@ class SheetSage2Transcriber(AudioCppJob):
         self._status = "Error"
         self._status_detail = message
         self.error_msg = message
+        logger.error(f"SheetSage2Transcriber {self.name}: {message}")
 
     def _need_engine(self):
         if getattr(self, "graph", None) is None or self.graph.engine is None:
             self._fail("Node is not attached to an engine.")
-            self._push_telemetry()
+            self._refresh_ui()
             return False
         return True
 
@@ -388,13 +318,13 @@ class SheetSage2Transcriber(AudioCppJob):
                 spec = self._build_spec()
             except ValueError as e:
                 self._fail(str(e))
-                self._push_telemetry()
+                self._refresh_ui()
                 return
             self.error_msg = None
             self._status = "Transcribing"
             self._status_detail = f"{Path(spec['audio_file']).name} ({spec['weight_type']})…"
             self.submit_job("job", self._transcribe_nrt, spec)
-            self._push_telemetry()
+            self._refresh_ui()
         elif param_name == "cancel":
             if self.params["cancel"].value:
                 self._restage("cancel", False)
@@ -402,7 +332,7 @@ class SheetSage2Transcriber(AudioCppJob):
                 if self._status in ("Transcribing", "Downloading"):
                     self._status = "Cancelled"
                     self._status_detail = "Cancelled by user"
-                self._push_telemetry()
+                self._refresh_ui()
         elif param_name == "download":
             if not self.params["download"].value:
                 return
@@ -413,19 +343,19 @@ class SheetSage2Transcriber(AudioCppJob):
                 payload = self._build_fetch_payload()
             except ValueError as e:
                 self._fail(str(e))
-                self._push_telemetry()
+                self._refresh_ui()
                 return
             if not payload["runtime"] and not payload["models"]:
                 self.error_msg = None
                 self._status = "Idle"
                 self._status_detail = "Everything already downloaded"
-                self._push_telemetry()
+                self._refresh_ui()
                 return
             self.error_msg = None
             self._status = "Downloading"
             self._status_detail = "Starting download…"
             self.submit_job("fetch", self._fetch_nrt, payload)
-            self._push_telemetry()
+            self._refresh_ui()
 
     # ------------------------------------------------------------------
     # NRT worker

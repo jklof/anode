@@ -233,17 +233,21 @@ def test_ports_are_uri_and_pulse(node_cls):
 
 
 class _StubEngine:
-    """Minimal engine double: telemetry queue + command capture."""
+    """Minimal engine double: telemetry queue + command/snapshot capture."""
 
     def __init__(self):
         import queue
         self.output_queue = queue.Queue()
         self.commands = []
+        self.snapshots = 0
         self.running = False
 
     def push_command(self, cmd):
         self.commands.append(cmd)
         return len(self.commands)
+
+    def _emit_snapshot(self):
+        self.snapshots += 1
 
 
 def _attach_engine(node):
@@ -412,12 +416,31 @@ def test_build_spec_rejects_missing_backend(node_cls, tmp_path, monkeypatch):
         node._build_spec()
 
 
-def test_load_song_wav_mono_to_stereo(node_cls, tmp_path):
+def test_load_song_file_mono_to_stereo(node_cls, tmp_path):
     p = write_wav(tmp_path / "m.wav", seconds=0.2, channels=1)
-    load_song_wav = _live().load_song_wav
-    t = load_song_wav(p)
+    load_song_file = _live().load_song_file
+    t = load_song_file(p)
     assert t.shape == (CHANNELS, int(0.2 * SAMPLE_RATE))
     assert torch.allclose(t[0], t[1])
+
+
+def test_load_song_file_mp3(node_cls, tmp_path):
+    """Relinking an MP3 keep must decode (MP3 is the default format)."""
+    from audio_io import encode_mp3_file
+    wav = write_wav(tmp_path / "s.wav", seconds=0.5)
+    load_song_file = _live().load_song_file
+    ref = load_song_file(wav)
+    mp3 = tmp_path / "s.mp3"
+    try:
+        encode_mp3_file(mp3, ref.numpy(), SAMPLE_RATE)
+    except RuntimeError as e:
+        pytest.skip(f"mp3 encoder unavailable: {e}")
+    t = load_song_file(mp3)
+    assert t.shape[0] == CHANNELS
+    # MP3 encoder padding shifts length slightly; content must correlate.
+    n = min(t.shape[1], ref.shape[1])
+    assert torch.nn.functional.cosine_similarity(
+        t[:, :n].flatten(), ref[:, :n].flatten(), dim=0) > 0.99
 
 
 def test_save_load_relinks(node_cls, tmp_path):
@@ -459,7 +482,7 @@ def test_relink_missing_file_goes_idle(node_cls, tmp_path):
 def test_gpu_smoke_cot_off(node_cls, tmp_path):
     import subprocess as sp
     import threading
-    load_song_wav = _live().load_song_wav
+    load_song_file = _live().load_song_file
     node = make_node(node_cls)
     lyrics = tmp_path / "lyrics.txt"
     lyrics.write_text("[Verse]\nSoft morning light.\n[Chorus]\nSing with the sunrise.\n",
@@ -474,7 +497,7 @@ def test_gpu_smoke_cot_off(node_cls, tmp_path):
                        style="English, indie pop", cot="off", seed=831001,
                        main_gguf=spec["main_gguf"], out_wav=str(out_wav),
                        cancel_event=cancel)
-    audio = load_song_wav(gen["wav"])
+    audio = load_song_file(gen["wav"])
     assert audio.shape[0] == CHANNELS and audio.shape[1] > SAMPLE_RATE
     peak = float(sp.check_output(
         ["nvidia-smi", "--query-gpu=memory.used",
@@ -766,3 +789,89 @@ def test_pick_seed_auto_writes_back(node_cls):
     assert all(0 <= s < 2 ** 31 for s in seeds)
     assert len(seeds) > 1  # random, not stuck
     assert node.params["seed"].value in seeds  # written back
+
+
+def _keep_spec(tmp_path, fmt):
+    return {"style": "s", "lyrics_file": "l", "abc_file": None, "cot": "full",
+            "seed": 7, "main_gguf": "m.gguf", "format": fmt,
+            "cli": "c", "model_dir": str(tmp_path)}
+
+
+def _keep_audio(seconds=0.5):
+    import numpy as np
+    n = int(seconds * SAMPLE_RATE)
+    t = torch.linspace(0, 1, n, dtype=torch.float32)
+    return t.unsqueeze(0).repeat(CHANNELS, 1).contiguous()
+
+
+def test_keep_song_wav_format(node_cls, tmp_path):
+    node = make_node(node_cls)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "song.wav").write_bytes(b"cli-bytes")
+    keep = tmp_path / "keep"
+    kept = node._keep_song(run_dir, keep, _keep_audio(), _keep_spec(tmp_path, "wav"),
+                           {"rtf": 1.0})
+    assert kept == keep / "song.wav"
+    assert (keep / "song.wav").read_bytes() == b"cli-bytes"
+    assert not (keep / "song.mp3").exists()
+    assert not run_dir.exists()  # temp cleaned
+    import json
+    assert json.loads((keep / "request.json").read_text())["format"] == "wav"
+
+
+def test_keep_song_mp3_format_keeps_only_mp3(node_cls, tmp_path):
+    node = make_node(node_cls)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "song.wav").write_bytes(b"cli-bytes")
+    keep = tmp_path / "keep"
+    try:
+        kept = node._keep_song(run_dir, keep, _keep_audio(), _keep_spec(tmp_path, "mp3"),
+                               {"rtf": 1.0})
+    except RuntimeError as e:
+        pytest.skip(f"mp3 encoder unavailable: {e}")
+    assert kept == keep / "song.mp3"
+    assert (keep / "song.mp3").stat().st_size > 1024
+    assert not (keep / "song.wav").exists()  # exactly one audio file kept
+    assert not run_dir.exists()
+    # And the kept MP3 re-decodes for relinking.
+    load_song_file = _live().load_song_file
+    t = load_song_file(kept)
+    assert t.shape[0] == CHANNELS and t.shape[1] > 0
+
+
+def test_refresh_ui_emits_snapshot(node_cls):
+    """The stale-red-box fix: error clearing must snapshot, not just push
+    telemetry (headers/badges only update on snapshots)."""
+    node = make_node(node_cls)
+    engine = _attach_engine(node)
+    node._fail("boom")
+    node._refresh_ui()
+    assert engine.snapshots == 1
+    msg = engine.output_queue.get_nowait()
+    assert msg["node_data"][node.id]["status"] == "Error"
+
+
+def test_generate_validation_error_refreshes(node_cls, tmp_path, monkeypatch):
+    node = make_node(node_cls)
+    engine = _attach_engine(node)
+    monkeypatch.setattr(node, "_resolve_model_dir",
+                        lambda: tmp_path / "YuE2-3B-GGUF")
+    node.params["generate"].set(True)
+    node.params["generate"].sync()
+    node.on_ui_param_change("generate")
+    assert node._status == "Error"
+    assert engine.snapshots == 1  # red box appears immediately
+
+
+def test_telemetry_shows_elapsed_while_generating(node_cls):
+    import time
+    node = make_node(node_cls)
+    node._status = "Generating"
+    node._status_detail = "seed 7, full, m.gguf…"
+    node._gen_t0 = time.monotonic() - 65
+    telem = node.get_telemetry()
+    assert "elapsed" in telem["audio"]
+    node._gen_t0 = None
+    assert "elapsed" not in node.get_telemetry()["audio"]
