@@ -1,16 +1,21 @@
 """Shared audio file decoding. Stdlib + numpy + optional decoders only.
 
-Two entry points, both pure helpers (no node state) for NRT workers:
+Entry points, all pure helpers (no node state) for NRT workers:
 
 * :func:`decode_audio_file` — any readable audio file to a
   ``(channels, samples)`` float32 array plus its sample rate. WAV/FLAC/OGG
   go through soundfile; MP3 (and anything else soundfile rejects) falls
   back to PyAV. Frame layouts are normalized per frame: PyAV does not
   guarantee uniform planar/packed layout across frames.
+* :func:`to_engine_audio` — decode + channel-adapt + resample to the
+  engine format in one call (the mono-dup + resample sequence every
+  file-consuming node needs). NRT workers only: arbitrary-rate conversion
+  uses ``resampy``, which is banned from the per-block real-time path
+  (AGENTS.md section 4).
 * :func:`write_wav_file` — float array to a 16-bit PCM WAV file.
 
-SamplePlayer and the SheetSage2 transcriber share this so a format that
-decodes in one place decodes everywhere.
+SamplePlayer, the YuE2 song keeper and the SheetSage2 transcriber share
+this so a format that decodes in one place decodes everywhere.
 """
 
 import logging
@@ -33,6 +38,13 @@ try:
 except ImportError:
     av = None
     _AV_AVAILABLE = False
+
+try:
+    import resampy
+    _RESAMPY_AVAILABLE = True
+except ImportError:
+    resampy = None
+    _RESAMPY_AVAILABLE = False
 
 
 def _orient_channels(data):
@@ -108,6 +120,29 @@ def write_wav_file(path, audio, sample_rate):
     path.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(path), np.ascontiguousarray(audio.T), sample_rate)
     return path
+
+
+def to_engine_audio(path, *, target_sr, target_channels=2, label="audio"):
+    """Decode an audio file to ``(target_channels, N)`` float32 at target_sr.
+
+    Channel-adapts (mono is duplicated to fill a wider target; wider
+    input is truncated to the leading channels) then resamples when the
+    file rate differs. NRT workers only: resampling uses ``resampy``
+    (AGENTS.md section 4 bans it from the real-time path). Raises
+    RuntimeError with a human-readable message on failure.
+    """
+    audio, sr = decode_audio_file(path)
+    audio = audio[:target_channels]
+    if audio.shape[0] == 1 and target_channels > 1:
+        audio = np.repeat(audio, target_channels, axis=0)  # mono -> dup
+    if sr != target_sr:
+        if resampy is None:
+            raise RuntimeError(
+                f"{label}: input is {sr} Hz but {target_sr} Hz is required "
+                "and 'resampy' is not installed"
+            )
+        audio = resampy.resample(audio, sr, target_sr, axis=-1)
+    return np.ascontiguousarray(audio, dtype=np.float32)
 
 
 def encode_mp3_file(path, audio, sample_rate, bitrate=320000):

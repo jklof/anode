@@ -174,6 +174,7 @@ def get_node_documentation(node_type: str) -> dict:
         "label": getattr(cls, "label", node_type),
         "category": getattr(cls, "category", "Uncategorized"),
         "is_native": is_native,
+        "is_offline": bool(getattr(cls, "is_offline", False)),
         "description": doc_text,
         "inputs": inputs,
         "outputs": outputs,

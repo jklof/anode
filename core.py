@@ -47,16 +47,29 @@ class Graph:
         return self._execution_order
 
     def _get_upstream_nodes(self, node: Node) -> List[Node]:
+        # Signal dependencies only (audio/midi). URI wires are out-of-band
+        # control links (a wire-able file path pulled via get_uri() and
+        # loaded on an NRT worker) — they carry no per-block data, so they
+        # impose no execution order and cannot form a signal cycle.
         upstream = []
         for inp in node.inputs.values():
+            if getattr(inp, "slot_type", "audio") == "uri":
+                continue
             for out in inp.connected_outputs:
                 upstream.append(out.parent)
         return upstream
 
     def _get_downstream_nodes(self, node: Node) -> List[Node]:
-        """Get nodes that this node connects to (downstream)."""
+        """Get nodes that this node connects to (downstream).
+
+        Signal edges only — URI outputs are skipped (see
+        _get_upstream_nodes). This also scopes _can_reach() cycle detection
+        to signal loops; a URI leg is always broken by an NRT job boundary.
+        """
         downstream = []
         for out_slot in node.outputs.values():
+            if getattr(out_slot, "slot_type", "audio") == "uri":
+                continue
             # We need to find all InputSlots connected to this OutputSlot
             for other_node in self.nodes:
                 for inp in other_node.inputs.values():
@@ -196,7 +209,11 @@ class Graph:
 
         # Check if adding this connection would create a cycle:
         # If dst can already reach src, adding src->dst creates a cycle.
-        if self._can_reach(dst_id, src_id):
+        # Signal candidates only: a URI candidate never closes a per-block
+        # loop (it is deferred through an NRT job), so e.g. audio A->B plus
+        # URI B->A is a legal render-then-load loop. Reachability itself is
+        # signal-only too (_can_reach skips URI edges).
+        if dst_type != "uri" and self._can_reach(dst_id, src_id):
             return False
 
         # No cycle - safe to connect

@@ -40,6 +40,8 @@ Node port channel counts are part of the port contract. Channel adaptation must 
 
 Ports are additionally typed: `slot_type` is `audio`, `midi`, or `uri`. Audio ports carry a `(channels, BLOCK_SIZE)` tensor buffer; MIDI ports carry a `MIDIPacket` (a list of `(sample_offset, mido.Message)` sorted ascending by sample offset) instead of a numeric buffer; URI ports carry a plain file-path string (`.uri`, pulled via `InputSlot.get_uri()`) with no per-block data. Never wire ports of different types together; `Graph.connect()` rejects mismatched types.
 
+URI wires are out-of-band control links, not signals: they impose no execution order, are excluded from cycle detection (a URI leg is always broken by an NRT job boundary — e.g. audio A→B plus URI B→A is a legal render-then-load loop), and render as dashed wires in the UI. A consumer snapshots the path on its own trigger (e.g. a rising edge) and performs all file I/O on an NRT worker. Reading `.uri`/`get_uri()` from the audio thread is the one sanctioned cross-thread read (immutable-string attribute swap, atomic under the GIL): never block on it, never do I/O with the result there — just `submit_nrt` and return.
+
 Channel adaptation policy (mono source into a wider input):
 
 * A mono (`channels=1`) source is broadcast/duplicated to fill a stereo input.
@@ -109,6 +111,8 @@ optimize only after profiling shows an RT miss.
 
 Do not use logging or expensive diagnostic formatting as normal audio-path behavior.
 
+Resampling policy: general fractional resamplers (`resampy` and equivalents — threaded FFT/numba machinery, per-call allocation, nondeterministic latency) are banned from the per-block real-time path. Fixed integer-ratio decimation/upsampling belongs in hand-rolled FIR kernels (e.g. strided `conv1d`, as in SwiftF0's 3:1 48→16 kHz stage). Arbitrary-rate file ingest (e.g. 44.1 kHz MP3 into the 48 kHz engine) may use `resampy`, but only on NRT workers — never in `process()`. Shared NRT decode/resample helpers live in `audio_io.py`; do not duplicate the mono-dup + resample sequence per node.
+
 If a node fails during processing, fail it safely and defer detailed reporting/logging to the control/UI side.
 
 ---
@@ -168,6 +172,31 @@ Avoid loading or destroying large native DSP objects inside the audio processing
 
 Epoch/version checks may be used to discard stale asynchronous results.
 
+Offline job nodes (e.g. YuE2 song generation, SheetSage2 transcription)
+run minutes-long sidecar subprocesses on NRT workers and publish file
+paths, never per-block signal. They share this contract:
+
+* Subclass `AudioCppJob` (`audiocpp_backend.py`), which owns the
+  run/download/cancel trigger dispatch, the resumable fetch, and the
+  fetch-side completion branches. Node code provides only the worker spec,
+  the blocking `_run_nrt`, and the job-specific completion branch. Custom
+  UIs subclass `OfflineJobWidget` (`offline_job_widget.py`).
+* `is_offline = True` marks the visual language: an OFFLINE header tag
+  and help-panel badge (same violet as URI wires), dashed URI wires for
+  file handoffs, and a one-block ready/done pulse on a plain audio output
+  for trigger chaining. The pulse edge — not the URI wire — carries the
+  execution-order dependency.
+* The audio.cpp sidecar (`tools/audiocpp/`, driven via `audiocpp_backend.py`)
+  is version-pinned (`AUDIOCPP_PIN_VERSION`; bump deliberately with hash
+  updates and argv-builder test re-runs — CLI flags drift per release).
+  Auto-fetch covers Windows x64 + CUDA 13.3 only; other platforms install
+  `bin/` manually. Nothing is ever auto-downloaded: fetching happens only
+  via the node Download button or `tools/audiocpp/fetch_*.py`.
+* Sidecar model weights are CC BY-NC 4.0 (non-commercial). Fetch at
+  runtime only — never commit, bundle, or redistribute weights; kept
+  outputs carry `request.json` / `metrics.json` provenance. Commercial use
+  needs separate permission from the rights holders.
+
 ---
 
 ## 7. Native C++ DSP
@@ -206,6 +235,12 @@ The graph is a DAG.
 * connections between mismatched port types (audio vs midi vs uri)
 * a second wire into an occupied URI input (single file reference; audio
   sums and MIDI aggregates, but a second URI would sit silently dead)
+
+Cycle detection and execution-order compilation consider signal edges
+(audio/midi) only. URI edges are skipped by `_get_upstream_nodes()` /
+`_get_downstream_nodes()`, so they neither constrain `execution_order`
+nor count toward `_can_reach()` reachability; a URI candidate also skips
+the cycle check outright, since it can never close a per-block loop.
 
 Invalid topology should be rejected at connection time rather than merely detected during execution-order generation.
 

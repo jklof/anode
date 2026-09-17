@@ -258,6 +258,13 @@ class ConnectionItem(QGraphicsPathItem):
         self.setPath(path)
 
     def paint(self, p, o, w):
+        # URI wires are out-of-band control links (file reference, no
+        # per-block signal, excluded from execution order): always dashed
+        # so they read as control, not signal — including when selected
+        # or hovered, where only the color/width changes.
+        start_slot = getattr(self.start_item, "slot_type", "audio")
+        is_uri = start_slot == "uri"
+        uri_style = Qt.DashLine if is_uri else Qt.SolidLine
         if self.temp_mode:
             if self.temp_color == Theme.COLORS["wire_temp_white"]:
                 pen = QPen(Theme.COLORS["wire_temp_white"], 2, Qt.DashLine)
@@ -268,17 +275,16 @@ class ConnectionItem(QGraphicsPathItem):
             else:
                 pen = QPen(Theme.COLORS["wire_temp_white"], 2, Qt.DashLine)
         elif self.isSelected():
-            pen = QPen(Theme.COLORS["wire_selected"], 3)
+            pen = QPen(Theme.COLORS["wire_selected"], 3, uri_style)
         elif self.hovered:
-            pen = QPen(Theme.COLORS["wire_hovered"], 4)
+            pen = QPen(Theme.COLORS["wire_hovered"], 4, uri_style)
         else:
-            start_slot = getattr(self.start_item, "slot_type", "audio")
             if start_slot == "midi":
                 # MIDI wires: solid dedicated color (no signal-gradient).
                 pen = QPen(Theme.COLORS["wire_midi"], 2)
-            elif start_slot == "uri":
-                # URI wires carry file references, not signals: solid color.
-                pen = QPen(Theme.COLORS["wire_uri"], 2)
+            elif is_uri:
+                # URI wires carry file references, not signals: dashed color.
+                pen = QPen(Theme.COLORS["wire_uri"], 2, Qt.DashLine)
             else:
                 # Use gradient for normal wires to visualize signal flow
                 gradient = QLinearGradient(self.p1, self.p2)
@@ -740,6 +746,13 @@ class NodeItem(QGraphicsObject):
         self.controller = controller
         self.can_be_master = node_data.get("can_be_master", False)
         self.is_master = node_data.get("is_master", False)
+        # Offline (NRT) job nodes render an OFFLINE header tag; resolved from
+        # the registered class so no snapshot-protocol change is needed.
+        try:
+            _cls = plugin_system.get_node_class(self.node_type)
+            self.is_offline = bool(getattr(_cls, "is_offline", False))
+        except Exception:
+            self.is_offline = False
 
         self.setCacheMode(QGraphicsItem.DeviceCoordinateCache)
         self.param_controls = {}
@@ -1072,6 +1085,17 @@ class NodeItem(QGraphicsObject):
         painter.setPen(Theme.COLORS["text_normal"])
         painter.drawText(QRectF(0, 0, self.width, Theme.DIMENSIONS["header_height"]), Qt.AlignCenter, self.node_name)
 
+        # --- OFFLINE TAG ---
+        # NRT job nodes (AudioCppJob.is_offline) do minutes-long background
+        # work and publish file paths, not per-block signal: tag the header
+        # so they never read as realtime DSP. Same violet as URI wires.
+        if self.is_offline:
+            painter.setPen(QPen(Theme.COLORS["wire_uri"], 1.5))
+            painter.setFont(QFont("Monospace", 7, QFont.Bold))
+            painter.drawText(QRectF(6, 0, 52, Theme.DIMENSIONS["header_height"]),
+                             Qt.AlignLeft | Qt.AlignVCenter, "OFFLINE")
+            painter.setFont(QFont())
+
         # --- DRAW CLOCK ICON ---
         if self.can_be_master:
             icon_color = Theme.COLORS["clock_master"] if self.is_master else Theme.COLORS["clock_slave"]
@@ -1315,13 +1339,20 @@ class NodeHelpWidget(QWidget):
 
         badge_text = "Native C++ DSP" if doc["is_native"] else "PyTorch Pure DSP"
         badge_bg = "#005577" if doc["is_native"] else "#443366"
+        offline_badge = ""
+        if doc.get("is_offline"):
+            offline_badge = (
+                "<span style=\"background-color: #4a3670; color: #9D7BFF; "
+                "padding: 2px 6px; font-size: 10px; margin-left: 6px;\">"
+                "Offline NRT job</span>"
+            )
 
         html = f"""
         <table width="100%" style="border-collapse: collapse; margin-bottom: 6px;">
             <tr>
                 <td style="font-size: 16px; font-weight: bold; color: #ffffff;">{doc['label']}</td>
                 <td align="right">
-                    <span style="background-color: {badge_bg}; color: #00ccff; padding: 2px 6px; font-size: 10px;">{badge_text}</span>
+                    <span style="background-color: {badge_bg}; color: #00ccff; padding: 2px 6px; font-size: 10px;">{badge_text}</span>{offline_badge}
                     <span style="color: #888888; font-size: 11px; margin-left: 8px;">Category: {doc['category']}</span>
                 </td>
             </tr>

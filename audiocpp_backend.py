@@ -15,6 +15,21 @@ This module has no Qt dependency and performs no audio processing itself:
 * :class:`AudioCppJob` — :class:`base.Node` base with generate/cancel
   plumbing shared by all audio.cpp-backed nodes. Lives here (not under
   ``plugins/``) so it is not auto-registered in the node palette.
+
+Sidecar policy (see also AGENTS.md section 6):
+
+* ``AUDIOCPP_PIN_VERSION`` is the single pinned runtime. Bump it only
+  deliberately: update the pin, the archive hashes below, and the fetch
+  scripts, then re-run the pure argv-builder tests (no GPU needed) since
+  CLI flags drift between releases.
+* Auto-fetch covers Windows x64 + CUDA 13.3 only (the Blackwell/sm_120
+  track); other platforms place an extracted tree under ``tools/audiocpp/
+  bin/`` manually. The runtime is never auto-downloaded — only the node
+  Download button and the ``tools/audiocpp/fetch_*.py`` scripts fetch.
+* Model weights are CC BY-NC 4.0 (non-commercial): fetch-at-runtime only,
+  never committed (see .gitignore), never bundled or redistributed. Kept
+  outputs carry ``request.json`` / ``metrics.json`` provenance. Commercial
+  use needs separate permission from the rights holders.
 """
 
 import json
@@ -29,7 +44,7 @@ import threading
 from pathlib import Path
 
 from base import Node
-from download_util import DownloadSpec, fetch_all
+from download_util import DownloadCancelled, DownloadSpec, fetch_all, format_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +52,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 AUDIOCPP_PIN_VERSION = "v0.8.0"
 
 AUDIOCPP_RELEASE_BASE = (
-    "https://github.com/0xShug0/audio.cpp/releases/download/v0.8.0"
+    f"https://github.com/0xShug0/audio.cpp/releases/download/{AUDIOCPP_PIN_VERSION}"
 )
 # Pinned runtime archives (Windows x64 + CUDA 13.3 track: the
 # Blackwell/sm_120-capable build). (filename, size bytes, sha256).
@@ -138,6 +153,47 @@ def sheetsage_fetch_specs(model_dir):
 
 _HEADER_LINE_RE = re.compile(r"^[A-Za-z]:")
 _CHORD_RE = re.compile(r'"[^"\n]*"')
+_LYRIC_SECTION_RE = re.compile(r"^\s*\[[^\[\]\n]{1,40}\]\s*$")
+
+
+def abc_section_names(abc_text):
+    """Section labels from `% name` comment lines, in order. Pure function."""
+    sections = []
+    for line in abc_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("%") and len(stripped) > 1:
+            sections.append(stripped[1:].strip())
+    return sections
+
+
+def lyric_section_names(lyrics_text):
+    """Section tags from `[Verse]`-style header lines, in order. Pure function."""
+    return [line.strip().strip("[]").strip()
+            for line in lyrics_text.splitlines()
+            if _LYRIC_SECTION_RE.match(line)]
+
+
+def score_lyrics_fit_warning(*, abc_sections, lyric_sections):
+    """Warn when a cover score and lyrics are shaped too differently.
+
+    The model must stretch/cram syllables onto the plan when the section
+    counts diverge, which garbles vocals. Returns a human-readable warning
+    or None when the fit looks sane. Pure function; warn-only, never reject.
+    """
+    n_abc, n_lyr = len(abc_sections), len(lyric_sections)
+    if n_abc == 0:
+        return None
+    if n_lyr == 0:
+        if n_abc >= 3:
+            return (f"score has {n_abc} sections but the lyrics have no "
+                    f"[section] tags: add tags (e.g. [Verse]/[Chorus]) matching "
+                    f"the score ({', '.join(abc_sections[:4])}"
+                    f"{'…' if n_abc > 4 else ''}) or the words may garble")
+        return None
+    if abs(n_abc - n_lyr) >= 2 and max(n_abc, n_lyr) >= 2 * min(n_abc, n_lyr):
+        return (f"score has {n_abc} sections but lyrics have {n_lyr}: "
+                f"match [tags] to the score or the words may garble")
+    return None
 
 
 def strip_abc_chords(abc_text):
@@ -405,12 +461,39 @@ class AudioCppJob(Node):
     event is set from the engine/control thread; the pool-thread worker
     terminates its own subprocess — ``Popen.terminate()`` is never called
     from the audio path.
+
+    Shared job machine: the run/download/cancel transient-trigger dispatch
+    (``on_ui_param_change``), the resumable runtime+model fetch
+    (``_build_fetch_payload`` / ``_fetch_nrt``) and the fetch-side
+    ``on_nrt_complete`` branches live here. Subclasses only provide:
+
+    * ``RUN_PARAM`` / ``RUN_TAG`` / ``RUNNING_STATES`` / ``ACTION_VERB``,
+    * ``_build_spec()`` — snapshot committed params, raise ValueError,
+    * ``_running_status(spec)`` — (status, detail) while the job runs,
+    * ``_spec_warnings(spec)`` — non-fatal fit warnings (warn-only),
+    * ``_run_nrt(cancel_event, spec)`` — the blocking worker,
+    * their job-specific ``on_nrt_complete`` branch (delegating the
+      ``fetch`` / ``fetch_progress`` tags to the base helpers).
+
+    ``is_offline`` marks the node for the offline visual language
+    (AGENTS.md section 6): dashed URI wires, OFFLINE header badge, and a
+    help-panel badge. Offline nodes never produce per-block signal from
+    the job itself — they publish file paths + a one-block ready pulse.
     """
+
+    is_offline = True
+
+    RUN_PARAM = "generate"
+    RUN_TAG = "gen"
+    RUNNING_STATES = ("Generating", "Downloading")
+    ACTION_VERB = "Generate"
 
     def __init__(self, name=""):
         super().__init__(name)
         self._job_lock = threading.Lock()
         self._job_cancel = None
+        self._status = "Idle"
+        self._status_detail = ""
 
     # ------------------------------------------------------------------
     # job control (engine/control thread)
@@ -432,6 +515,212 @@ class AudioCppJob(Node):
 
     def remove(self):
         self._cancel_job()
+
+    # ------------------------------------------------------------------
+    # shared parameter / status helpers (engine/control thread)
+    # ------------------------------------------------------------------
+    def _restage(self, name, value):
+        self.params[name].set(value)
+        self.params[name].sync()
+
+    def _resolve_model_dir(self):
+        raw = self.params["model_dir"].value
+        d = Path(raw)
+        if not d.is_absolute():
+            d = REPO_ROOT / d
+        return d
+
+    def _fail(self, message):
+        self._status = "Error"
+        self._status_detail = message
+        self.error_msg = message
+        logger.error(f"{type(self).__name__} {self.name}: {message}")
+
+    def _need_engine(self):
+        if getattr(self, "graph", None) is None or self.graph.engine is None:
+            self._fail("Node is not attached to an engine.")
+            self._refresh_ui()
+            return False
+        return True
+
+    # ------------------------------------------------------------------
+    # shared run/download/cancel dispatch (engine/control thread)
+    # ------------------------------------------------------------------
+    def _build_spec(self):
+        """Snapshot committed params into a worker spec. Raise ValueError."""
+        raise NotImplementedError
+
+    def _spec_warnings(self, spec):
+        """Non-fatal fit warnings shown alongside the running status.
+        Subclass hook; warn-only, never reject. Runs on the engine/control
+        thread at trigger time (small text reads only, same class as the
+        existence checks in _build_spec)."""
+        return []
+
+    def _running_status(self, spec):
+        """(status, detail) to show while the job runs. Subclass hook."""
+        return self.RUNNING_STATES[0], "Running…"
+
+    def _run_nrt(self, cancel_event, spec):
+        """Blocking worker. Subclass hook (submitted as RUN_TAG)."""
+        raise NotImplementedError
+
+    def _on_job_submitted(self, spec):
+        """Post-submit hook (e.g. start an elapsed-time clock)."""
+
+    def _on_job_cancelled(self):
+        """Post-cancel hook (e.g. stop an elapsed-time clock). The NRT
+        completion may be discarded rather than delivered, so clock-like
+        state must stop here, not in on_nrt_complete."""
+
+    def on_ui_param_change(self, param_name: str):
+        if param_name == self.RUN_PARAM:
+            if not self.params[self.RUN_PARAM].value:
+                return
+            # Deliberate re-stage of the transient trigger (AGENTS.md §5).
+            self._restage(self.RUN_PARAM, False)
+            if not self._need_engine():
+                return
+            try:
+                spec = self._build_spec()
+            except ValueError as e:
+                self._fail(str(e))
+                self._refresh_ui()
+                return
+            self.error_msg = None
+            self._status, self._status_detail = self._running_status(spec)
+            for warning in self._spec_warnings(spec):
+                logger.warning(f"{type(self).__name__} {self.name}: {warning}")
+                self._status_detail += f" (⚠ {warning})"
+            self._on_job_submitted(spec)
+            self.submit_job(self.RUN_TAG, self._run_nrt, spec)
+            self._refresh_ui()
+        elif param_name == "cancel":
+            if self.params["cancel"].value:
+                self._restage("cancel", False)
+                self._cancel_job()
+                self._on_job_cancelled()
+                if self._status in self.RUNNING_STATES:
+                    self._status = "Cancelled"
+                    self._status_detail = "Cancelled by user"
+                self._refresh_ui()
+        elif param_name == "download":
+            if not self.params["download"].value:
+                return
+            self._restage("download", False)
+            if not self._need_engine():
+                return
+            try:
+                payload = self._build_fetch_payload()
+            except ValueError as e:
+                self._fail(str(e))
+                self._refresh_ui()
+                return
+            if not payload["runtime"] and not payload["models"]:
+                self.error_msg = None
+                self._status = "Idle"
+                self._status_detail = "Everything already downloaded"
+                self._refresh_ui()
+                return
+            self.error_msg = None
+            self._status = "Downloading"
+            self._status_detail = "Starting download…"
+            self.submit_job("fetch", self._fetch_nrt, payload)
+            self._refresh_ui()
+
+    # ------------------------------------------------------------------
+    # shared fetch (engine/control thread + NRT worker)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _spec_to_dict(spec):
+        return {"url": spec.url, "dest": str(spec.dest), "size": spec.size,
+                "sha256": spec.sha256, "label": spec.label}
+
+    def _model_fetch_specs(self, model_dir):
+        """DownloadSpecs for this node's model weights. Subclass hook."""
+        raise NotImplementedError
+
+    def _build_fetch_payload(self):
+        """Plain-data fetch plan for the NRT worker. Raises ValueError."""
+        runtime = AudioCppRuntime()
+        model_dir = self._resolve_model_dir()
+        try:
+            runtime_specs, staging = runtime_fetch_specs(runtime.root)
+        except RuntimeError as e:
+            raise ValueError(str(e))
+        return {
+            "runtime": [self._spec_to_dict(s)
+                        for s in missing_specs(runtime_specs)
+                        if not runtime.cli.exists()],
+            "staging": str(staging),
+            "bin_dir": str(runtime.bin_dir),
+            "models": [self._spec_to_dict(s)
+                       for s in missing_specs(self._model_fetch_specs(model_dir))],
+        }
+
+    def _fetch_nrt(self, cancel_event, payload):
+        """Download missing runtime/models with inbox progress. NRT only."""
+        epoch = self._nrt_epoch
+        inbox = self._nrt_inbox
+
+        def _progress(label, done, total, state):
+            if inbox is None:
+                return
+            try:
+                inbox.put((epoch, "fetch_progress", True,
+                           {"label": label, "done": done, "total": total,
+                            "state": state}))
+            except Exception:
+                pass
+
+        fetched = []
+        model_specs = [DownloadSpec(s["url"], Path(s["dest"]), s["size"],
+                                    s["sha256"], s["label"])
+                       for s in payload["models"]]
+        if model_specs:
+            fetch_all(model_specs, progress_cb=_progress, cancel_event=cancel_event)
+            fetched += [s.label for s in model_specs]
+        runtime_specs = [DownloadSpec(s["url"], Path(s["dest"]), s["size"],
+                                      s["sha256"], s["label"])
+                         for s in payload["runtime"]]
+        if runtime_specs:
+            fetch_all(runtime_specs, progress_cb=_progress, cancel_event=cancel_event)
+            install_runtime_archives(Path(payload["staging"]), Path(payload["bin_dir"]))
+            fetched += [s.label for s in runtime_specs]
+        return {"fetched": fetched}
+
+    @staticmethod
+    def _format_fetch_progress(progress):
+        label = progress.get("label", "download")
+        done, total, state = (progress.get("done", 0), progress.get("total"),
+                              progress.get("state", ""))
+        if state == "present":
+            return f"{label}: already present"
+        if state == "verifying":
+            return f"{label}: verifying…"
+        if total:
+            pct = 100.0 * done / total
+            return (f"{label}: {pct:.1f}% "
+                    f"({format_bytes(done)} / {format_bytes(total)})")
+        return f"{label}: {format_bytes(done)}"
+
+    def _on_fetch_progress(self, ok, result):
+        if ok:
+            self._status = "Downloading"
+            self._status_detail = self._format_fetch_progress(result)
+
+    def _on_fetch_complete(self, ok, result):
+        if not ok:
+            if isinstance(result, (GenerationCancelled, DownloadCancelled)):
+                self._status = "Cancelled"
+                self._status_detail = "Download cancelled — re-run to resume"
+                self.error_msg = None
+            else:
+                self._fail(f"Download failed: {result}")
+            return
+        self.error_msg = None
+        self._status = "Idle"
+        self._status_detail = f"Download complete — press {self.ACTION_VERB}"
 
     def _push_telemetry(self):
         """Deliver the current get_telemetry() snapshot to the UI now.

@@ -76,9 +76,20 @@ def _graph_two():
 def test_connect_uri_to_uri():
     g, a, b = _graph_two()
     assert g.connect(a.id, "uri_out", b.id, "uri_in") is True
-    # Execution order follows the URI dependency.
-    order = [n.id for n in g.execution_order]
-    assert order.index(a.id) < order.index(b.id)
+    # URI wires are control links, not signal: both nodes stay in the plan,
+    # but the wire imposes no execution-order constraint of its own.
+    assert {n.id for n in g.execution_order} == {a.id, b.id}
+
+
+def test_uri_wire_imposes_no_order():
+    """A URI-only edge must not constrain execution order: nodes added
+    b-then-a with a URI a->b keep insertion order [b, a]."""
+    g = Graph()
+    b, a = _UriNode("b"), _UriNode("a")
+    g.add_node(b)
+    g.add_node(a)
+    assert g.connect(a.id, "uri_out", b.id, "uri_in") is True
+    assert [n.id for n in g.execution_order] == [b.id, a.id]
 
 
 def test_connect_rejects_type_mismatches():
@@ -89,11 +100,35 @@ def test_connect_rejects_type_mismatches():
     assert g.connect(a.id, "audio_out", b.id, "audio_in") is True
 
 
-def test_connect_rejects_uri_cycle_and_self_loop():
+def test_uri_back_edge_allowed_self_loop_rejected():
+    """URI legs are deferred through an NRT job boundary, so a URI b->a
+    after URI a->b is a legal render-then-load loop, not a signal cycle.
+    Self-loops stay rejected."""
     g, a, b = _graph_two()
     assert g.connect(a.id, "uri_out", b.id, "uri_in") is True
-    assert g.connect(b.id, "uri_out", a.id, "uri_in") is False
+    assert g.connect(b.id, "uri_out", a.id, "uri_in") is True
     assert g.connect(a.id, "uri_out", a.id, "uri_in") is False
+
+
+def test_audio_plus_uri_loop_allowed():
+    """Audio A->B plus URI B->A must connect: the URI leg breaks the
+    per-block loop (consumer pulls the path on a later trigger edge and
+    loads it on an NRT worker)."""
+    g, a, b = _graph_two()
+    assert g.connect(a.id, "audio_out", b.id, "audio_in") is True
+    assert g.connect(b.id, "uri_out", a.id, "uri_in") is True
+    # Signal order still follows the audio edge.
+    order = [n.id for n in g.execution_order]
+    assert order.index(a.id) < order.index(b.id)
+
+
+def test_signal_cycle_still_rejected_with_uri_present():
+    """URI wires must not mask real signal cycles: audio A->B then audio
+    B->A is still rejected even with a URI wire alongside."""
+    g, a, b = _graph_two()
+    assert g.connect(a.id, "uri_out", b.id, "uri_in") is True
+    assert g.connect(a.id, "audio_out", b.id, "audio_in") is True
+    assert g.connect(b.id, "audio_out", a.id, "audio_in") is False
 
 
 def test_second_uri_wire_rejected():
@@ -130,6 +165,22 @@ def test_uri_node_documentation():
     assert doc["outputs"]["ready"]["slot_type"] == "audio"
 
 
+def test_offline_nodes_marked_and_widgets_registered():
+    """Offline job nodes carry is_offline (header tag + help badge) and
+    keep their custom UI registration after the shared-widget refactor."""
+    plugin_system.load_plugins("plugins")
+    for cls_name, widget_name in (("YuE2SongGenerator", "YuE2Widget"),
+                                  ("SheetSage2Transcriber", "SheetSageWidget")):
+        doc = plugin_system.get_node_documentation(cls_name)
+        assert doc["is_offline"] is True
+        ui_cls = plugin_system.get_ui_class(cls_name)
+        assert ui_cls is not None and ui_cls.__name__ == widget_name
+        assert ui_cls.NODE_CLASS_NAME == cls_name
+    # Control: a realtime node is not marked offline and has no custom UI.
+    assert plugin_system.get_node_documentation("SamplePlayer")["is_offline"] is False
+    assert plugin_system.get_ui_class("SamplePlayer") is None
+
+
 def test_full_cover_chain_wires_up():
     """SheetSage.melody -> YuE2.abc_uri, SheetSage.done -> YuE2.trigger_in,
     YuE2.song -> SamplePlayer.uri_in, YuE2.ready -> SamplePlayer.trigger_in:
@@ -152,6 +203,8 @@ def test_full_cover_chain_wires_up():
              (("yue2", "ready"), ("player", "trigger_in"))]
     for (src, sport), (dst, dport) in wires:
         assert g.connect(nodes[src].id, sport, nodes[dst].id, dport) is True
+    # Signal order follows the done/ready pulse edges (URI wires impose
+    # no order of their own).
     order = [n.id for n in g.execution_order]
     assert order.index(nodes["sage"].id) < order.index(nodes["yue2"].id)
     assert order.index(nodes["yue2"].id) < order.index(nodes["player"].id)

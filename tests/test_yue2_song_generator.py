@@ -648,8 +648,10 @@ def test_build_fetch_payload_lists_missing(node_cls, tmp_path, monkeypatch):
     # NB: load_plugins() imports node files as top-level modules, so the
     # live module is sys.modules["yue2_song_generator"], not
     # plugins.yue2_song_generator (a duplicate import would not affect the
-    # registered class).
+    # registered class). The fetch machinery lives on the AudioCppJob base,
+    # so the runtime seam is patched in audiocpp_backend, not the node module.
     mod = sys.modules["yue2_song_generator"]
+    import audiocpp_backend
     from pathlib import Path as _Path
 
     class StubRuntime:
@@ -658,7 +660,7 @@ def test_build_fetch_payload_lists_missing(node_cls, tmp_path, monkeypatch):
             self.bin_dir = self.root / "bin"
             self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
 
-    monkeypatch.setattr(mod, "AudioCppRuntime", StubRuntime)
+    monkeypatch.setattr(audiocpp_backend, "AudioCppRuntime", StubRuntime)
     node = make_node(node_cls)
     node.params["model_dir"].set(str(tmp_path / "models" / "YuE2-3B-GGUF"))
     node.params["model_dir"].sync()
@@ -875,3 +877,88 @@ def test_telemetry_shows_elapsed_while_generating(node_cls):
     assert "elapsed" in telem["audio"]
     node._gen_t0 = None
     assert "elapsed" not in node.get_telemetry()["audio"]
+
+
+# ----------------------------------------------------------------------
+# score/lyrics fit warning (pure helpers + node hook)
+# ----------------------------------------------------------------------
+def test_lyric_section_names():
+    assert backend.lyric_section_names(
+        "[Verse]\nla la\n\n[Chorus]\nna na\n") == ["Verse", "Chorus"]
+    assert backend.lyric_section_names("just words, no tags\n") == []
+
+
+def test_abc_section_names():
+    assert backend.abc_section_names(
+        "X:1\n% intro\nCDEF\n% verse\nGABc\n") == ["intro", "verse"]
+
+
+def test_fit_warning_matrix():
+    warn = backend.score_lyrics_fit_warning
+    assert warn(abc_sections=[], lyric_sections=["Verse"]) is None
+    assert warn(abc_sections=["a", "b"], lyric_sections=["Verse", "Chorus"]) is None
+    assert warn(abc_sections=["a", "b"], lyric_sections=["V", "C", "B"]) is None
+    msg = warn(abc_sections=[f"s{i}" for i in range(8)],
+               lyric_sections=["Verse", "Chorus"])
+    assert msg and "8 sections" in msg and "2" in msg
+    msg = warn(abc_sections=["a", "b", "c", "d"], lyric_sections=[])
+    assert msg and "no [section] tags" in msg
+
+
+def _write_lyrics_and_score(tmp_path, lyrics, abc=None):
+    lyrics_file = tmp_path / "lyrics.txt"
+    lyrics_file.write_text(lyrics, encoding="utf-8")
+    abc_file = None
+    if abc is not None:
+        abc_file = tmp_path / "score.abc"
+        abc_file.write_text(abc, encoding="utf-8")
+    return lyrics_file, abc_file
+
+
+def test_spec_warnings_quiet_without_score(node_cls, tmp_path):
+    lyrics_file, _ = _write_lyrics_and_score(tmp_path, "[Verse]\nla\n")
+    node = make_node(node_cls)
+    assert node._spec_warnings({"lyrics_file": str(lyrics_file),
+                                "abc_file": None}) == []
+
+
+def test_spec_warnings_matching_sections(node_cls, tmp_path):
+    lyrics_file, abc_file = _write_lyrics_and_score(
+        tmp_path, "[Verse]\nla\n\n[Chorus]\nna\n", "X:1\n% verse\nCDEF\n% chorus\nGABc\n")
+    node = make_node(node_cls)
+    assert node._spec_warnings({"lyrics_file": str(lyrics_file),
+                                "abc_file": str(abc_file)}) == []
+
+
+def test_spec_warnings_diverged_sections(node_cls, tmp_path):
+    lyrics_file, abc_file = _write_lyrics_and_score(
+        tmp_path, "[Verse]\nla\n\n[Chorus]\nna\n",
+        "X:1\n" + "".join(f"% part{i}\nCDEF\n" for i in range(8)))
+    node = make_node(node_cls)
+    warnings = node._spec_warnings({"lyrics_file": str(lyrics_file),
+                                    "abc_file": str(abc_file)})
+    assert len(warnings) == 1 and "garble" in warnings[0]
+
+
+# ----------------------------------------------------------------------
+# request.json carries full reproduction texts
+# ----------------------------------------------------------------------
+def test_request_json_carries_repro_texts(node_cls, tmp_path):
+    node = make_node(node_cls)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "song.wav").write_bytes(b"cli-bytes")
+    keep = tmp_path / "keep"
+    spec = _keep_spec(tmp_path, "wav")
+    kept = node._keep_song(run_dir, keep, _keep_audio(), spec, {"rtf": 1.0},
+                           lyrics_text="[Verse]\nla la\n",
+                           abc_text="X:1\n% verse\nCDEF\n")
+    assert kept == keep / "song.wav"
+    import json
+    req = json.loads((keep / "request.json").read_text())
+    assert req["lyrics_text"] == "[Verse]\nla la\n"
+    assert req["abc_text"] == "X:1\n% verse\nCDEF\n"
+    assert req["lyrics_file"] == spec["lyrics_file"]  # paths kept alongside
+    assert req["seed"] == 7 and req["cot"] == "full"
+    assert req["vae_gguf"] == _live().VAE_GGUF
+    assert req["runtime"]["audio_cpp"] == backend.AUDIOCPP_PIN_VERSION

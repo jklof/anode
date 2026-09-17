@@ -15,17 +15,9 @@ Architecture (per docs/new_node_specifications.md §5):
   rising edge. Load failures surface through node.error_msg.
 """
 
-import numpy as np
 import torch
 
 from base import Node, SAMPLE_RATE, CHANNELS, BLOCK_SIZE, DTYPE
-
-try:
-    import resampy
-    _RESAMPY_AVAILABLE = True
-except ImportError:
-    resampy = None
-    _RESAMPY_AVAILABLE = False
 
 
 class SamplePlayer(Node):
@@ -106,19 +98,12 @@ class SamplePlayer(Node):
             self.submit_nrt(self._load_file_nrt, path, tag="load")
 
     def _load_file_nrt(self, path):
-        from audio_io import decode_audio_file
-        data, sr = decode_audio_file(path)  # WAV/FLAC/OGG via soundfile, MP3 via PyAV
-        data = data[:CHANNELS].copy()
-        if data.shape[0] == 1:
-            data = np.vstack([data[0], data[0]])          # mono -> stereo dup
-        if sr != SAMPLE_RATE:
-            if resampy is None:
-                raise RuntimeError(
-                    "SamplePlayer: 'resampy' is required to resample "
-                    f"{sr} Hz audio to {SAMPLE_RATE} Hz but is not installed"
-                )
-            data = resampy.resample(data, sr, SAMPLE_RATE, axis=-1)
-        return torch.from_numpy(np.ascontiguousarray(data))
+        from audio_io import to_engine_audio
+        # Shared decode + mono-dup + resample (WAV/FLAC/OGG via soundfile,
+        # MP3 via PyAV; resampy resample is NRT-only per AGENTS.md section 4).
+        data = to_engine_audio(path, target_sr=SAMPLE_RATE,
+                               target_channels=CHANNELS, label="SamplePlayer")
+        return torch.from_numpy(data)
 
     def on_nrt_complete(self, tag, ok, result):
         if tag != "load":

@@ -20,49 +20,24 @@ Measured on an RTX 5070 Laptop (8 GB): a 240 s song transcribes in
 are CC BY-NC 4.0 (non-commercial).
 """
 
-import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QLabel,
-    QPushButton,
-)
-from PySide6.QtCore import Qt
+from offline_job_widget import OfflineJobWidget
 
 from audiocpp_backend import (
-    REPO_ROOT,
     SHEETSAGE_DEFAULT_MAX_TOKENS,
     SHEETSAGE_GGUF,
     SHEETSAGE_WEIGHT_TYPES,
     AudioCppRuntime,
     AudioCppJob,
     GenerationCancelled,
-    install_runtime_archives,
-    missing_specs,
+    abc_section_names,
     run_sheetsage_transcribe,
-    runtime_fetch_specs,
     sheetsage_fetch_specs,
     strip_abc_chords,
 )
-from download_util import (
-    DownloadCancelled,
-    DownloadSpec,
-    fetch_all,
-    format_bytes,
-)
-
-logger = logging.getLogger(__name__)
-
-try:
-    import resampy
-    _RESAMPY_AVAILABLE = True
-except ImportError:
-    resampy = None
-    _RESAMPY_AVAILABLE = False
 
 INPUT_RATE = 48000
 INPUT_CHANNELS = 2
@@ -72,99 +47,35 @@ AUDIO_FILTER = "Audio Files (*.wav *.flac *.ogg *.mp3);;All Files (*.*)"
 def load_input_wav(src_path, out_wav):
     """Decode an audio file to a 48 kHz stereo WAV for the transcriber.
 
-    Pure helper (no node state): the NRT worker calls this, tests call it
+    Thin wrapper over :func:`audio_io.to_engine_audio` (shared decode +
+    mono-dup + NRT resample): the NRT worker calls this, tests call it
     directly. Decoding is shared with SamplePlayer (audio_io): WAV/FLAC/OGG
     via soundfile, MP3 via PyAV. Raises RuntimeError on failure.
     """
-    import numpy as np
-    from audio_io import decode_audio_file, write_wav_file
-    src_path = Path(src_path)
-    audio, sr = decode_audio_file(src_path)
-    if audio.shape[0] == 1:
-        audio = np.vstack([audio[0], audio[0]])  # mono -> stereo dup
-    else:
-        audio = audio[:INPUT_CHANNELS]
-    if sr != INPUT_RATE:
-        if resampy is None:
-            raise RuntimeError(
-                f"input is {sr} Hz but the transcriber needs {INPUT_RATE} Hz "
-                "and 'resampy' is not installed"
-            )
-        audio = resampy.resample(audio, sr, INPUT_RATE, axis=-1)
+    from audio_io import to_engine_audio, write_wav_file
+    audio = to_engine_audio(src_path, target_sr=INPUT_RATE,
+                            target_channels=INPUT_CHANNELS,
+                            label="transcriber input")
     return write_wav_file(out_wav, audio, INPUT_RATE)
 
 
 def section_names(abc_text):
-    """Section labels from `% name` comment lines, in order."""
-    sections = []
-    for line in abc_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("%") and len(stripped) > 1:
-            sections.append(stripped[1:].strip())
-    return sections
+    """Section labels from `% name` comment lines, in order.
+
+    Alias of :func:`audiocpp_backend.abc_section_names` (kept here so the
+    transcriber module stays the obvious home for score helpers).
+    """
+    return abc_section_names(abc_text)
 
 
-class SheetSageWidget(QWidget):
+class SheetSageWidget(OfflineJobWidget):
     IS_NODE_UI = True
     NODE_CLASS_NAME = "SheetSage2Transcriber"
 
-    def __init__(self, node_proxy):
-        super().__init__()
-        self.proxy = node_proxy
-        self.setMinimumWidth(260)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
-
-        self.audio_widget = self.proxy.create_param_widget("audio_file")
-        layout.addWidget(self.audio_widget)
-        self.weight_widget = self.proxy.create_param_widget("weight_type")
-        layout.addWidget(self.weight_widget)
-        self.tokens_widget = self.proxy.create_param_widget("max_tokens")
-        layout.addWidget(self.tokens_widget)
-        self.strip_widget = self.proxy.create_param_widget("strip_chords")
-        layout.addWidget(self.strip_widget)
-
-        self.btn_download = QPushButton("Download runtime + model (~3.5 GB)")
-        self.btn_download.clicked.connect(
-            lambda: self.proxy.set_parameter("download", True))
-        layout.addWidget(self.btn_download)
-
-        self.btn_transcribe = QPushButton("Transcribe")
-        self.btn_transcribe.clicked.connect(
-            lambda: self.proxy.set_parameter("transcribe", True))
-        layout.addWidget(self.btn_transcribe)
-
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_cancel.clicked.connect(
-            lambda: self.proxy.set_parameter("cancel", True))
-        layout.addWidget(self.btn_cancel)
-
-        self.lbl_status = QLabel("Idle")
-        self.lbl_status.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.lbl_status)
-
-        self.lbl_score = QLabel("No transcription yet")
-        self.lbl_score.setStyleSheet("color: #aaa; font-size: 10px;")
-        self.lbl_score.setWordWrap(True)
-        layout.addWidget(self.lbl_score)
-
-    def on_telemetry(self, data: dict):
-        if "status" in data:
-            self.lbl_status.setText(data["status"])
-        if "audio" in data:
-            self.lbl_score.setText(data["audio"])
-
-    def update_from_params(self, params):
-        for key, widget in (
-            ("audio_file", self.audio_widget),
-            ("weight_type", self.weight_widget),
-            ("max_tokens", self.tokens_widget),
-            ("strip_chords", self.strip_widget),
-        ):
-            if key in params:
-                widget.update_from_backend(params[key])
+    PARAM_KEYS = ("audio_file", "weight_type", "max_tokens", "strip_chords")
+    ACTION_LABEL = "Transcribe"
+    ACTION_PARAM = "transcribe"
+    DOWNLOAD_LABEL = "Download runtime + model (~3.5 GB)"
 
 
 class SheetSage2Transcriber(AudioCppJob):
@@ -183,6 +94,11 @@ class SheetSage2Transcriber(AudioCppJob):
         "tools/audiocpp/fetch_sheetsage2_gguf.py run once (or the Download "
         "button). Weights are CC BY-NC 4.0 (non-commercial)."
     )
+
+    RUN_PARAM = "transcribe"
+    RUN_TAG = "job"
+    RUNNING_STATES = ("Transcribing", "Downloading")
+    ACTION_VERB = "Transcribe"
 
     def __init__(self, name=""):
         super().__init__(name)
@@ -234,29 +150,12 @@ class SheetSage2Transcriber(AudioCppJob):
             self._done_pulse = False
             buf.fill_(1.0)
 
-    def _restage(self, name, value):
-        self.params[name].set(value)
-        self.params[name].sync()
+    def _model_fetch_specs(self, model_dir):
+        return sheetsage_fetch_specs(model_dir)
 
-    def _resolve_model_dir(self):
-        raw = self.params["model_dir"].value
-        d = Path(raw)
-        if not d.is_absolute():
-            d = REPO_ROOT / d
-        return d
-
-    def _fail(self, message):
-        self._status = "Error"
-        self._status_detail = message
-        self.error_msg = message
-        logger.error(f"SheetSage2Transcriber {self.name}: {message}")
-
-    def _need_engine(self):
-        if getattr(self, "graph", None) is None or self.graph.engine is None:
-            self._fail("Node is not attached to an engine.")
-            self._refresh_ui()
-            return False
-        return True
+    def _running_status(self, spec):
+        return ("Transcribing",
+                f"{Path(spec['audio_file']).name} ({spec['weight_type']})…")
 
     def _build_spec(self):
         """Snapshot committed params into a worker spec. Raises ValueError."""
@@ -283,84 +182,7 @@ class SheetSage2Transcriber(AudioCppJob):
             "strip_chords": bool(self.params["strip_chords"].value),
         }
 
-    def _spec_to_dict(self, spec):
-        return {"url": spec.url, "dest": str(spec.dest), "size": spec.size,
-                "sha256": spec.sha256, "label": spec.label}
-
-    def _build_fetch_payload(self):
-        """Plain-data fetch plan for the NRT worker. Raises ValueError."""
-        from audiocpp_backend import sheetsage_fetch_specs
-        runtime = AudioCppRuntime()
-        model_dir = self._resolve_model_dir()
-        try:
-            runtime_specs, staging = runtime_fetch_specs(runtime.root)
-        except RuntimeError as e:
-            raise ValueError(str(e))
-        return {
-            "runtime": [self._spec_to_dict(s)
-                        for s in missing_specs(runtime_specs)
-                        if not runtime.cli.exists()],
-            "staging": str(staging),
-            "bin_dir": str(runtime.bin_dir),
-            "models": [self._spec_to_dict(s)
-                       for s in missing_specs(sheetsage_fetch_specs(model_dir))],
-        }
-
-    def on_ui_param_change(self, param_name: str):
-        if param_name == "transcribe":
-            if not self.params["transcribe"].value:
-                return
-            # Deliberate re-stage of the transient trigger (AGENTS.md section 5).
-            self._restage("transcribe", False)
-            if not self._need_engine():
-                return
-            try:
-                spec = self._build_spec()
-            except ValueError as e:
-                self._fail(str(e))
-                self._refresh_ui()
-                return
-            self.error_msg = None
-            self._status = "Transcribing"
-            self._status_detail = f"{Path(spec['audio_file']).name} ({spec['weight_type']})…"
-            self.submit_job("job", self._transcribe_nrt, spec)
-            self._refresh_ui()
-        elif param_name == "cancel":
-            if self.params["cancel"].value:
-                self._restage("cancel", False)
-                self._cancel_job()
-                if self._status in ("Transcribing", "Downloading"):
-                    self._status = "Cancelled"
-                    self._status_detail = "Cancelled by user"
-                self._refresh_ui()
-        elif param_name == "download":
-            if not self.params["download"].value:
-                return
-            self._restage("download", False)
-            if not self._need_engine():
-                return
-            try:
-                payload = self._build_fetch_payload()
-            except ValueError as e:
-                self._fail(str(e))
-                self._refresh_ui()
-                return
-            if not payload["runtime"] and not payload["models"]:
-                self.error_msg = None
-                self._status = "Idle"
-                self._status_detail = "Everything already downloaded"
-                self._refresh_ui()
-                return
-            self.error_msg = None
-            self._status = "Downloading"
-            self._status_detail = "Starting download…"
-            self.submit_job("fetch", self._fetch_nrt, payload)
-            self._refresh_ui()
-
-    # ------------------------------------------------------------------
-    # NRT worker
-    # ------------------------------------------------------------------
-    def _transcribe_nrt(self, cancel_event, spec):
+    def _run_nrt(self, cancel_event, spec):
         """Full blocking pipeline: convert input, run CLI, keep artifacts."""
         run_dir = self.new_run_dir(spec["model_dir"], "sheetsage")
         try:
@@ -401,37 +223,6 @@ class SheetSage2Transcriber(AudioCppJob):
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
 
-    def _fetch_nrt(self, cancel_event, payload):
-        """Download missing runtime/model with inbox progress. NRT only."""
-        epoch = self._nrt_epoch
-        inbox = self._nrt_inbox
-
-        def _progress(label, done, total, state):
-            if inbox is None:
-                return
-            try:
-                inbox.put((epoch, "fetch_progress", True,
-                           {"label": label, "done": done, "total": total,
-                            "state": state}))
-            except Exception:
-                pass
-
-        fetched = []
-        model_specs = [DownloadSpec(s["url"], Path(s["dest"]), s["size"],
-                                    s["sha256"], s["label"])
-                       for s in payload["models"]]
-        if model_specs:
-            fetch_all(model_specs, progress_cb=_progress, cancel_event=cancel_event)
-            fetched += [s.label for s in model_specs]
-        runtime_specs = [DownloadSpec(s["url"], Path(s["dest"]), s["size"],
-                                      s["sha256"], s["label"])
-                         for s in payload["runtime"]]
-        if runtime_specs:
-            fetch_all(runtime_specs, progress_cb=_progress, cancel_event=cancel_event)
-            install_runtime_archives(Path(payload["staging"]), Path(payload["bin_dir"]))
-            fetched += [s.label for s in runtime_specs]
-        return {"fetched": fetched}
-
     def on_nrt_complete(self, tag, ok, result):
         if tag == "job":
             if not ok:
@@ -464,36 +255,9 @@ class SheetSage2Transcriber(AudioCppJob):
             self.params["last_melody"].set(melody_path)
             self.params["last_melody"].sync()
         elif tag == "fetch_progress":
-            if ok:
-                self._status = "Downloading"
-                self._status_detail = self._format_fetch_progress(result)
+            self._on_fetch_progress(ok, result)
         elif tag == "fetch":
-            if not ok:
-                if isinstance(result, (GenerationCancelled, DownloadCancelled)):
-                    self._status = "Cancelled"
-                    self._status_detail = "Download cancelled — re-run to resume"
-                    self.error_msg = None
-                else:
-                    self._fail(f"Download failed: {result}")
-                return
-            self.error_msg = None
-            self._status = "Idle"
-            self._status_detail = "Download complete — press Transcribe"
-
-    @staticmethod
-    def _format_fetch_progress(progress):
-        label = progress.get("label", "download")
-        done, total, state = (progress.get("done", 0), progress.get("total"),
-                              progress.get("state", ""))
-        if state == "present":
-            return f"{label}: already present"
-        if state == "verifying":
-            return f"{label}: verifying…"
-        if total:
-            pct = 100.0 * done / total
-            return (f"{label}: {pct:.1f}% "
-                    f"({format_bytes(done)} / {format_bytes(total)})")
-        return f"{label}: {format_bytes(done)}"
+            self._on_fetch_complete(ok, result)
 
     def load_state(self, data: dict):
         super().load_state(data)

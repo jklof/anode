@@ -21,7 +21,6 @@ yet, so the plan -> edit -> re-render loop is limited to user-supplied
 scores via `abc_file` until a newer runtime is pinned.
 """
 
-import logging
 import random
 import shutil
 import time
@@ -29,41 +28,21 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
-from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QLabel,
-    QPushButton,
-)
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QPushButton
+from offline_job_widget import OfflineJobWidget
 
 from audiocpp_backend import (
-    REPO_ROOT,
+    AUDIOCPP_PIN_VERSION,
     AudioCppRuntime,
     AudioCppJob,
     GenerationCancelled,
-    install_runtime_archives,
-    missing_specs,
+    abc_section_names,
+    lyric_section_names,
     run_yue2_gen,
-    runtime_fetch_specs,
+    score_lyrics_fit_warning,
     yue2_fetch_specs,
 )
-from download_util import (
-    DownloadCancelled,
-    DownloadSpec,
-    fetch_all,
-    format_bytes,
-)
 from base import SAMPLE_RATE, CHANNELS
-
-logger = logging.getLogger(__name__)
-
-try:
-    import resampy
-    _RESAMPY_AVAILABLE = True
-except ImportError:
-    resampy = None
-    _RESAMPY_AVAILABLE = False
 
 COT_MODES = ("off", "melody", "full")
 FORMATS = ("mp3", "wav")
@@ -79,118 +58,50 @@ def load_song_file(path):
     """Decode a kept song (WAV or MP3) into a (2, N) contiguous float32 CPU
     tensor at the engine rate.
 
-    Pure helper (no node state): the NRT worker calls this, tests call it
+    Thin wrapper over :func:`audio_io.to_engine_audio` (shared decode +
+    mono-dup + NRT resample): the NRT worker calls this, tests call it
     directly. Raises RuntimeError with a human-readable message on failure.
     """
-    import numpy as np
-    from audio_io import decode_audio_file
-    audio, sr = decode_audio_file(path)
-    if audio.shape[0] == 1:
-        audio = np.vstack([audio[0], audio[0]])  # mono -> stereo dup
-    else:
-        audio = audio[:CHANNELS]
-    if sr != SAMPLE_RATE:
-        if resampy is None:
-            raise RuntimeError(
-                f"song is {sr} Hz but the engine runs at {SAMPLE_RATE} Hz and "
-                "'resampy' (needed to convert) is not installed"
-            )
-        audio = resampy.resample(audio, sr, SAMPLE_RATE, axis=-1)
-    tensor = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32))
+    from audio_io import to_engine_audio
+    audio = to_engine_audio(path, target_sr=SAMPLE_RATE,
+                            target_channels=CHANNELS, label="song")
+    tensor = torch.from_numpy(audio)
     if tensor.shape[0] != CHANNELS or tensor.ndim != 2 or tensor.shape[1] < 1:
         raise RuntimeError(f"decoded song has unexpected shape {tuple(tensor.shape)}")
     return tensor
 
 
-class YuE2Widget(QWidget):
+class YuE2Widget(OfflineJobWidget):
     IS_NODE_UI = True
     NODE_CLASS_NAME = "YuE2SongGenerator"
 
-    def __init__(self, node_proxy):
-        super().__init__()
-        self.proxy = node_proxy
-        self.setMinimumWidth(260)
+    PARAM_KEYS = ("style", "lyrics_file", "abc_file", "profile", "format",
+                  "cot", "seed", "auto_seed")
+    ACTION_LABEL = "Generate song"
+    ACTION_PARAM = "generate"
+    DOWNLOAD_LABEL = "Download runtime + model (~3.8 GB)"
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(6)
-
-        self.style_widget = self.proxy.create_param_widget("style")
-        layout.addWidget(self.style_widget)
-        self.lyrics_widget = self.proxy.create_param_widget("lyrics_file")
-        layout.addWidget(self.lyrics_widget)
-        self.abc_widget = self.proxy.create_param_widget("abc_file")
-        layout.addWidget(self.abc_widget)
-        self.profile_widget = self.proxy.create_param_widget("profile")
-        layout.addWidget(self.profile_widget)
-        self.format_widget = self.proxy.create_param_widget("format")
-        layout.addWidget(self.format_widget)
-        self.cot_widget = self.proxy.create_param_widget("cot")
-        layout.addWidget(self.cot_widget)
-        self.seed_widget = self.proxy.create_param_widget("seed")
-        layout.addWidget(self.seed_widget)
-
-        self.btn_seed = QPushButton("Randomize seed")
-        self.btn_seed.clicked.connect(self._on_seed_pressed)
-        layout.addWidget(self.btn_seed)
-
-        self.auto_seed_widget = self.proxy.create_param_widget("auto_seed")
-        layout.addWidget(self.auto_seed_widget)
-
-        self.btn_download = QPushButton("Download runtime + model (~3.8 GB)")
-        self.btn_download.clicked.connect(
-            lambda: self.proxy.set_parameter("download", True))
-        layout.addWidget(self.btn_download)
-
-        self.btn_generate = QPushButton("Generate song")
-        self.btn_generate.clicked.connect(self._on_generate_pressed)
-        layout.addWidget(self.btn_generate)
-
-        self.btn_cancel = QPushButton("Cancel")
-        self.btn_cancel.clicked.connect(
-            lambda: self.proxy.set_parameter("cancel", True))
-        layout.addWidget(self.btn_cancel)
-
-        self.lbl_status = QLabel("Idle")
-        self.lbl_status.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.lbl_status)
-
-        self.lbl_audio = QLabel("No song generated")
-        self.lbl_audio.setStyleSheet("color: #aaa; font-size: 10px;")
-        self.lbl_audio.setWordWrap(True)
-        layout.addWidget(self.lbl_audio)
-
-    def on_telemetry(self, data: dict):
-        if "status" in data:
-            self.lbl_status.setText(data["status"])
-        if "audio" in data:
-            self.lbl_audio.setText(data["audio"])
+    def _build_after_param(self, layout, key):
+        if key == "seed":
+            self.btn_seed = QPushButton("Randomize seed")
+            self.btn_seed.clicked.connect(self._on_seed_pressed)
+            layout.addWidget(self.btn_seed)
 
     def _on_seed_pressed(self):
         self.proxy.set_parameter("seed", random.randrange(0, 2 ** 31))
 
     def _on_generate_pressed(self):
+        self._on_action_pressed()
+
+    def _on_action_pressed(self):
         # Commit the style editor text first: set_parameter only debounces,
         # and the flush preserves insertion order, so style is guaranteed
         # to be applied before generate (no stale-prompt race).
-        line_edit = getattr(self.style_widget, "line_edit", None)
+        line_edit = getattr(
+            self.param_widgets.get("style"), "line_edit", None)
         if line_edit is not None:
             self.proxy.set_parameter("style", line_edit.text())
         self.proxy.set_parameter("generate", True)
-
-    def update_from_params(self, params):
-        for key, widget in (
-            ("style", self.style_widget),
-            ("lyrics_file", self.lyrics_widget),
-            ("abc_file", self.abc_widget),
-            ("profile", self.profile_widget),
-            ("format", self.format_widget),
-            ("cot", self.cot_widget),
-            ("seed", self.seed_widget),
-            ("auto_seed", self.auto_seed_widget),
-        ):
-            if key in params:
-                widget.update_from_backend(params[key])
 
 
 class YuE2SongGenerator(AudioCppJob):
@@ -274,17 +185,6 @@ class YuE2SongGenerator(AudioCppJob):
         self._ready_pulse = False
         self._last_trig = 0.0
 
-    def _restage(self, name, value):
-        self.params[name].set(value)
-        self.params[name].sync()
-
-    def _resolve_model_dir(self):
-        raw = self.params["model_dir"].value
-        d = Path(raw)
-        if not d.is_absolute():
-            d = REPO_ROOT / d
-        return d
-
     def _resolve_score(self):
         """Wired abc_uri wins over the abc_file param (both snapshot at
         Generate time). Raises ValueError with a clear message."""
@@ -348,102 +248,54 @@ class YuE2SongGenerator(AudioCppJob):
             return seed
         return int(self.params["seed"].value)
 
-    def _spec_to_dict(self, spec):
-        return {"url": spec.url, "dest": str(spec.dest), "size": spec.size,
-                "sha256": spec.sha256, "label": spec.label}
+    def _model_fetch_specs(self, model_dir):
+        return yue2_fetch_specs(model_dir)
 
-    def _build_fetch_payload(self):
-        """Plain-data fetch plan for the NRT worker. Raises ValueError."""
-        runtime = AudioCppRuntime()
-        model_dir = self._resolve_model_dir()
+    def _running_status(self, spec):
+        return ("Generating",
+                f"seed {spec['seed']}, {spec['cot']}, {spec['main_gguf']}…")
+
+    def _spec_warnings(self, spec):
+        """Warn when the cover score and lyrics are shaped too differently
+        (stretch/cram garbles vocals). Reads two small text files on the
+        engine/control thread — same I/O class as the existence checks in
+        _build_spec. Warn-only; a missing file here is the worker's error
+        to raise, so read failures simply skip the warning."""
+        if not spec.get("abc_file"):
+            return []
         try:
-            runtime_specs, staging = runtime_fetch_specs(runtime.root)
-        except RuntimeError as e:
-            raise ValueError(str(e))
-        payload = {
-            "runtime": [self._spec_to_dict(s)
-                        for s in missing_specs(runtime_specs)
-                        if not runtime.cli.exists()],
-            "staging": str(staging),
-            "bin_dir": str(runtime.bin_dir),
-            "models": [self._spec_to_dict(s)
-                       for s in missing_specs(yue2_fetch_specs(model_dir))],
-        }
-        return payload
+            lyrics_text = Path(spec["lyrics_file"]).read_text(encoding="utf-8")
+            abc_text = Path(spec["abc_file"]).read_text(encoding="utf-8")
+        except OSError:
+            return []
+        warning = score_lyrics_fit_warning(
+            abc_sections=abc_section_names(abc_text),
+            lyric_sections=lyric_section_names(lyrics_text))
+        return [warning] if warning else []
 
-    def on_ui_param_change(self, param_name: str):
-        if param_name == "generate":
-            if not self.params["generate"].value:
-                return
-            # Deliberate re-stage of the transient trigger (AGENTS.md section 5).
-            self._restage("generate", False)
-            if getattr(self, "graph", None) is None or self.graph.engine is None:
-                self._fail("Node is not attached to an engine.")
-                return
-            try:
-                spec = self._build_spec()
-            except ValueError as e:
-                self._fail(str(e))
-                self._refresh_ui()
-                return
-            self.error_msg = None
-            self._status = "Generating"
-            self._status_detail = f"seed {spec['seed']}, {spec['cot']}, {spec['main_gguf']}…"
-            self._gen_t0 = time.monotonic()
-            self.submit_job("gen", self._generate_nrt, spec)
-            self._refresh_ui()
-        elif param_name == "cancel":
-            if self.params["cancel"].value:
-                self._restage("cancel", False)
-                self._cancel_job()
-                self._gen_t0 = None
-                if self._status in ("Generating", "Downloading"):
-                    self._status = "Cancelled"
-                    self._status_detail = "Cancelled by user"
-                self._refresh_ui()
-        elif param_name == "download":
-            if not self.params["download"].value:
-                return
-            self._restage("download", False)
-            if getattr(self, "graph", None) is None or self.graph.engine is None:
-                self._fail("Node is not attached to an engine.")
-                self._refresh_ui()
-                return
-            try:
-                payload = self._build_fetch_payload()
-            except ValueError as e:
-                self._fail(str(e))
-                self._refresh_ui()
-                return
-            if not payload["runtime"] and not payload["models"]:
-                self.error_msg = None
-                self._status = "Idle"
-                self._status_detail = "Everything already downloaded"
-                self._refresh_ui()
-                return
-            self.error_msg = None
-            self._status = "Downloading"
-            self._status_detail = "Starting download…"
-            self.submit_job("fetch", self._fetch_nrt, payload)
-            self._refresh_ui()
+    def _on_job_submitted(self, spec):
+        self._gen_t0 = time.monotonic()
+
+    def _on_job_cancelled(self):
+        self._gen_t0 = None
 
     def _fail(self, message):
-        self._gen_t0 = None
-        self._status = "Error"
-        self._status_detail = message
-        self.error_msg = message
-        logger.error(f"YuE2SongGenerator {self.name}: {message}")
+        self._gen_t0 = None  # terminal state; stops the elapsed clock
+        super()._fail(message)
 
     # ------------------------------------------------------------------
     # NRT worker
     # ------------------------------------------------------------------
-    def _generate_nrt(self, cancel_event, spec):
+    def _run_nrt(self, cancel_event, spec):
         """Full blocking pipeline: read inputs, run CLI, decode, keep artifacts."""
         run_dir = self.new_run_dir(spec["model_dir"], "yue2")
         try:
             lyrics = Path(spec["lyrics_file"]).read_text(encoding="utf-8")
             if not lyrics.strip():
                 raise ValueError(f"Lyrics file is empty: {spec['lyrics_file']}")
+            abc_text = None
+            if spec["abc_file"]:
+                abc_text = Path(spec["abc_file"]).read_text(encoding="utf-8")
             out_wav = run_dir / "song.wav"
             gen = run_yue2_gen(
                 spec["cli"], spec["model_dir"], lyrics=lyrics, style=spec["style"],
@@ -454,15 +306,22 @@ class YuE2SongGenerator(AudioCppJob):
             audio = load_song_file(gen["wav"])
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             keep = Path(spec["model_dir"]) / "outputs" / f"{stamp}_seed{spec['seed']}_{spec['cot']}"
-            kept_song = self._keep_song(run_dir, keep, audio, spec, gen["metrics"])
+            kept_song = self._keep_song(run_dir, keep, audio, spec, gen["metrics"],
+                                        lyrics_text=lyrics, abc_text=abc_text)
             return {"audio": audio, "wav": str(kept_song),
                     "metrics": gen["metrics"], "seed": spec["seed"], "cot": spec["cot"]}
         except BaseException:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
 
-    def _keep_song(self, run_dir, keep, audio, spec, metrics):
-        """Keep exactly one song file plus provenance records. Returns kept path."""
+    def _keep_song(self, run_dir, keep, audio, spec, metrics,
+                   lyrics_text=None, abc_text=None):
+        """Keep exactly one song file plus provenance records. Returns kept path.
+
+        request.json carries everything needed to recreate the song: the
+        full lyrics/score texts alongside their source paths (paths rot;
+        text doesn't), the resolved seed/profile/VAE, and the sidecar pin.
+        """
         if spec["format"] == "mp3":
             # Encode MP3 from the validated tensor straight into the keep
             # dir (libmp3lame 320k); the CLI WAV stays in run_dir and is
@@ -476,44 +335,19 @@ class YuE2SongGenerator(AudioCppJob):
             kept_song = keep / "song.wav"
             self.keep_artifacts(run_dir, keep, ["song.wav"])
         self.write_json(keep / "request.json", {
-            "style": spec["style"], "lyrics_file": spec["lyrics_file"],
-            "abc_file": spec["abc_file"], "cot": spec["cot"],
+            "style": spec["style"],
+            "lyrics_file": spec["lyrics_file"],
+            "lyrics_text": lyrics_text,
+            "abc_file": spec["abc_file"],
+            "abc_text": abc_text,
+            "cot": spec["cot"],
             "seed": spec["seed"], "profile": spec["main_gguf"],
+            "vae_gguf": VAE_GGUF,
             "format": spec["format"],
+            "runtime": {"audio_cpp": AUDIOCPP_PIN_VERSION},
         })
         self.write_json(keep / "metrics.json", metrics)
         return kept_song
-
-    def _fetch_nrt(self, cancel_event, payload):
-        """Download missing runtime/models with inbox progress. NRT only."""
-        epoch = self._nrt_epoch
-        inbox = self._nrt_inbox
-
-        def _progress(label, done, total, state):
-            if inbox is None:
-                return
-            try:
-                inbox.put((epoch, "fetch_progress", True,
-                           {"label": label, "done": done, "total": total,
-                            "state": state}))
-            except Exception:
-                pass
-
-        fetched = []
-        model_specs = [DownloadSpec(s["url"], Path(s["dest"]), s["size"],
-                                    s["sha256"], s["label"])
-                       for s in payload["models"]]
-        if model_specs:
-            fetch_all(model_specs, progress_cb=_progress, cancel_event=cancel_event)
-            fetched += [s.label for s in model_specs]
-        runtime_specs = [DownloadSpec(s["url"], Path(s["dest"]), s["size"],
-                                      s["sha256"], s["label"])
-                         for s in payload["runtime"]]
-        if runtime_specs:
-            fetch_all(runtime_specs, progress_cb=_progress, cancel_event=cancel_event)
-            install_runtime_archives(Path(payload["staging"]), Path(payload["bin_dir"]))
-            fetched += [s.label for s in runtime_specs]
-        return {"fetched": fetched}
 
     def _relink_nrt(self, cancel_event, wav_path):
         return {"audio": load_song_file(wav_path), "wav": wav_path,
@@ -565,36 +399,9 @@ class YuE2SongGenerator(AudioCppJob):
                 self._status_detail = "Previous song file is missing; generate again"
                 self.error_msg = None
         elif tag == "fetch_progress":
-            if ok:
-                self._status = "Downloading"
-                self._status_detail = self._format_fetch_progress(result)
+            self._on_fetch_progress(ok, result)
         elif tag == "fetch":
-            if not ok:
-                if isinstance(result, (GenerationCancelled, DownloadCancelled)):
-                    self._status = "Cancelled"
-                    self._status_detail = "Download cancelled — re-run to resume"
-                    self.error_msg = None
-                else:
-                    self._fail(f"Download failed: {result}")
-                return
-            self.error_msg = None
-            self._status = "Idle"
-            self._status_detail = "Download complete — press Generate"
-
-    @staticmethod
-    def _format_fetch_progress(progress):
-        label = progress.get("label", "download")
-        done, total, state = (progress.get("done", 0), progress.get("total"),
-                              progress.get("state", ""))
-        if state == "present":
-            return f"{label}: already present"
-        if state == "verifying":
-            return f"{label}: verifying…"
-        if total:
-            pct = 100.0 * done / total
-            return (f"{label}: {pct:.1f}% "
-                    f"({format_bytes(done)} / {format_bytes(total)})")
-        return f"{label}: {format_bytes(done)}"
+            self._on_fetch_complete(ok, result)
 
     def load_state(self, data: dict):
         super().load_state(data)
