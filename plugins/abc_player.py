@@ -23,12 +23,78 @@ Architecture (mirrors SamplePlayer):
 
 from base import Node, BLOCK_SIZE, SAMPLE_RATE
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QLabel,
+    QProgressBar,
+    QVBoxLayout,
+    QWidget,
+)
+
 try:
     import mido
     _MIDO_AVAILABLE = True
 except ImportError:
     mido = None
     _MIDO_AVAILABLE = False
+
+
+class ABCPlayerWidget(QWidget):
+    """Custom UI: param rows (a custom widget replaces the generic panel,
+    so every param must be embedded explicitly) plus a live status line
+    and progress bar fed by on_telemetry."""
+
+    IS_NODE_UI = True
+    NODE_CLASS_NAME = "ABCPlayer"
+
+    PARAM_KEYS = ("score_file", "channel", "velocity", "tempo_scale", "loop")
+
+    def __init__(self, node_proxy):
+        super().__init__()
+        self.proxy = node_proxy
+        self.setMinimumWidth(240)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+
+        self.param_widgets = {}
+        for key in self.PARAM_KEYS:
+            widget = self.proxy.create_param_widget(key)
+            self.param_widgets[key] = widget
+            layout.addWidget(widget)
+
+        self.lbl_status = QLabel("Idle")
+        self.lbl_status.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_status)
+
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 1000)
+        self.bar.setValue(0)
+        self.bar.setTextVisible(True)
+        layout.addWidget(self.bar)
+
+    def on_telemetry(self, data: dict):
+        status = str(data.get("status", ""))
+        section = str(data.get("section", "") or "")
+        self.lbl_status.setText(
+            status + (f" · {section}" if section else ""))
+        try:
+            pos = float(data.get("pos", 0.0) or 0.0)
+            total = float(data.get("total", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pos, total = 0.0, 0.0
+        if total > 0:
+            self.bar.setValue(max(0, min(1000, int(1000.0 * pos / total))))
+            self.bar.setFormat(f"beat {pos:.0f}/{total:.0f}")
+        else:
+            self.bar.setValue(0)
+            self.bar.setFormat("no score")
+
+    def update_from_params(self, params):
+        for key, widget in self.param_widgets.items():
+            if key in params:
+                widget.update_from_backend(params[key])
 
 
 class ABCPlayer(Node):
@@ -267,9 +333,14 @@ class ABCPlayer(Node):
 
     def get_telemetry(self) -> dict:
         detail = self._status_detail
+        pos, total, section = 0.0, 0.0, ""
+        if self._score is not None:
+            total = self._score.total_beats
         if self._is_playing and self._score is not None:
-            section = self._section_at(self._beat_pos)
-            detail = (f"beat {self._beat_pos:.0f}/{self._score.total_beats:.0f}"
+            pos = self._beat_pos
+            section = self._section_at(pos)
+            detail = (f"beat {pos:.0f}/{total:.0f}"
                       + (f" ({section})" if section else ""))
         status = "Playing" if self._is_playing else self._status
-        return {"status": status, "audio": detail}
+        return {"status": status, "audio": detail, "pos": pos,
+                "total": total, "section": section}

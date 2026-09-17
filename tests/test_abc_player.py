@@ -150,3 +150,87 @@ def test_telemetry_reports_position(node_cls, tmp_path):
     telem = node.get_telemetry()
     assert telem["status"] == "Playing"
     assert "verse" in telem["audio"]
+    assert telem["section"] == "verse"
+    assert telem["total"] == pytest.approx(2.0)
+    assert 0.0 <= telem["pos"] <= telem["total"]
+
+
+# ----------------------------------------------------------------------
+# status widget (offscreen)
+# ----------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def qapp():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    inst = QCoreApplication.instance()
+    if inst is None:
+        return QApplication([])
+    if isinstance(inst, QApplication):
+        return inst
+    pytest.skip("a bare QCoreApplication is active; QWidget tests cannot run")
+
+
+class _StubProxy:
+    def __init__(self):
+        self.created = []
+
+    def create_param_widget(self, name):
+        from PySide6.QtWidgets import QWidget
+        w = QWidget()
+        w.setObjectName(name)
+        self.created.append(name)
+        return w
+
+
+def test_widget_embeds_all_params(qapp):
+    import sys
+    widget = sys.modules["abc_player"].ABCPlayerWidget(_StubProxy())
+    assert widget.proxy.created == ["score_file", "channel", "velocity",
+                                    "tempo_scale", "loop"]
+
+
+def test_widget_shows_progress(qapp):
+    import sys
+    widget = sys.modules["abc_player"].ABCPlayerWidget(_StubProxy())
+    widget.on_telemetry({"status": "Playing", "audio": "beat 12/64 (verse)",
+                         "pos": 12.0, "total": 64.0, "section": "verse"})
+    assert widget.lbl_status.text() == "Playing · verse"
+    assert widget.bar.value() == pytest.approx(1000.0 * 12 / 64, abs=1)
+    assert widget.bar.format() == "beat 12/64"
+
+
+def test_widget_idle_no_score(qapp):
+    import sys
+    widget = sys.modules["abc_player"].ABCPlayerWidget(_StubProxy())
+    widget.on_telemetry({"status": "Idle", "audio": "No score loaded",
+                         "pos": 0.0, "total": 0.0, "section": ""})
+    assert widget.lbl_status.text() == "Idle"
+    assert widget.bar.value() == 0
+    # Tolerates missing/garbage keys without crashing.
+    widget.on_telemetry({})
+    assert widget.bar.value() == 0
+
+
+def test_widget_forwards_param_updates(qapp):
+    import sys
+    from PySide6.QtWidgets import QWidget
+
+    seen = {}
+
+    class _ParamWidget(QWidget):
+        def update_from_backend(self, value):
+            seen[self.objectName()] = value
+
+    class _Proxy(_StubProxy):
+        def create_param_widget(self, name):
+            w = _ParamWidget()
+            w.setObjectName(name)
+            self.created.append(name)
+            return w
+
+    widget = sys.modules["abc_player"].ABCPlayerWidget(_Proxy())
+    widget.update_from_params({"velocity": 64, "unknown_param": 1})
+    assert seen == {"velocity": 64}
