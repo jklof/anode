@@ -96,6 +96,26 @@ def test_argv_builds_expected_command(tmp_path):
     assert "--metrics" in argv
 
 
+def test_argv_backend_defaults_to_cuda_and_overrides(tmp_path):
+    """Manual installs on GPU-less platforms need --backend cpu instead of
+    the hardcoded cuda that could never succeed there."""
+    out = str(tmp_path / "o.wav")
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec())
+    i = argv.index("--backend")
+    assert argv[i + 1] == "cuda"
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec(), backend="cpu")
+    i = argv.index("--backend")
+    assert argv[i + 1] == "cpu"
+
+
+def test_default_backend_follows_torch_cuda(monkeypatch):
+    import torch
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    assert backend.default_backend() == "cuda"
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert backend.default_backend() == "cpu"
+
+
 def test_argv_rejects_bad_inputs(tmp_path):
     out = str(tmp_path / "o.wav")
     with pytest.raises(ValueError):
@@ -997,3 +1017,16 @@ def test_request_json_carries_repro_texts(node_cls, tmp_path):
     assert req["seed"] == 7 and req["cot"] == "full"
     assert req["vae_gguf"] == _live().VAE_GGUF
     assert req["runtime"]["audio_cpp"] == backend.AUDIOCPP_PIN_VERSION
+
+
+def test_request_json_records_backend(node_cls, tmp_path):
+    node = make_node(node_cls)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "song.wav").write_bytes(b"cli-bytes")
+    keep = tmp_path / "keep"
+    spec = _keep_spec(tmp_path, "wav")
+    spec["backend"] = "cpu"
+    node._keep_song(run_dir, keep, _keep_audio(), spec, {"rtf": 1.0})
+    import json
+    assert json.loads((keep / "request.json").read_text())["backend"] == "cpu"

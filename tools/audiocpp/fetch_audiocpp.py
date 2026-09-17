@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from audiocpp_backend import (
     AudioCppRuntime,
     install_runtime_archives,
+    missing_specs,
     runtime_fetch_specs,
 )
 from download_util import (
@@ -22,7 +23,6 @@ from download_util import (
     DownloadCancelled,
     DownloadError,
     fetch_all,
-    missing_specs,
 )
 
 

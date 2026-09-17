@@ -34,6 +34,7 @@ from audiocpp_backend import (
     AudioCppJob,
     GenerationCancelled,
     abc_section_names,
+    default_backend,
     run_sheetsage_transcribe,
     sheetsage_fetch_specs,
     strip_abc_chords,
@@ -180,6 +181,7 @@ class SheetSage2Transcriber(AudioCppJob):
             "weight_type": SHEETSAGE_WEIGHT_TYPES[int(self.params["weight_type"].value)],
             "max_tokens": int(self.params["max_tokens"].value),
             "strip_chords": bool(self.params["strip_chords"].value),
+            "backend": default_backend(),
         }
 
     def _run_nrt(self, cancel_event, spec):
@@ -192,6 +194,7 @@ class SheetSage2Transcriber(AudioCppJob):
                 spec["cli"], spec["model_dir"], audio_wav=input_wav,
                 weight_type=spec["weight_type"], max_tokens=spec["max_tokens"],
                 out_abc=out_abc, cancel_event=cancel_event,
+                backend=spec.get("backend"),
             )
             abc_text = Path(result["abc"]).read_text(encoding="utf-8")
             if not abc_text.strip():
@@ -213,6 +216,7 @@ class SheetSage2Transcriber(AudioCppJob):
                 "weight_type": spec["weight_type"],
                 "max_tokens": spec["max_tokens"],
                 "strip_chords": spec["strip_chords"],
+                "backend": spec.get("backend", "cuda"),
             })
             self.write_json(keep / "metrics.json", result["metrics"])
             return {"abc": abc_text, "abc_path": str(keep / "score.abc"),

@@ -181,3 +181,74 @@ def test_format_bytes():
     assert format_bytes(512) == "512 B"
     assert format_bytes(2048) == "2.0 KB"
     assert format_bytes(None) == "?"
+
+
+def _load_fetch_script(name):
+    """Import tools/audiocpp/<name>.py as a module without running main().
+
+    The scripts only fetch on __main__; importing executes their third-party
+    imports, so this catches ImportErrors (e.g. names imported from the
+    wrong helper module) on every platform.
+    """
+    import importlib.util
+    from pathlib import Path as _Path
+    path = (_Path(__file__).resolve().parents[1] / "tools" / "audiocpp"
+            / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(f"anode_{name}", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_fetch_scripts_import_cleanly():
+    for name in ("fetch_audiocpp", "fetch_yue2_gguf", "fetch_sheetsage2_gguf"):
+        mod = _load_fetch_script(name)
+        assert callable(mod.main)
+
+
+def _make_archives(staging):
+    import tarfile
+    import zipfile
+    with zipfile.ZipFile(staging / "b.zip", "w") as z:
+        z.writestr("cli.exe", b"fake-cli")
+    with tarfile.open(staging / "a.tar.gz", "w:gz") as t:
+        import io
+        info = tarfile.TarInfo("audiocpp_cli")
+        data = b"fake-cli"
+        info.size, info.mode = len(data), 0o755
+        t.addfile(info, io.BytesIO(data))
+
+
+def test_install_runtime_archives_zip_and_tarball(tmp_path):
+    from audiocpp_backend import install_runtime_archives
+    staging, bin_dir = tmp_path / "_dl", tmp_path / "bin"
+    staging.mkdir()
+    _make_archives(staging)
+    install_runtime_archives(staging, bin_dir)
+    assert (bin_dir / "cli.exe").read_bytes() == b"fake-cli"
+    assert (bin_dir / "audiocpp_cli").read_bytes() == b"fake-cli"
+    assert not staging.exists()  # staging cleaned up
+
+
+def test_install_runtime_archives_rejects_unknown_suffix(tmp_path):
+    from audiocpp_backend import install_runtime_archives
+    staging, bin_dir = tmp_path / "_dl", tmp_path / "bin"
+    staging.mkdir()
+    (staging / "runtime.exe").write_bytes(b"nope")
+    with pytest.raises(RuntimeError, match="unsupported runtime archive"):
+        install_runtime_archives(staging, bin_dir)
+
+
+def test_install_runtime_archives_rejects_tar_escape(tmp_path):
+    import io
+    import tarfile
+    from audiocpp_backend import install_runtime_archives
+    staging, bin_dir = tmp_path / "_dl", tmp_path / "bin"
+    staging.mkdir()
+    with tarfile.open(staging / "evil.tar.gz", "w:gz") as t:
+        info = tarfile.TarInfo("../evil.sh")
+        data = b"evil"
+        info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+    with pytest.raises(RuntimeError, match="unsafe path"):
+        install_runtime_archives(staging, bin_dir)

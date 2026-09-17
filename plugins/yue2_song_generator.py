@@ -18,7 +18,10 @@ Measured on an RTX 5070 Laptop (8 GB): Q4_K_M peaks at ~4.3 GB VRAM for a
 
 Known audio.cpp v0.8.0 gap: model-generated ABC plans cannot be exported
 yet, so the plan -> edit -> re-render loop is limited to user-supplied
-scores via `abc_file` until a newer runtime is pinned.
+scores via `abc_file` until a newer runtime is pinned. (Fixed upstream on
+main after v0.8.0 — `score.abc` via `--out-dir` — but unreleased, and main
+also renames `yue2.lora` to `yue2.ar_lora`, so wait for the next release
+rather than tracking main.)
 """
 
 import random
@@ -37,6 +40,7 @@ from audiocpp_backend import (
     AudioCppJob,
     GenerationCancelled,
     abc_section_names,
+    default_backend,
     lyric_section_names,
     run_yue2_gen,
     score_lyrics_fit_warning,
@@ -233,6 +237,7 @@ class YuE2SongGenerator(AudioCppJob):
             "seed": self._pick_seed(),
             "main_gguf": main_gguf,
             "format": FORMATS[int(self.params["format"].value)],
+            "backend": default_backend(),
         }
 
     def _pick_seed(self):
@@ -301,7 +306,7 @@ class YuE2SongGenerator(AudioCppJob):
                 spec["cli"], spec["model_dir"], lyrics=lyrics, style=spec["style"],
                 cot=spec["cot"], seed=spec["seed"], main_gguf=spec["main_gguf"],
                 vae_gguf=VAE_GGUF, abc_file=spec["abc_file"], out_wav=out_wav,
-                cancel_event=cancel_event,
+                cancel_event=cancel_event, backend=spec.get("backend"),
             )
             audio = load_song_file(gen["wav"])
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -344,6 +349,7 @@ class YuE2SongGenerator(AudioCppJob):
             "seed": spec["seed"], "profile": spec["main_gguf"],
             "vae_gguf": VAE_GGUF,
             "format": spec["format"],
+            "backend": spec.get("backend", "cuda"),
             "runtime": {"audio_cpp": AUDIOCPP_PIN_VERSION},
         })
         self.write_json(keep / "metrics.json", metrics)

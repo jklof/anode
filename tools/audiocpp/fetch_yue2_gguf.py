@@ -16,13 +16,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from audiocpp_backend import REPO_ROOT as _ROOT, yue2_fetch_specs
+from audiocpp_backend import REPO_ROOT as _ROOT, missing_specs, yue2_fetch_specs
 from download_util import (
     ConsoleProgress,
     DownloadCancelled,
     DownloadError,
     fetch_all,
-    missing_specs,
 )
 
 

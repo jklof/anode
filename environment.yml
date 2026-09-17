@@ -16,6 +16,11 @@ dependencies:
   # Only dependencies actually imported by the app / plugins.
   # (scipy, librosa, and pip TTS/ASR extras were removed as unused —
   # re-add if you need them for local experiments.)
+  # Platform notes (conda-forge itself is cross-platform, but some pip
+  # packages need system libraries at runtime — not vendored here):
+  # - sounddevice: system PortAudio (Linux: libportaudio2, macOS: brew install portaudio)
+  # - python-rtmidi: Linux source builds need ALSA/JACK dev packages if no wheel is available
+  # - pylibrb: system RubberBand library if the wheel does not bundle it
   - cmake
   - cxx-compiler
   - numpy

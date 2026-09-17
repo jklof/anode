@@ -90,9 +90,14 @@ def runtime_fetch_specs(root=None):
     import sys
     if sys.platform != "win32":
         raise RuntimeError(
-            "No pinned audio.cpp build for this platform. Download manually "
-            "from https://github.com/0xShug0/audio.cpp/releases and extract "
-            "under tools/audiocpp/bin/ (see tools/audiocpp/README.md)."
+            "No pinned audio.cpp build for this platform "
+            f"({sys.platform}). Auto-fetch covers Windows x64 + CUDA 13.3 "
+            "only: download the matching asset manually from "
+            "https://github.com/0xShug0/audio.cpp/releases "
+            f"(v{AUDIOCPP_PIN_VERSION}, e.g. a cpu/metal/vulkan tarball) and "
+            "extract it under tools/audiocpp/bin/ so audiocpp_cli sits next "
+            "to its backend libraries (chmod +x tools/audiocpp/bin/"
+            "audiocpp_cli on Unix). See tools/audiocpp/README.md."
         )
     root = Path(root) if root is not None else REPO_ROOT / "tools" / "audiocpp"
     staging = root / "_dl"
@@ -103,16 +108,45 @@ def runtime_fetch_specs(root=None):
 
 
 def install_runtime_archives(staging, bin_dir):
-    """Extract verified runtime zips into bin_dir. NRT/worker-side only
-    (disk I/O); removes the staging directory afterwards."""
+    """Extract verified runtime archives into bin_dir. NRT/worker-side only
+    (disk I/O); removes the staging directory afterwards.
+
+    Handles the archive formats upstream publishes per platform (``.zip``
+    on Windows, ``.tar.gz``/``.tgz`` elsewhere); unknown suffixes raise so
+    a mis-pinned asset fails loudly instead of installing nothing. Members
+    are path-checked before extraction (no absolute paths or ``..``
+    escapes) on every Python version.
+    """
+    import sys
+    import tarfile
     import zipfile
+    # tarfile filter= exists on 3.12+ only; _check_tar_members below is the
+    # version-proof path guard, this just silences the 3.12 deprecation.
+    tar_kwargs = {"filter": "data"} if sys.version_info >= (3, 12) else {}
     staging, bin_dir = Path(staging), Path(bin_dir)
     bin_dir.mkdir(parents=True, exist_ok=True)
-    for archive in sorted(staging.glob("*.zip")):
-        with zipfile.ZipFile(archive) as z:
-            z.extractall(bin_dir)
+    for archive in sorted(staging.iterdir()):
+        if archive.suffix == ".zip":
+            with zipfile.ZipFile(archive) as z:
+                z.extractall(bin_dir)
+        elif archive.suffixes[-2:] == [".tar", ".gz"] or archive.suffix == ".tgz":
+            with tarfile.open(archive, "r:gz") as t:
+                _check_tar_members(t, bin_dir)
+                t.extractall(bin_dir, **tar_kwargs)
+        else:
+            raise RuntimeError(f"unsupported runtime archive format: {archive.name}")
     shutil.rmtree(staging, ignore_errors=True)
     return bin_dir
+
+
+def _check_tar_members(tar, dest_dir):
+    """Reject tar members escaping dest_dir. ``filter=`` only exists on
+    3.12+, so check manually to stay compatible with 3.11."""
+    base = Path(dest_dir).resolve()
+    for member in tar.getmembers():
+        target = (base / member.name).resolve()
+        if target != base and base not in target.parents:
+            raise RuntimeError(f"unsafe path in runtime archive: {member.name}")
 
 
 def yue2_fetch_specs(model_dir):
@@ -215,8 +249,26 @@ def strip_abc_chords(abc_text):
     return "\n".join(out) + "\n"
 
 
+def default_backend():
+    """Sidecar compute backend: CUDA when torch sees a GPU, else CPU.
+
+    The CLI ships per-backend builds (cpu/cuda/vulkan/metal); the pinned
+    auto-fetch is a CUDA build, but manual installs on other platforms (or
+    GPU-less boxes) need the CPU fallback instead of a hardcoded
+    ``--backend cuda`` that can never succeed there. Resolved once per job
+    spec on the engine/control thread, never per block.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 def _build_sheetsage_argv(cli, model_dir, *, audio_wav, weight_type,
-                          max_tokens, out_abc):
+                          max_tokens, out_abc, backend="cuda"):
     """Pure argv builder (no process). Tested without a GPU."""
     if weight_type not in SHEETSAGE_WEIGHT_TYPES:
         raise ValueError(f"weight_type must be one of {SHEETSAGE_WEIGHT_TYPES}")
@@ -225,7 +277,7 @@ def _build_sheetsage_argv(cli, model_dir, *, audio_wav, weight_type,
         raise ValueError("max_tokens must be a positive integer")
     return [
         str(cli), "--task", "midi", "--family", "sheetsage2",
-        "--model", str(model_dir), "--backend", "cuda", "--threads", "8",
+        "--model", str(model_dir), "--backend", backend, "--threads", "8",
         "--session-option", f"sheetsage2.weight_type={weight_type}",
         "--request-option", f"max_tokens={max_tokens}",
         "--audio", str(audio_wav),
@@ -235,7 +287,8 @@ def _build_sheetsage_argv(cli, model_dir, *, audio_wav, weight_type,
 
 def run_sheetsage_transcribe(cli, model_dir, *, audio_wav, weight_type="native",
                              max_tokens=SHEETSAGE_DEFAULT_MAX_TOKENS,
-                             out_abc, cancel_event=None, timeout_s=3600):
+                             out_abc, cancel_event=None, timeout_s=3600,
+                             backend=None):
     """Transcribe one recording to an ABC score file. Blocking; NRT only.
 
     Returns ``{"abc": str, "metrics": dict}``. Raises
@@ -255,7 +308,8 @@ def run_sheetsage_transcribe(cli, model_dir, *, audio_wav, weight_type="native",
         raise FileNotFoundError(f"input audio not found: {audio_wav}")
     argv = _build_sheetsage_argv(cli, model_dir, audio_wav=audio_wav,
                                  weight_type=weight_type, max_tokens=max_tokens,
-                                 out_abc=out_abc)
+                                 out_abc=out_abc,
+                                 backend=backend or default_backend())
     out_abc.parent.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.Popen(
@@ -344,7 +398,7 @@ def _no_window_kwargs():
 
 
 def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
-                     main_gguf, vae_gguf, abc_file, out_wav):
+                     main_gguf, vae_gguf, abc_file, out_wav, backend="cuda"):
     """Pure argv builder (no process). Tested without a GPU."""
     if cot not in ("off", "melody", "full"):
         raise ValueError(f"cot must be off/melody/full, got {cot!r}")
@@ -356,7 +410,7 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
         raise ValueError("style must be nonempty text")
     argv = [
         str(cli), "--task", "gen", "--family", "yue2",
-        "--model", str(model_dir), "--backend", "cuda", "--threads", "8",
+        "--model", str(model_dir), "--backend", backend, "--threads", "8",
         "--lyrics", lyrics,
         "--request-option", f"style={style}",
         "--request-option", f"cot={cot}",
@@ -389,7 +443,8 @@ def _parse_metrics(text):
 
 def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
                  main_gguf="yue2-3b-q4_k_m.gguf", vae_gguf="yue2-vae-f16.gguf",
-                 abc_file=None, out_wav, cancel_event=None, timeout_s=1800):
+                 abc_file=None, out_wav, cancel_event=None, timeout_s=1800,
+                 backend=None):
     """Run one YuE2 generation. Blocking; call only from an NRT worker.
 
     Returns ``{"wav": str, "metrics": dict}``. Raises
@@ -411,7 +466,8 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
         raise FileNotFoundError(f"ABC score file not found: {abc_file}")
     argv = _build_yue2_argv(cli, model_dir, lyrics=lyrics, style=style,
                             cot=cot, seed=seed, main_gguf=main_gguf,
-                            vae_gguf=vae_gguf, abc_file=abc_file, out_wav=out_wav)
+                            vae_gguf=vae_gguf, abc_file=abc_file, out_wav=out_wav,
+                            backend=backend or default_backend())
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.Popen(

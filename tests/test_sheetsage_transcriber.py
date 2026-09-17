@@ -119,6 +119,15 @@ def test_argv_builds_expected_command(tmp_path):
     assert "--audio" in argv and "--text-out" in argv and "--metrics" in argv
     assert "sheetsage2.weight_type=native" in argv
     assert "max_tokens=5120" in argv
+    i = argv.index("--backend")
+    assert argv[i + 1] == "cuda"  # default preserved; override below
+    argv = _build_sheetsage_argv("cli", "models",
+                                 audio_wav=str(tmp_path / "in.wav"),
+                                 weight_type="native",
+                                 max_tokens=5120,
+                                 out_abc=str(tmp_path / "s.abc"),
+                                 backend="cpu")
+    assert argv[argv.index("--backend") + 1] == "cpu"
 
 
 def test_argv_rejects_bad_inputs(tmp_path):
