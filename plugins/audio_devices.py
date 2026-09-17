@@ -147,6 +147,10 @@ class AudioDeviceManager:
 
 class BaseAudioDeviceNode(Node):
     category, label = "I/O", "Base Audio Device"
+    # Abstract base: shared stream/ring/NRT machinery only. The plugin
+    # loader skips is_abstract classes so this never reaches the palette;
+    # concrete subclasses below reset the flag (it is inherited).
+    is_abstract = True
     description = (
         "Base class for hardware audio device nodes. Manages device selection, "
         "a lock-free SPSC ring buffer between the engine and the PortAudio "
@@ -304,6 +308,7 @@ class BaseAudioDeviceNode(Node):
 
 class AudioDeviceInput(BaseAudioDeviceNode):
     category, label = "I/O", "Audio Device Input"
+    is_abstract = False
     description = (
         "Captures live audio from a hardware input device via PortAudio. The "
         "hardware callback thread writes into a lock-free ring buffer that the "
@@ -359,6 +364,7 @@ class AudioDeviceInput(BaseAudioDeviceNode):
 
 class AudioDeviceOutput(BaseAudioDeviceNode, IClockProvider):
     category, label = "I/O", "Audio Device Output"
+    is_abstract = False
     description = (
         "Plays the graph's audio through a hardware output device and acts as "
         "the engine's clock provider when set as master: the hardware callback "

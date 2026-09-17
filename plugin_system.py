@@ -74,8 +74,11 @@ def load_plugins(folder="plugins"):
                     for mem_name, obj in inspect.getmembers(mod, inspect.isclass):
                         if obj.__module__ != name:
                             continue
-                        # Register Logic Class
-                        if issubclass(obj, Node) and obj is not Node:
+                        # Register Logic Class (abstract bases opt out via
+                        # is_abstract so they never reach the palette; the
+                        # flag is inherited, so concrete subclasses reset it)
+                        if (issubclass(obj, Node) and obj is not Node
+                                and not getattr(obj, "is_abstract", False)):
                             NODE_REGISTRY[obj.__name__] = obj
 
                         # Register UI Class

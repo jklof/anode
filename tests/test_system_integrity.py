@@ -50,6 +50,18 @@ def test_node_documentation_integrity():
             )
 
 
+def test_abstract_bases_stay_out_of_registry():
+    """BaseAudioDeviceNode is shared machinery, not an addable node: the
+    loader must skip is_abstract classes so the I/O palette only offers
+    the concrete input/output (a portless base node is broken by design)."""
+    plugin_system.load_plugins("plugins")
+
+    assert "BaseAudioDeviceNode" not in plugin_system.NODE_REGISTRY
+    assert plugin_system.get_node_class("BaseAudioDeviceNode") is None
+    assert plugin_system.get_node_class("AudioDeviceInput") is not None
+    assert plugin_system.get_node_class("AudioDeviceOutput") is not None
+
+
 def test_node_naming_logic():
     """
     Verify the base Node class correctly uses the 'label' attribute

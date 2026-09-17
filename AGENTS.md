@@ -333,6 +333,8 @@ Prefer small, local changes.
 
 Preserve existing public node names, port names, parameter keys, and saved-patch compatibility unless the task explicitly changes them.
 
+Plugin nodes register by class: the loader enrolls every `Node` subclass found under `plugins/`. An abstract in-plugins base must therefore set `is_abstract = True` (concrete subclasses reset it to `False`) so it never reaches the palette as an addable node. (The alternative, used by `AudioCppJob`/`FFINode`, is living outside `plugins/` entirely.)
+
 Do not refactor an architecture merely to satisfy this document.
 
 Fix real correctness, ownership, lifecycle, and regression problems first.
