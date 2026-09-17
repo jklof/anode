@@ -26,3 +26,6 @@ models/YuE2-3B-GGUF/outputs/
 # per-transcription outputs are local provenance records, never committed.
 models/SheetSage2-GGUF/*.gguf
 models/SheetSage2-GGUF/outputs/
+
+#inputs
+inputs/
