@@ -16,7 +16,9 @@ Real-time notes:
   compact row under the plot, plus an ``AUTO`` mode (on by default) that tracks
   the signal with a UI-side peak-hold envelope (fast attack, ~1 s release).
   Auto-range is display-only: it never writes the manual parameters and never
-  touches the audio thread.
+  touches the audio thread. Right-clicking the plot offers one-click range
+  presets per signal family (audio, control, MIDI note, pitch Hz), which
+  stage min/max and switch AUTO off.
 - Zero heap allocation on the audio thread.
 """
 
@@ -29,13 +31,26 @@ import torch
 from base import Node, BLOCK_SIZE, CHANNELS, DTYPE, TelemetryRingBuffer
 
 try:
-    from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox
+    from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QMenu
     from PySide6.QtCore import Qt, QTimer, QRect, QRectF, QPointF, QLineF, QSignalBlocker
     from PySide6.QtGui import QPainter, QPen, QColor, QFont
 
     GUI_AVAILABLE = True
 except ImportError:
     GUI_AVAILABLE = False
+
+
+# Manual range presets (right-click the plot): one per signal family found
+# in the graph — bipolar audio, unipolar control (gates/envelopes/
+# confidence), MIDI note numbers, and pitch-track Hz (SwiftF0 spans
+# ~47–2094 Hz). Applying a preset stages min/max and switches AUTO off so
+# the choice takes visible effect immediately.
+RANGE_PRESETS = (
+    ("Audio ±1", -1.0, 1.0),
+    ("Control 0–1", 0.0, 1.0),
+    ("MIDI note 0–127", 0.0, 127.0),
+    ("Pitch 0–2000 Hz", 0.0, 2000.0),
+)
 
 
 def _decimate_columns(values, w, h, min_v, max_v):
@@ -104,10 +119,10 @@ class ValuePlotterNode(Node):
         self.out = self.add_output("out", channels=CHANNELS,
                                    help="Pass-through copy of the input, unaltered.")
 
-        self.add_float_param("min_val", -1.0, -500.0, 500.0, unit="",
-                             help="Bottom scale bound (manual mode).")
-        self.add_float_param("max_val", 1.0, -500.0, 500.0, unit="",
-                             help="Top scale bound (manual mode).")
+        self.add_float_param("min_val", -1.0, -5000.0, 5000.0, unit="",
+                             help="Bottom scale bound (manual mode). Right-click the plot for range presets.")
+        self.add_float_param("max_val", 1.0, -5000.0, 5000.0, unit="",
+                             help="Top scale bound (manual mode). Right-click the plot for range presets.")
         self.add_bool_param("auto_range", True,
                             help="Automatically fit the display range to the "
                                  "signal (UI-side peak-hold, display only).")
@@ -259,6 +274,45 @@ if GUI_AVAILABLE:
                 except Exception:
                     logging.exception("set_parameter('auto_range') failed")
             self._apply_auto_enabled(bool(checked))
+
+        def _apply_preset(self, name):
+            """Stage a named manual range and switch AUTO off.
+
+            Returns True when the preset exists. Goes through
+            proxy.set_parameter() like every other edit (controller staging
+            path); the backend snapshot round-trip re-syncs the editors.
+            """
+            for preset_name, lo, hi in RANGE_PRESETS:
+                if preset_name != name:
+                    continue
+                setter = getattr(self.proxy, "set_parameter", None)
+                if callable(setter):
+                    try:
+                        setter("min_val", float(lo))
+                        setter("max_val", float(hi))
+                        setter("auto_range", False)
+                    except Exception:
+                        logging.exception(f"preset '{name}' failed")
+                with QSignalBlocker(self._auto_box):
+                    self._auto_box.setChecked(False)
+                self._apply_auto_enabled(False)
+                return True
+            return False
+
+        def contextMenuEvent(self, event):
+            menu = QMenu(self)
+            for preset_name, _lo, _hi in RANGE_PRESETS:
+                action = menu.addAction(preset_name)
+                action.triggered.connect(
+                    lambda _checked=False, n=preset_name: self._apply_preset(n))
+            menu.addSeparator()
+            auto_action = menu.addAction("Auto-range")
+            auto_action.setCheckable(True)
+            auto_action.setChecked(self._auto_box.isChecked())
+            auto_action.triggered.connect(
+                lambda checked=False: self._auto_box.setChecked(checked))
+            menu.exec(event.globalPos())
+            event.accept()
 
         def update_from_params(self, simple_params: dict):
             """Keep embedded controls in sync with backend values.
@@ -423,6 +477,12 @@ if GUI_AVAILABLE:
                 xs, y_top, y_bot = _decimate_columns(values, w, plot_h, min_v, max_v)
                 lines = [QLineF(float(xi), float(yt), float(xi), float(yb))
                          for xi, yt, yb in zip(xs, y_top, y_bot)]
+                # Envelope midline: a flat signal decimates to zero-height
+                # column beats (isolated dots, nearly invisible); stroking
+                # the midline renders flats as a solid horizontal while
+                # tracing the mean through a varying envelope.
+                y_mid = 0.5 * (y_top + y_bot)
+                mid = [QPointF(float(xi), float(ym)) for xi, ym in zip(xs, y_mid)]
                 if lines:
                     painter.setPen(QPen(QColor(255, 153, 0, 60), 4.0,
                                         Qt.SolidLine, Qt.RoundCap))
@@ -430,6 +490,17 @@ if GUI_AVAILABLE:
                     painter.setPen(QPen(self.line_color, 1.6,
                                         Qt.SolidLine, Qt.RoundCap))
                     painter.drawLines(lines)
+                if len(mid) > 1:
+                    painter.setPen(QPen(QColor(255, 153, 0, 60), 4.0,
+                                        Qt.SolidLine, Qt.RoundCap))
+                    painter.drawPolyline(mid)
+                    painter.setPen(QPen(self.line_color, 1.6,
+                                        Qt.SolidLine, Qt.RoundCap))
+                    painter.drawPolyline(mid)
+                elif mid:
+                    painter.setPen(QPen(self.line_color, 1.6,
+                                        Qt.SolidLine, Qt.RoundCap))
+                    painter.drawPoints(mid)
             else:
                 ys = plot_h - 4 - (values - min_v) / span * (plot_h - 8)
                 np.clip(ys, 0.0, float(plot_h), out=ys)
@@ -439,9 +510,11 @@ if GUI_AVAILABLE:
                     painter.setPen(QPen(QColor(255, 153, 0, 60), 4.0,
                                         Qt.SolidLine, Qt.RoundCap))
                     painter.drawPolyline(pts)
+                    painter.drawPoints(pts)
                     painter.setPen(QPen(self.line_color, 1.6,
                                         Qt.SolidLine, Qt.RoundCap))
                     painter.drawPolyline(pts)
+                    painter.drawPoints(pts)
 
             # Current value badge (top-right of the plot area).
             painter.setFont(self.label_font)

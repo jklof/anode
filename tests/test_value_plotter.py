@@ -242,6 +242,41 @@ def test_value_plotter_widget_range_controls(qapp):
     assert not w._min_widget.isEnabled()
 
 
+def test_range_presets_fit_param_bounds():
+    """Every preset must survive the min_val/max_val clamp (Parameter.set
+    clamps to meta) — otherwise a preset would silently land elsewhere."""
+    from plugins.visualization_value_plotter import RANGE_PRESETS
+
+    node = make_node()
+    min_meta = node.params["min_val"].meta
+    max_meta = node.params["max_val"].meta
+    assert len(RANGE_PRESETS) >= 4
+    for name, lo, hi in RANGE_PRESETS:
+        assert lo < hi, name
+        assert min_meta["min"] <= lo <= min_meta["max"], name
+        assert max_meta["min"] <= hi <= max_meta["max"], name
+
+
+def test_apply_preset_stages_range_and_disables_auto(qapp):
+    """Right-click preset: exact min/max + auto_range False go through the
+    controller staging path, and the AUTO box visibly unchecks at once."""
+    from plugins.visualization_value_plotter import ValuePlotterWidget
+
+    proxy = _make_widget_proxies()
+    w = ValuePlotterWidget(proxy)
+    assert w._auto_box.isChecked()
+
+    assert w._apply_preset("Control 0–1") is True
+    assert ("min_val", 0.0) in proxy.set_calls
+    assert ("max_val", 1.0) in proxy.set_calls
+    assert ("auto_range", False) in proxy.set_calls
+    assert not w._auto_box.isChecked()
+    assert w._min_widget.isEnabled() and w._max_widget.isEnabled()
+
+    assert w._apply_preset("No such range") is False
+    assert len(proxy.set_calls) == 3
+
+
 def test_value_plotter_widget_update_from_params(qapp):
     """Backend snapshots sync the embedded controls (NodeItem only forwards
     to param_controls, so custom-embedded widgets need explicit forwarding)."""
@@ -406,3 +441,44 @@ def test_value_plotter_paint_dense_history_is_bounded(qapp):
     assert float(np.max(y_bot_d)) == pytest.approx(
         plot_h - 4 - (0.5 / 7.0) * (plot_h - 8), abs=0.5), \
         "valley must survive decimation"
+
+
+def _orange_pixels(image):
+    """Count trace-orange pixels (the #ff9900 trace + its glow halo)."""
+    from PySide6.QtGui import QColor
+
+    n = 0
+    for y in range(image.height()):
+        for x in range(image.width()):
+            c = QColor(image.pixel(x, y))
+            if c.red() > 150 and 80 < c.green() < 180 and c.blue() < 80:
+                n += 1
+    return n
+
+
+def test_value_plotter_flat_signal_renders_solid_line(qapp):
+    """A constant value must paint as a solid horizontal, not vanish: dense
+    decimation turns flats into zero-height column beats (isolated dots), so
+    the envelope midline is stroked to keep them visible."""
+    from collections import deque
+
+    from plugins.visualization_value_plotter import ValuePlotterWidget
+
+    proxy = _make_widget_proxies(params={
+        "min_val": {"value": 0.0},
+        "max_val": {"value": 1.0},
+        "auto_range": {"value": False},
+    })
+    w = ValuePlotterWidget(proxy)
+    w.resize(240, 160)
+    w.show()
+    qapp.processEvents()
+    w._history = deque([0.7] * 1024, maxlen=w.HISTORY_LEN)
+    assert len(w._history) > w.width()  # steady-state dense path
+    w._has_data = True
+    w._current = 0.7
+
+    image = w.grab().toImage()
+    # A solid row across the width: glow (4px) + core over ~240 columns is
+    # ~1000+ orange pixels; the old dots-only rendering measured ~144.
+    assert _orange_pixels(image) >= 500, "flat 0.7 must render a solid row"
