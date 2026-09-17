@@ -314,6 +314,14 @@ def test_complete_installs_score(node_cls):
     assert node.params["last_abc"].value == "s.abc"
     telem = node.get_telemetry()
     assert telem["status"] == "Ready" and "s.abc" in telem["audio"]
+    assert telem["busy"] is False
+
+
+def test_telemetry_busy_while_transcribing(node_cls):
+    node = make_node(node_cls)
+    node._status, node._status_detail = "Transcribing", "song.wav (native)…"
+    telem = node.get_telemetry()
+    assert telem["busy"] is True and telem["status"] == "Transcribing"
 
 
 def test_complete_publishes_uris_and_pulses_once(node_cls):

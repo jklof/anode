@@ -573,6 +573,13 @@ class AudioCppJob(Node):
         completion may be discarded rather than delivered, so clock-like
         state must stop here, not in on_nrt_complete."""
 
+    def _busy_flag(self):
+        """True while a job is in flight. Subclasses include it as the
+        ``busy`` key of get_telemetry(); the canvas renders a glow for
+        busy nodes (ComfyUI-style running highlight). Generic so future
+        NRT-job nodes opt in for free."""
+        return self._status in self.RUNNING_STATES
+
     def on_ui_param_change(self, param_name: str):
         if param_name == self.RUN_PARAM:
             if not self.params[self.RUN_PARAM].value:

@@ -293,4 +293,5 @@ class SheetSage2Transcriber(AudioCppJob):
             detail = f"{detail}\n{self._abc_path}"
             if preview:
                 detail = f"{detail}\n{preview}"
-        return {"status": self._status, "audio": detail}
+        return {"status": self._status, "audio": detail,
+                "busy": self._busy_flag()}

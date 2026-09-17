@@ -765,6 +765,9 @@ class NodeItem(QGraphicsObject):
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
         self.setCursor(QCursor(Qt.SizeAllCursor))
+        # ComfyUI-style running highlight for in-flight NRT jobs, driven by
+        # the generic "busy" telemetry flag (see propagate_telemetry).
+        self._job_busy = False
 
         # True between mousePress and mouseRelease while the user may be
         # dragging; snapshot updates must not fight the pointer meanwhile.
@@ -1049,6 +1052,13 @@ class NodeItem(QGraphicsObject):
     def propagate_telemetry(self, data: dict):
         if "cpu_load" in data:
             self.set_processing_load(data["cpu_load"])
+        # Generic busy flag (offline NRT jobs set it while Generating /
+        # Downloading / Transcribing). Missing key means idle, so terminal
+        # states clear the glow even when they carry no explicit flag.
+        busy = bool(data.get("busy", False))
+        if busy != self._job_busy:
+            self._job_busy = busy
+            self.update()
         if self.widget and hasattr(self.widget, "on_telemetry"):
             self.widget.on_telemetry(data)
 
@@ -1125,6 +1135,14 @@ class NodeItem(QGraphicsObject):
 
         if self.error_msg:
             painter.setPen(QPen(Theme.COLORS["error_border"], 3))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(self.boundingRect(), 5, 5)
+
+        # In-flight NRT job glow (ComfyUI-style running highlight). Same
+        # violet as the OFFLINE tag and URI wires; drawn under the selection
+        # outline so selection stays visible when both apply.
+        if self._job_busy:
+            painter.setPen(QPen(Theme.COLORS["wire_uri"], 2.5))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(self.boundingRect(), 5, 5)
 

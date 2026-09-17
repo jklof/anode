@@ -422,7 +422,8 @@ class YuE2SongGenerator(AudioCppJob):
             # pressure) is otherwise indistinguishable from a hung job.
             elapsed = time.monotonic() - self._gen_t0
             detail = f"{detail} ({elapsed:.0f} s elapsed)"
-        return {"status": self._status, "audio": detail}
+        return {"status": self._status, "audio": detail,
+                "busy": self._busy_flag()}
 
     # ------------------------------------------------------------------
     # audio thread: one-block ready pulse + trigger edge detect (both

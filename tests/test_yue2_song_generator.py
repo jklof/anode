@@ -941,6 +941,41 @@ def test_spec_warnings_diverged_sections(node_cls, tmp_path):
 
 
 # ----------------------------------------------------------------------
+# busy flag (canvas running-glow)
+# ----------------------------------------------------------------------
+def test_busy_flag_follows_running_states(node_cls):
+    node = make_node(node_cls)
+    for status in ("Generating", "Downloading"):
+        node._status = status
+        assert node._busy_flag() is True
+    for status in ("Idle", "Ready", "Cancelled", "Error"):
+        node._status = status
+        assert node._busy_flag() is False
+
+
+def test_telemetry_carries_busy_flag(node_cls):
+    node = make_node(node_cls)
+    node._status, node._status_detail = "Generating", "seed 7…"
+    assert node.get_telemetry()["busy"] is True
+    node._status, node._gen_t0 = "Ready", None
+    telem = node.get_telemetry()
+    assert telem["busy"] is False and telem["status"] == "Ready"
+
+
+def test_busy_glow_sets_and_clears(qapp):
+    from ui_system import NodeItem
+    item = NodeItem({"id": "n1", "type": "YuE2SongGenerator", "name": "yue2",
+                     "params": {}, "monitor_queue": None,
+                     "inputs": {}, "outputs": {}}, controller=None)
+    assert item._job_busy is False
+    item.propagate_telemetry({"status": "Generating", "busy": True})
+    assert item._job_busy is True
+    # Terminal states clear the glow even with no explicit flag.
+    item.propagate_telemetry({"status": "Ready"})
+    assert item._job_busy is False
+
+
+# ----------------------------------------------------------------------
 # request.json carries full reproduction texts
 # ----------------------------------------------------------------------
 def test_request_json_carries_repro_texts(node_cls, tmp_path):
