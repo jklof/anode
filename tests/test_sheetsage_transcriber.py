@@ -35,6 +35,20 @@ def make_node(node_cls):
     return node_cls()
 
 
+@pytest.fixture(scope="module")
+def qapp():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtWidgets import QApplication
+
+    inst = QCoreApplication.instance()
+    if inst is None:
+        return QApplication([])
+    if isinstance(inst, QApplication):
+        return inst
+    pytest.skip("a bare QCoreApplication is active; QWidget tests cannot run")
+
+
 def _live():
     """Live top-level plugin module object.
 
@@ -331,6 +345,44 @@ def test_telemetry_busy_while_transcribing(node_cls):
     node._status, node._status_detail = "Transcribing", "song.wav (native)…"
     telem = node.get_telemetry()
     assert telem["busy"] is True and telem["status"] == "Transcribing"
+
+
+# ----------------------------------------------------------------------
+# score viewer (widget-level, offscreen, read-only)
+# ----------------------------------------------------------------------
+class _StubProxy:
+    def __init__(self):
+        self.calls = []
+
+    def set_parameter(self, name, value):
+        self.calls.append((name, value))
+
+    def create_param_widget(self, name):
+        from PySide6.QtWidgets import QWidget
+        return QWidget()
+
+
+def test_viewer_lists_sections_and_shows_text(qapp):
+    widget = _live().SheetSageWidget(_StubProxy())
+    assert widget.section_list.count() == 0
+    widget.on_telemetry({"status": "Ready", "audio": "s.abc",
+                         "score_text": SAMPLE_ABC})
+    assert [widget.section_list.item(i).text() for i in
+            range(widget.section_list.count())] == ["intro", "verse"]
+    assert "K:F#m" in widget.score_browser.toPlainText()
+    # Same text twice: no rebuild, no crash.
+    widget.on_telemetry({"status": "Ready", "audio": "s.abc",
+                         "score_text": SAMPLE_ABC})
+    assert widget.section_list.count() == 2
+
+
+def test_viewer_empty_score_clears(qapp):
+    widget = _live().SheetSageWidget(_StubProxy())
+    widget.on_telemetry({"status": "Ready", "audio": "", "score_text": SAMPLE_ABC})
+    assert widget.section_list.count() == 2
+    widget.on_telemetry({"status": "Idle", "audio": "", "score_text": ""})
+    assert widget.section_list.count() == 0
+    assert widget.score_browser.toPlainText() == ""
 
 
 def test_complete_publishes_uris_and_pulses_once(node_cls):

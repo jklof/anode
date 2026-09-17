@@ -77,6 +77,7 @@ class SheetSageWidget(OfflineJobWidget):
     ACTION_LABEL = "Transcribe"
     ACTION_PARAM = "transcribe"
     DOWNLOAD_LABEL = "Download runtime + model (~3.5 GB)"
+    SHOW_SCORE = True
 
 
 class SheetSage2Transcriber(AudioCppJob):
@@ -297,5 +298,8 @@ class SheetSage2Transcriber(AudioCppJob):
             detail = f"{detail}\n{self._abc_path}"
             if preview:
                 detail = f"{detail}\n{preview}"
+        # Full text for the read-only score viewer (OfflineJobWidget
+        # re-renders only on change; a few KB per 100 ms tick is cheap).
         return {"status": self._status, "audio": detail,
-                "busy": self._busy_flag()}
+                "busy": self._busy_flag(),
+                "score_text": self._abc_text or ""}

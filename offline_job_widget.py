@@ -15,18 +15,29 @@ plus optional overrides of ``_build_after_param`` (extra rows at a
 position, e.g. a Randomize-seed button after ``seed``) and
 ``_on_action_pressed`` (e.g. commit an editor before triggering).
 
+Score viewer: subclasses with ``SHOW_SCORE = True`` get a read-only score
+browser plus a clickable section list, fed by the ``score_text`` telemetry
+key (full ABC text; the widget re-renders only when it changes). Read-only
+by design — editing is a later phase; the kept score file stays the single
+source of truth.
+
 This module defines no ``Node`` subclass and no ``IS_NODE_UI`` class, so
 plugin discovery ignores it; the concrete widgets keep living in their
 node modules (``NODE_CLASS_NAME`` registration is unchanged).
 """
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QLabel,
+    QListWidget,
     QPushButton,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
+
+from abc_score import parse_score
 
 
 class OfflineJobWidget(QWidget):
@@ -34,6 +45,7 @@ class OfflineJobWidget(QWidget):
     ACTION_LABEL = "Run"
     ACTION_PARAM = "generate"
     DOWNLOAD_LABEL = "Download"
+    SHOW_SCORE = False
 
     def __init__(self, node_proxy):
         super().__init__()
@@ -74,6 +86,27 @@ class OfflineJobWidget(QWidget):
         self.lbl_detail.setWordWrap(True)
         layout.addWidget(self.lbl_detail)
 
+        self._score_text = None
+        if self.SHOW_SCORE:
+            self.section_list = QListWidget()
+            self.section_list.setMaximumHeight(64)
+            self.section_list.itemClicked.connect(self._on_section_clicked)
+            layout.addWidget(self.section_list)
+            self.score_browser = QTextBrowser()
+            self.score_browser.setFont(QFont("Monospace", 8))
+            self.score_browser.setReadOnly(True)
+            self.score_browser.setMinimumHeight(120)
+            layout.addWidget(self.score_browser)
+
+    def _on_section_clicked(self, item):
+        """Scroll the browser to the clicked section's % line."""
+        if not self.SHOW_SCORE:
+            return
+        cursor = self.score_browser.document().find(f"% {item.text()}")
+        if not cursor.isNull():
+            self.score_browser.setTextCursor(cursor)
+            self.score_browser.ensureCursorVisible()
+
     def _build_after_param(self, layout, key):
         """Extra-row hook called after each param row. Base: nothing."""
 
@@ -85,6 +118,18 @@ class OfflineJobWidget(QWidget):
             self.lbl_status.setText(data["status"])
         if "audio" in data:
             self.lbl_detail.setText(data["audio"])
+        if self.SHOW_SCORE and "score_text" in data:
+            self._refresh_score(data["score_text"] or "")
+
+    def _refresh_score(self, text):
+        """Re-render the browser + section list when the score changed."""
+        if text == self._score_text:
+            return
+        self._score_text = text
+        self.score_browser.setPlainText(text)
+        self.section_list.clear()
+        for section in parse_score(text).sections:
+            self.section_list.addItem(section.name or "—")
 
     def update_from_params(self, params):
         for key, widget in self.param_widgets.items():
