@@ -488,8 +488,8 @@ class Node:
     def add_bool_param(self, name: str, val: bool, help: str = ""):
         self.params[name] = Parameter(val, "bool", owner=self, help=help)
 
-    def add_string_param(self, name: str, val: str, help: str = ""):
-        self.params[name] = Parameter(val, "string", owner=self, help=help)
+    def add_string_param(self, name: str, val: str, help: str = "", multiline: bool = False):
+        self.params[name] = Parameter(val, "string", owner=self, help=help, multiline=multiline)
 
     def add_menu_param(self, name: str, items: List[str], initial_idx=0, help: str = ""):
         self.params[name] = Parameter(initial_idx, "menu", owner=self, items=items, help=help)

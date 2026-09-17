@@ -101,10 +101,15 @@ class YuE2Widget(OfflineJobWidget):
         # Commit the style editor text first: set_parameter only debounces,
         # and the flush preserves insertion order, so style is guaranteed
         # to be applied before generate (no stale-prompt race).
-        line_edit = getattr(
-            self.param_widgets.get("style"), "line_edit", None)
-        if line_edit is not None:
-            self.proxy.set_parameter("style", line_edit.text())
+        style_widget = self.param_widgets.get("style")
+        get_text = getattr(style_widget, "text", None)
+        if callable(get_text):
+            self.proxy.set_parameter("style", get_text())
+        else:
+            # Fallback for stub widgets exposing the raw line edit.
+            line_edit = getattr(style_widget, "line_edit", None)
+            if line_edit is not None:
+                self.proxy.set_parameter("style", line_edit.text())
         self.proxy.set_parameter("generate", True)
 
 
@@ -143,6 +148,7 @@ class YuE2SongGenerator(AudioCppJob):
 
         self.add_string_param("style",
                               "English, indie pop, bright acoustic guitar, soft drums, warm lead vocal",
+                              multiline=True,
                               help="Genre, instruments, vocal character, language, tempo.")
         self.add_file_param("lyrics_file", "", filter="Text Files (*.txt *.md);;All Files (*.*)",
                             help="Lyrics file with section tags like [Verse]/[Chorus]; read by the background worker.")

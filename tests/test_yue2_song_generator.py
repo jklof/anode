@@ -729,6 +729,7 @@ def test_string_widget_commits_on_focus_loss(qapp):
     from ui_system import StringParamWidget
     seen = []
     w = StringParamWidget("style", {}, "old", seen.append)
+    assert w.text() == "old" and w.text_edit is None
     w.line_edit.setText("heavy metal")
     assert seen == []
     w.line_edit.editingFinished.emit()
@@ -736,6 +737,49 @@ def test_string_widget_commits_on_focus_loss(qapp):
     # No-op when nothing changed.
     w.line_edit.editingFinished.emit()
     assert seen == ["heavy metal"]
+
+
+def test_multiline_string_widget_commits_on_focus_loss_and_ctrl_enter(qapp):
+    """Multiline mode (style prompt box): QTextEdit content commits on focus
+    loss; plain Return inserts a newline, Ctrl+Enter commits."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QFocusEvent, QKeyEvent
+    from ui_system import StringParamWidget
+    seen = []
+    w = StringParamWidget("style", {"multiline": True}, "old", seen.append)
+    assert w.line_edit is None
+    assert w.text() == "old"
+    w.text_edit.setPlainText("line one\nline two")
+    assert w.text() == "line one\nline two"
+    assert seen == []
+    # Plain Return: newline, no commit.
+    assert w.eventFilter(
+        w.text_edit, QKeyEvent(QEvent.KeyPress, Qt.Key_Return,
+                               Qt.NoModifier)) is False
+    assert seen == []
+    # Ctrl+Enter: commit.
+    assert w.eventFilter(
+        w.text_edit, QKeyEvent(QEvent.KeyPress, Qt.Key_Return,
+                               Qt.ControlModifier)) is True
+    assert seen == ["line one\nline two"]
+    # Focus loss with no change: no duplicate commit.
+    assert w.eventFilter(
+        w.text_edit, QFocusEvent(QEvent.FocusOut)) is False
+    assert seen == ["line one\nline two"]
+
+
+def test_multiline_widget_syncs_from_backend(qapp):
+    from ui_system import StringParamWidget
+    w = StringParamWidget("style", {"multiline": True}, "old", lambda v: None)
+    w.update_from_backend("new prompt")
+    assert w.text() == "new prompt"
+    assert w.current_value == "new prompt"
+
+
+def test_style_param_is_multiline(node_cls):
+    node = make_node(node_cls)
+    assert node.params["style"].meta.get("multiline") is True
+    assert node.params["lyrics_file"].type == "file"  # untouched param kinds
 
 
 class _StubProxy:
@@ -771,6 +815,19 @@ def test_generate_commits_style_before_trigger(qapp):
     widget._on_generate_pressed()
     assert widget.proxy.calls[0] == ("style", "typed style")
     assert widget.proxy.calls[1] == ("generate", True)
+
+
+def test_generate_prefers_text_accessor_over_line_edit(qapp):
+    """The real multiline widget exposes text(); the line_edit fallback is
+    only for stubs. A widget with both must commit via text()."""
+    from types import SimpleNamespace
+    widget = _make_widget(qapp)
+    style_widget = widget.proxy.widgets["style"]
+    style_widget.text = lambda: "from text()"
+    style_widget.line_edit = SimpleNamespace(text=lambda: "from line_edit")
+    widget.proxy.calls.clear()
+    widget._on_generate_pressed()
+    assert widget.proxy.calls[0] == ("style", "from text()")
 
 
 def test_seed_button_draws_in_range(qapp):

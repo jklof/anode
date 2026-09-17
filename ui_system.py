@@ -18,8 +18,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFileDialog,
     QTextBrowser,
+    QTextEdit,
 )
-from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot, QCoreApplication
+from PySide6.QtCore import Qt, QRectF, QPointF, Signal, QSignalBlocker, Slot, QCoreApplication, QEvent
 from PySide6.QtGui import (
     QPainter,
     QPen,
@@ -580,7 +581,10 @@ class FileParamWidget(QWidget):
 
 
 class StringParamWidget(QWidget):
-    """Smart widget for string parameters with line edit."""
+    """Smart widget for string parameters: single-line edit, or a larger
+    multi-line box when the param meta sets ``multiline`` (style prompts,
+    notes). Multi-line commits on focus loss or Ctrl+Enter (plain Return
+    inserts a newline)."""
 
     def __init__(self, param_name, metadata, current_value, callback):
         super().__init__()
@@ -588,6 +592,7 @@ class StringParamWidget(QWidget):
         self.metadata = metadata
         self.current_value = str(current_value)
         self.callback = callback
+        self.multiline = bool(metadata.get("multiline", False))
 
         # Layout setup
         self.layout = QVBoxLayout()
@@ -598,31 +603,65 @@ class StringParamWidget(QWidget):
         self.label = QLabel(param_name)
         self.layout.addWidget(self.label)
 
-        # Line edit
-        self.line_edit = QLineEdit(self.current_value)
-        self.line_edit.returnPressed.connect(self._on_return_pressed)
-        # Commit on focus loss too: otherwise typed text that was never
-        # confirmed with Return silently diverges from the staged value
-        # (e.g. typing a prompt and clicking a node action button).
-        self.line_edit.editingFinished.connect(self._on_editing_finished)
-        self.layout.addWidget(self.line_edit)
+        self.text_edit = None
+        if self.multiline:
+            # Larger box for prompts/notes. QTextEdit has no editingFinished,
+            # so commits flow through the event filter below.
+            self.text_edit = QTextEdit(self.current_value)
+            self.text_edit.setAcceptRichText(False)
+            self.text_edit.setFixedHeight(72)
+            self.text_edit.installEventFilter(self)
+            self.layout.addWidget(self.text_edit)
+            self.line_edit = None
+        else:
+            # Line edit
+            self.line_edit = QLineEdit(self.current_value)
+            self.line_edit.returnPressed.connect(self._on_return_pressed)
+            # Commit on focus loss too: otherwise typed text that was never
+            # confirmed with Return silently diverges from the staged value
+            # (e.g. typing a prompt and clicking a node action button).
+            self.line_edit.editingFinished.connect(self._on_editing_finished)
+            self.layout.addWidget(self.line_edit)
 
         # --- Tooltip ---
         help_text = metadata.get("help", "")
         tip = f"<b>{param_name}</b>: {help_text}" if help_text else param_name
+        if self.multiline:
+            tip += "<br>Ctrl+Enter commits; focus loss also commits."
         self.setToolTip(tip)
 
-    def _on_return_pressed(self):
-        """Handle line edit return key press."""
-        text = self.line_edit.text()
-        self.callback(text)
+    def text(self):
+        """Current editor content in either mode."""
+        if self.text_edit is not None:
+            return self.text_edit.toPlainText()
+        return self.line_edit.text()
 
-    def _on_editing_finished(self):
-        """Handle focus loss (and Return): commit unconfirmed text."""
-        text = self.line_edit.text()
+    def _commit_text(self):
+        """Commit unconfirmed text (both modes)."""
+        text = self.text()
         if text != self.current_value:
             self.current_value = text
             self.callback(text)
+
+    def eventFilter(self, obj, event):
+        if obj is self.text_edit and self.text_edit is not None:
+            if event.type() == QEvent.FocusOut:
+                self._commit_text()
+                return False
+            if (event.type() == QEvent.KeyPress
+                    and event.modifiers() & Qt.ControlModifier
+                    and event.key() in (Qt.Key_Return, Qt.Key_Enter)):
+                self._commit_text()
+                return True
+        return super().eventFilter(obj, event)
+
+    def _on_return_pressed(self):
+        """Handle line edit return key press."""
+        self._commit_text()
+
+    def _on_editing_finished(self):
+        """Handle focus loss (and Return): commit unconfirmed text."""
+        self._commit_text()
 
     def update_from_backend(self, new_value):
         """Update widget from backend value changes."""
@@ -632,10 +671,12 @@ class StringParamWidget(QWidget):
 
         self.current_value = new_value
 
-        # Check if line edit has focus to prevent fighting the user
-        if not self.line_edit.hasFocus():
-            with QSignalBlocker(self.line_edit):
-                self.line_edit.setText(new_value)
+        editor = self.text_edit if self.text_edit is not None else self.line_edit
+        setter = editor.setPlainText if self.text_edit is not None else editor.setText
+        # Check if editor has focus to prevent fighting the user
+        if not editor.hasFocus():
+            with QSignalBlocker(editor):
+                setter(new_value)
 
 
 class IntParamWidget(QWidget):
