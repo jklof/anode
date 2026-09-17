@@ -1,0 +1,271 @@
+{
+  "clock_id": "09eb47c1-efa0-417b-abcd-f4b03dd52ce9",
+  "nodes": [
+    {
+      "id": "eac23303-db12-4ce4-8a74-c2a229a10e91",
+      "type": "ABCPlayer",
+      "name": "ABC Score Player",
+      "params": {
+        "enabled": true,
+        "score_file": "",
+        "channel": 0,
+        "velocity": 96,
+        "tempo_scale": 1.0,
+        "loop": false
+      },
+      "pos": [
+        -563.9906388749996,
+        -661.5344531093747
+      ]
+    },
+    {
+      "id": "6d36d001-c92f-4979-b88b-9684f03f1344",
+      "type": "MIDINoteToCV",
+      "name": "MIDI Note to CV",
+      "params": {
+        "enabled": true,
+        "glide_ms": 0.0
+      },
+      "pos": [
+        55.67725000000003,
+        -696.4284999999995
+      ]
+    },
+    {
+      "id": "862a4f2d-470a-48d2-a712-0c4d5d9a8beb",
+      "type": "WaveformOscillator",
+      "name": "Waveform Oscillator",
+      "params": {
+        "enabled": true,
+        "waveform": 0,
+        "freq": 440.0,
+        "amp": 0.5,
+        "pulse_width": 0.5
+      },
+      "pos": [
+        537.3356964226559,
+        -750.5250550187495
+      ]
+    },
+    {
+      "id": "4b9c8b8f-e084-466f-b350-1673131bd264",
+      "type": "ADSRNode",
+      "name": "ADSR Envelope",
+      "params": {
+        "enabled": true,
+        "attack": 0.01,
+        "decay": 0.1,
+        "sustain": 0.7,
+        "release": 0.3
+      },
+      "pos": [
+        54.26849999999979,
+        -508.5903749999998
+      ]
+    },
+    {
+      "id": "cb89c289-235f-4490-ab44-525483a1fb7d",
+      "type": "Gain",
+      "name": "Gain",
+      "params": {
+        "enabled": true,
+        "vol": 1.0
+      },
+      "pos": [
+        759.8985366468738,
+        -550.3623863937498
+      ]
+    },
+    {
+      "id": "c76e4a58-9344-469d-a025-a199d800f222",
+      "type": "WaveformDisplay",
+      "name": "Oscilloscope",
+      "params": {
+        "enabled": true
+      },
+      "pos": [
+        970.5592041273434,
+        -585.5758189054683
+      ]
+    },
+    {
+      "id": "09eb47c1-efa0-417b-abcd-f4b03dd52ce9",
+      "type": "AudioDeviceOutput",
+      "name": "Audio Device Output",
+      "params": {
+        "enabled": true,
+        "device_index": -1
+      },
+      "pos": [
+        1286.1708799523433,
+        -590.9017615624992
+      ]
+    },
+    {
+      "id": "39cf6d8c-8ae9-4e50-ac58-597f405a578f",
+      "type": "GateButtonNode",
+      "name": "Gate Button",
+      "params": {
+        "enabled": true,
+        "state": false,
+        "mode": 0
+      },
+      "pos": [
+        -1108.3671232031243,
+        -766.0691100156245
+      ]
+    },
+    {
+      "id": "224dc91d-513e-4de4-b04f-e53d8d487e25",
+      "type": "ValuePlotterNode",
+      "name": "Value Plotter",
+      "params": {
+        "enabled": true,
+        "min_val": 0.0,
+        "max_val": 1.0,
+        "auto_range": false
+      },
+      "pos": [
+        272.04271868515616,
+        -372.8615854984376
+      ]
+    },
+    {
+      "id": "f7e0e727-1918-4a58-97ff-a77d3206389a",
+      "type": "SheetSage2Transcriber",
+      "name": "SheetSage2 Transcriber",
+      "params": {
+        "enabled": true,
+        "audio_file": "",
+        "weight_type": 0,
+        "max_tokens": 5120,
+        "strip_chords": true,
+        "model_dir": "models/SheetSage2-GGUF",
+        "transcribe": false,
+        "download": false,
+        "cancel": false,
+        "last_abc": "",
+        "last_melody": ""
+      },
+      "pos": [
+        -916.4875148171868,
+        -626.1445526273433
+      ]
+    },
+    {
+      "id": "5e231da0-f6ba-42dd-a2a9-0a9c51f9e3af",
+      "type": "MIDIKeyboardNode",
+      "name": "MIDI Keyboard",
+      "params": {
+        "enabled": true,
+        "start_note": 48,
+        "octaves": 2
+      },
+      "pos": [
+        -265.84953685937467,
+        -663.4463334999996
+      ]
+    },
+    {
+      "id": "fbcc07a7-847c-4d4c-a53f-77e1804f66a7",
+      "type": "ValuePlotterNode",
+      "name": "Value Plotter",
+      "params": {
+        "enabled": true,
+        "min_val": 0.0,
+        "max_val": 2000.0,
+        "auto_range": false
+      },
+      "pos": [
+        232.80430912265592,
+        -654.6682902796872
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "src_id": "39cf6d8c-8ae9-4e50-ac58-597f405a578f",
+      "src_port": "out",
+      "dst_id": "eac23303-db12-4ce4-8a74-c2a229a10e91",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "f7e0e727-1918-4a58-97ff-a77d3206389a",
+      "src_port": "done",
+      "dst_id": "eac23303-db12-4ce4-8a74-c2a229a10e91",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "f7e0e727-1918-4a58-97ff-a77d3206389a",
+      "src_port": "score",
+      "dst_id": "eac23303-db12-4ce4-8a74-c2a229a10e91",
+      "dst_port": "uri_in"
+    },
+    {
+      "src_id": "5e231da0-f6ba-42dd-a2a9-0a9c51f9e3af",
+      "src_port": "midi_out",
+      "dst_id": "6d36d001-c92f-4979-b88b-9684f03f1344",
+      "dst_port": "midi_in"
+    },
+    {
+      "src_id": "6d36d001-c92f-4979-b88b-9684f03f1344",
+      "src_port": "pitch_out",
+      "dst_id": "862a4f2d-470a-48d2-a712-0c4d5d9a8beb",
+      "dst_port": "freq_in"
+    },
+    {
+      "src_id": "fbcc07a7-847c-4d4c-a53f-77e1804f66a7",
+      "src_port": "out",
+      "dst_id": "862a4f2d-470a-48d2-a712-0c4d5d9a8beb",
+      "dst_port": "freq_in"
+    },
+    {
+      "src_id": "6d36d001-c92f-4979-b88b-9684f03f1344",
+      "src_port": "gate_out",
+      "dst_id": "4b9c8b8f-e084-466f-b350-1673131bd264",
+      "dst_port": "gate"
+    },
+    {
+      "src_id": "862a4f2d-470a-48d2-a712-0c4d5d9a8beb",
+      "src_port": "signal",
+      "dst_id": "cb89c289-235f-4490-ab44-525483a1fb7d",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "224dc91d-513e-4de4-b04f-e53d8d487e25",
+      "src_port": "out",
+      "dst_id": "cb89c289-235f-4490-ab44-525483a1fb7d",
+      "dst_port": "mod"
+    },
+    {
+      "src_id": "cb89c289-235f-4490-ab44-525483a1fb7d",
+      "src_port": "out",
+      "dst_id": "c76e4a58-9344-469d-a025-a199d800f222",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "c76e4a58-9344-469d-a025-a199d800f222",
+      "src_port": "out",
+      "dst_id": "09eb47c1-efa0-417b-abcd-f4b03dd52ce9",
+      "dst_port": "audio_in"
+    },
+    {
+      "src_id": "4b9c8b8f-e084-466f-b350-1673131bd264",
+      "src_port": "out",
+      "dst_id": "224dc91d-513e-4de4-b04f-e53d8d487e25",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "eac23303-db12-4ce4-8a74-c2a229a10e91",
+      "src_port": "midi_out",
+      "dst_id": "5e231da0-f6ba-42dd-a2a9-0a9c51f9e3af",
+      "dst_port": "midi_in"
+    },
+    {
+      "src_id": "6d36d001-c92f-4979-b88b-9684f03f1344",
+      "src_port": "pitch_out",
+      "dst_id": "fbcc07a7-847c-4d4c-a53f-77e1804f66a7",
+      "dst_port": "in"
+    }
+  ]
+}
