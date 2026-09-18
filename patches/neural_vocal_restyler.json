@@ -5,10 +5,13 @@
       "id": "in",
       "type": "AudioDeviceInput",
       "name": "Mic In",
-      "params": {},
+      "params": {
+        "enabled": true,
+        "device_index": -1
+      },
       "pos": [
-        0,
-        200
+        -95.21999999999994,
+        200.0
       ]
     },
     {
@@ -16,6 +19,7 @@
       "type": "BiquadFilter",
       "name": "Mic HPF",
       "params": {
+        "enabled": true,
         "type": 1,
         "cutoff": 80.0,
         "q": 0.707,
@@ -31,6 +35,7 @@
       "type": "NoiseGate",
       "name": "Noise Gate",
       "params": {
+        "enabled": true,
         "thresh": -45.0,
         "ratio": 10.0,
         "attack": 1.0,
@@ -48,12 +53,20 @@
       "type": "VocalTransformer",
       "name": "DSP M->F Shifter",
       "params": {
+        "enabled": true,
+        "correction_enable": 0.0,
+        "scale_root": 0,
+        "scale_type": 1,
+        "retune_speed": 20.0,
         "pitch_shift": 10.0,
         "formant_shift": 1.5,
         "gender_morph": 0.85,
+        "vibrato_depth": 0.0,
+        "vibrato_rate": 5.5,
         "breathiness": 0.15,
         "sibilant_bypass": 0.85,
-        "mix": 1.0
+        "mix": 1.0,
+        "latency_mode": 0
       },
       "pos": [
         660,
@@ -65,8 +78,11 @@
       "type": "VocosResynthesizer",
       "name": "Vocos De-Vocoder",
       "params": {
+        "enabled": true,
         "model_path": "models/vocos_mel_24k.onnx",
-        "mix": 1.0
+        "studio_model_path": "models/vocos_mel_24k_w24.onnx",
+        "mix": 1.0,
+        "quality": 0
       },
       "pos": [
         880,
@@ -78,16 +94,20 @@
       "type": "DeEsser",
       "name": "De-Esser",
       "params": {
+        "enabled": true,
         "frequency": 6500.0,
         "threshold": -18.0,
         "depth": 6.0,
         "attack_ms": 1.0,
         "release_ms": 60.0,
+        "listen": false,
+        "listen_mode": 0,
+        "auto_threshold": false,
         "mix": 1.0
       },
       "pos": [
-        1100,
-        200
+        887.1984095624998,
+        503.2422663734373
       ]
     },
     {
@@ -95,23 +115,27 @@
       "type": "BrickwallLimiter",
       "name": "Out Limiter",
       "params": {
+        "enabled": true,
         "threshold": -0.1,
         "ceiling": -0.1,
         "release": 50.0
       },
       "pos": [
-        1320,
-        200
+        1261.4795626296875,
+        513.8823458953124
       ]
     },
     {
       "id": "out",
       "type": "AudioDeviceOutput",
       "name": "Master Out",
-      "params": {},
+      "params": {
+        "enabled": true,
+        "device_index": -1
+      },
       "pos": [
-        1540,
-        200
+        1250.0578330289063,
+        207.98005964140626
       ]
     }
   ],

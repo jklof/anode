@@ -5,42 +5,115 @@
       "id": "hpf",
       "type": "BiquadFilter",
       "name": "Mic HPF",
-      "params": {"type": 1, "cutoff": 80.0, "q": 0.707, "gain_db": 0.0},
-      "pos": [0, 0]
+      "params": {
+        "enabled": true,
+        "type": 1,
+        "cutoff": 80.0,
+        "q": 0.707,
+        "gain_db": 0.0
+      },
+      "pos": [
+        0,
+        0
+      ]
     },
     {
       "id": "gate",
       "type": "NoiseGate",
       "name": "Mic Gate",
-      "params": {"thresh": -50.0, "ratio": 10.0, "attack": 1.0, "hold": 50.0, "release": 100.0, "range": 60.0},
-      "pos": [220, 0]
+      "params": {
+        "enabled": true,
+        "thresh": -50.0,
+        "ratio": 10.0,
+        "attack": 1.0,
+        "hold": 50.0,
+        "release": 100.0,
+        "range": 60.0
+      },
+      "pos": [
+        220,
+        0
+      ]
     },
     {
       "id": "vox",
       "type": "WorldVoiceTransformer",
       "name": "Voice",
-      "params": {"pitch_shift": 0.0, "formant_shift": 0.0, "mix": 1.0, "output_gain": 0.0},
-      "pos": [440, 0]
+      "params": {
+        "enabled": true,
+        "pitch_shift": 0.0,
+        "formant_shift": 0.0,
+        "gender_morph": 0.0,
+        "breathiness": 0.0,
+        "mix": 1.0,
+        "output_gain": 0.0
+      },
+      "pos": [
+        440.0,
+        0.0
+      ]
     },
     {
       "id": "deess",
       "type": "DeEsser",
       "name": "De-Ess",
-      "params": {"frequency": 6500.0, "threshold": -18.0, "depth": 6.0, "attack_ms": 1.0, "release_ms": 60.0, "listen": false, "mix": 1.0},
-      "pos": [660, 0]
+      "params": {
+        "enabled": true,
+        "frequency": 6500.0,
+        "threshold": -18.0,
+        "depth": 6.0,
+        "attack_ms": 1.0,
+        "release_ms": 60.0,
+        "listen": false,
+        "listen_mode": 0,
+        "auto_threshold": false,
+        "mix": 1.0
+      },
+      "pos": [
+        660,
+        0
+      ]
     },
     {
       "id": "limit",
       "type": "BrickwallLimiter",
       "name": "Out Limiter",
-      "params": {"threshold": -0.1, "ceiling": -0.1, "release": 50.0},
-      "pos": [880, 0]
+      "params": {
+        "enabled": true,
+        "threshold": -0.1,
+        "ceiling": -0.1,
+        "release": 50.0
+      },
+      "pos": [
+        1046.9426465625002,
+        -2.0113571874999963
+      ]
     }
   ],
   "connections": [
-    {"src_id": "hpf", "src_port": "out", "dst_id": "gate", "dst_port": "in"},
-    {"src_id": "gate", "src_port": "out", "dst_id": "vox", "dst_port": "in"},
-    {"src_id": "vox", "src_port": "out", "dst_id": "deess", "dst_port": "in"},
-    {"src_id": "deess", "src_port": "out", "dst_id": "limit", "dst_port": "in"}
+    {
+      "src_id": "hpf",
+      "src_port": "out",
+      "dst_id": "gate",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "gate",
+      "src_port": "out",
+      "dst_id": "vox",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "vox",
+      "src_port": "out",
+      "dst_id": "deess",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "deess",
+      "src_port": "out",
+      "dst_id": "limit",
+      "dst_port": "in"
+    }
   ]
 }
