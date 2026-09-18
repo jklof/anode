@@ -609,7 +609,7 @@ class StringParamWidget(QWidget):
             # so commits flow through the event filter below.
             self.text_edit = QTextEdit(self.current_value)
             self.text_edit.setAcceptRichText(False)
-            self.text_edit.setFixedHeight(72)
+            self.text_edit.setFixedHeight(144)
             self.text_edit.installEventFilter(self)
             self.layout.addWidget(self.text_edit)
             self.line_edit = None

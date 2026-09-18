@@ -1,0 +1,102 @@
+{
+  "clock_id": "8e50e26f-e5f7-42b7-9cd8-f34d3dbaaeec",
+  "nodes": [
+    {
+      "id": "8e50e26f-e5f7-42b7-9cd8-f34d3dbaaeec",
+      "type": "AudioDeviceOutput",
+      "name": "Audio Device Output",
+      "params": {
+        "enabled": true,
+        "device_index": -1
+      },
+      "pos": [
+        501.0363437499999,
+        97.94434999999996
+      ]
+    },
+    {
+      "id": "f88c2d2b-93c8-4648-9a71-4b89e75e508b",
+      "type": "MediaPlayerNode",
+      "name": "Media Player",
+      "params": {
+        "enabled": true,
+        "file_path": "",
+        "playing": true,
+        "looping": false,
+        "seek_ratio": -1.0
+      },
+      "pos": [
+        -113.0,
+        -281.0
+      ],
+      "meta": {
+        "title": "No Media",
+        "duration": 0.0,
+        "path": ""
+      }
+    },
+    {
+      "id": "7a49703f-7d7f-4bb7-82ac-61efdc9c7b50",
+      "type": "WaveformDisplay",
+      "name": "Oscilloscope",
+      "params": {
+        "enabled": true
+      },
+      "pos": [
+        185.3946624999999,
+        136.4224874999999
+      ]
+    },
+    {
+      "id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "type": "YuE2SongGenerator",
+      "name": "YuE2 Song Generator",
+      "params": {
+        "enabled": true,
+        "style": "English, late-90s Swedish power metal, twin harmonized electric guitars, driving bass, double-bass drums, soaring clean male vocal with gang-vocal chorus, heroic anthemic, 155 BPM, polished powerful mix",
+        "lyrics_file": "./inputs/singer_rock_band_cover.txt",
+        "abc_file": "./inputs/singer_rock_band_cover.abc",
+        "profile": 0,
+        "format": 0,
+        "cot": 2,
+        "seed": 831001,
+        "auto_seed": false,
+        "model_dir": "models/YuE2-3B-GGUF",
+        "generate": false,
+        "download": false,
+        "cancel": false,
+        "last_wav": ""
+      },
+      "pos": [
+        -481.31395624999976,
+        -259.62989374999995
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "src_id": "7a49703f-7d7f-4bb7-82ac-61efdc9c7b50",
+      "src_port": "out",
+      "dst_id": "8e50e26f-e5f7-42b7-9cd8-f34d3dbaaeec",
+      "dst_port": "audio_in"
+    },
+    {
+      "src_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "src_port": "song",
+      "dst_id": "f88c2d2b-93c8-4648-9a71-4b89e75e508b",
+      "dst_port": "uri_in"
+    },
+    {
+      "src_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "src_port": "ready",
+      "dst_id": "f88c2d2b-93c8-4648-9a71-4b89e75e508b",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "f88c2d2b-93c8-4648-9a71-4b89e75e508b",
+      "src_port": "out",
+      "dst_id": "7a49703f-7d7f-4bb7-82ac-61efdc9c7b50",
+      "dst_port": "in"
+    }
+  ]
+}

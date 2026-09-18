@@ -29,3 +29,7 @@ models/SheetSage2-GGUF/outputs/
 
 #inputs
 inputs/
+
+# Fitted-lyrics keeps (Lyric Fitter node): local provenance records,
+# never committed.
+outputs/

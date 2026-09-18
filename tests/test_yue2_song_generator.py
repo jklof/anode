@@ -197,6 +197,35 @@ def test_run_gen_success_parses_metrics(tmp_path, monkeypatch):
     assert "cot=full" in argv and "--metrics" in argv
 
 
+def test_argv_weight_type_defaults_native_and_overrides(tmp_path):
+    """q4_0 storage cuts NAR-phase VRAM ~15% for ~1.5x slower generation
+    (measured 4016->3380 MiB peak at equal 1500-token work on 8 GB)."""
+    out = str(tmp_path / "o.wav")
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec())
+    assert "yue2.model_weight_type=native" in argv
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                            weight_type="q4_0")
+    assert "yue2.model_weight_type=q4_0" in argv
+
+
+def test_run_gen_forwards_weight_type(tmp_path, monkeypatch):
+    out = tmp_path / "run" / "song.wav"
+    cli = tmp_path / "cli"
+    cli.write_text("x")
+    model = tmp_path / "models"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "m.gguf").write_text("x")
+    (model / "v.gguf").write_text("x")
+    seen = _patch_popen(monkeypatch)
+    seen["out"] = str(out)
+    import threading
+    run_yue2_gen(str(cli), str(model), lyrics="la", style="pop",
+                 main_gguf="m.gguf", vae_gguf="v.gguf",
+                 out_wav=str(out), cancel_event=threading.Event(),
+                 weight_type="q4_0")
+    assert "yue2.model_weight_type=q4_0" in seen["proc"].argv
+
+
 def test_run_gen_cancel_terminates(tmp_path, monkeypatch):
     out = tmp_path / "song.wav"
     cli = tmp_path / "cli"
@@ -397,6 +426,64 @@ def test_abc_param_used_when_unwired(node_cls, tmp_path):
     assert node._resolve_score() == str(param_score)
 
 
+def _wire_lyrics_uri(node, uri):
+    """Connect the node's lyrics_uri input to a scratch URI output."""
+    from base import OutputSlot
+    helper = OutputSlot("helper", node, slot_type="uri")
+    helper.uri = uri
+    node.inputs["lyrics_uri"].connect(helper)
+    return helper
+
+
+def test_lyrics_uri_overrides_param(node_cls, tmp_path):
+    wired = tmp_path / "wired.txt"
+    wired.write_text("[Verse]\nla\n", encoding="utf-8")
+    param_lyrics = tmp_path / "param.txt"
+    param_lyrics.write_text("[Verse]\nla\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["lyrics_file"].set(str(param_lyrics))
+    node.params["lyrics_file"].sync()
+    _wire_lyrics_uri(node, str(wired))
+    assert node._resolve_lyrics() == str(wired)
+
+
+def test_lyrics_uri_empty_means_not_ready(node_cls, tmp_path):
+    param_lyrics = tmp_path / "param.txt"
+    param_lyrics.write_text("[Verse]\nla\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["lyrics_file"].set(str(param_lyrics))
+    node.params["lyrics_file"].sync()
+    _wire_lyrics_uri(node, "")
+    with pytest.raises(ValueError, match="fit first"):
+        node._resolve_lyrics()
+
+
+def test_lyrics_uri_missing_file_rejected(node_cls, tmp_path):
+    node = make_node(node_cls)
+    _wire_lyrics_uri(node, str(tmp_path / "gone.txt"))
+    with pytest.raises(ValueError, match="not found"):
+        node._resolve_lyrics()
+
+
+def test_lyrics_param_used_when_unwired(node_cls, tmp_path):
+    param_lyrics = tmp_path / "param.txt"
+    param_lyrics.write_text("[Verse]\nla\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["lyrics_file"].set(str(param_lyrics))
+    node.params["lyrics_file"].sync()
+    assert node._resolve_lyrics() == str(param_lyrics)
+
+
+def test_fitter_to_generator_wires_up(node_cls, tmp_path):
+    """LyricFitter.lyrics -> YuE2.lyrics_uri connects with matching types."""
+    plugin_system.load_plugins("plugins")
+    fitter_cls = plugin_system.NODE_REGISTRY.get("LyricFitter")
+    assert fitter_cls is not None
+    fitter, gen = fitter_cls(), make_node(node_cls)
+    gen.inputs["lyrics_uri"].connect(fitter.outputs["lyrics"])
+    assert gen.inputs["lyrics_uri"].get_uri() == ""
+
+
 def test_complete_failure_sets_error(node_cls):
     node = make_node(node_cls)
     node.on_nrt_complete("gen", False, RuntimeError("boom"))
@@ -434,6 +521,34 @@ def test_build_spec_rejects_missing_backend(node_cls, tmp_path, monkeypatch):
                         lambda: tmp_path / "YuE2-3B-GGUF")
     with pytest.raises(ValueError, match="fetch_"):
         node._build_spec()
+
+
+def test_build_spec_carries_weight_type(node_cls, tmp_path, monkeypatch):
+    mod = _live()
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
+
+        def check_ready(self):
+            return True, ""
+
+    monkeypatch.setattr(mod, "AudioCppRuntime", StubRuntime)
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "yue2-3b-q4_k_m.gguf").write_text("x")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("[Verse]\nla\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["model_dir"].set(str(model_dir))
+    node.params["model_dir"].sync()
+    node.params["lyrics_file"].set(str(lyrics))
+    node.params["lyrics_file"].sync()
+    spec = node._build_spec()
+    assert spec["weight_type"] == "native"
+    node.params["weight_type"].set(1)
+    node.params["weight_type"].sync()
+    assert node._build_spec()["weight_type"] == "q4_0"
 
 
 def test_load_song_file_mono_to_stereo(node_cls, tmp_path):
@@ -1084,6 +1199,9 @@ def test_request_json_records_backend(node_cls, tmp_path):
     keep = tmp_path / "keep"
     spec = _keep_spec(tmp_path, "wav")
     spec["backend"] = "cpu"
+    spec["weight_type"] = "q4_0"
     node._keep_song(run_dir, keep, _keep_audio(), spec, {"rtf": 1.0})
     import json
-    assert json.loads((keep / "request.json").read_text())["backend"] == "cpu"
+    req = json.loads((keep / "request.json").read_text())
+    assert req["backend"] == "cpu"
+    assert req["weight_type"] == "q4_0"

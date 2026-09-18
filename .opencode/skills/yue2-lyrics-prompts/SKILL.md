@@ -25,7 +25,12 @@ Read [references/style-prompts.md](references/style-prompts.md) when writing
 the style, [references/lyrics-format.md](references/lyrics-format.md) when
 writing or tagging lyrics, and
 [references/abc-lyrics-fit.md](references/abc-lyrics-fit.md) whenever an ABC
-score is in play.
+score is in play. When existing words must be refitted onto a fixed melody
+line by line, follow
+[references/cover-refit-method.md](references/cover-refit-method.md) on top
+of the section-level fit; when there are no reference words at all, use
+[references/abc-only-fitting.md](references/abc-only-fitting.md) instead
+(`tools/abc_fit_template.py` automates its steps 1–5).
 
 `prompt.md` (next to this file) is a condensed single-shot version of these
 rules for small local models: inject it before the user brief when driving

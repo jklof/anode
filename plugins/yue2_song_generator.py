@@ -56,6 +56,16 @@ PROFILES = (
     ("BF16 (24 GB VRAM)", "yue2-3b-bf16.gguf"),
 )
 VAE_GGUF = "yue2-vae-f16.gguf"
+# Weight compute format (yue2.model_weight_type session option). Measured on
+# an 8 GB laptop GPU at equal work (1500 forced tokens): native peaks at
+# ~4.0 GB / ~29 s, q4_0 at ~3.4 GB / ~43 s. q4_0 trades speed (and a small
+# requantization quality cost) for headroom — the pick when native pressure
+# causes paging slowdowns. Deliberately only these two: q4_k aborts the CLI
+# on CUDA (unsupported getrows src0 type), and q8_0/f16/bf16 only add VRAM.
+WTYPES = (
+    ("native (balanced)", "native"),
+    ("q4_0 (low VRAM)", "q4_0"),
+)
 
 
 def load_song_file(path):
@@ -79,8 +89,8 @@ class YuE2Widget(OfflineJobWidget):
     IS_NODE_UI = True
     NODE_CLASS_NAME = "YuE2SongGenerator"
 
-    PARAM_KEYS = ("style", "lyrics_file", "abc_file", "profile", "format",
-                  "cot", "seed", "auto_seed")
+    PARAM_KEYS = ("style", "lyrics_file", "abc_file", "profile", "weight_type",
+                  "format", "cot", "seed", "auto_seed")
     ACTION_LABEL = "Generate song"
     ACTION_PARAM = "generate"
     DOWNLOAD_LABEL = "Download runtime + model (~3.8 GB)"
@@ -119,7 +129,9 @@ class YuE2SongGenerator(AudioCppJob):
     description = (
         "Offline lyrics-to-song generator (YuE2-3B GGUF via the in-tree "
         "audio.cpp sidecar). Generation runs on a background NRT worker "
-        "(~2x realtime, ~4.3 GB peak VRAM with Q4_K_M on an 8 GB GPU) and "
+        "(~2x realtime, ~4.3 GB peak VRAM with Q4_K_M on an 8 GB GPU; the "
+        "weight_type menu trades speed for headroom when that pressure "
+        "causes slowdowns) and "
         "publishes the kept song on the song URI output with a one-block "
         "pulse on ready for auto-chaining (e.g. into SamplePlayer). "
         "Generation starts from the Generate button or a rising edge on "
@@ -141,6 +153,9 @@ class YuE2SongGenerator(AudioCppJob):
         self.add_uri_input("abc_uri",
                            help="Wired score path (e.g. from SheetSage2Transcriber). While connected "
                                 "and non-empty it overrides abc_file; snapshots at Generate time.")
+        self.add_uri_input("lyrics_uri",
+                           help="Wired lyrics path (e.g. from LyricFitter). While connected "
+                                "and non-empty it overrides lyrics_file; snapshots at Generate time.")
         self.add_uri_output("song",
                             help="Kept song path (MP3 or WAV per format); published on completion and on patch-load relink.")
         self.ready = self.add_output("ready", channels=1,
@@ -151,12 +166,17 @@ class YuE2SongGenerator(AudioCppJob):
                               multiline=True,
                               help="Genre, instruments, vocal character, language, tempo.")
         self.add_file_param("lyrics_file", "", filter="Text Files (*.txt *.md);;All Files (*.*)",
-                            help="Lyrics file with section tags like [Verse]/[Chorus]; read by the background worker.")
+                            help="Lyrics file with section tags like [Verse]/[Chorus]; read by the background worker. "
+                                 "A connected lyrics_uri input overrides this.")
         self.add_file_param("abc_file", "", filter="ABC Files (*.abc);;All Files (*.*)",
                             help="Optional melody/chord score for covers; requires cot=melody or full. "
                                  "A connected abc_uri input overrides this.")
         self.add_menu_param("profile", [label for label, _ in PROFILES], initial_idx=0,
                             help="GGUF precision profile; larger profiles need more VRAM.")
+        self.add_menu_param("weight_type", [label for label, _ in WTYPES], initial_idx=0,
+                            help="Weight compute format: q4_0 cuts peak VRAM ~15% for ~1.5x slower "
+                                 "generation (and slight requantization quality cost) — use it when "
+                                 "native memory pressure causes slowdowns.")
         self.add_menu_param("format", ["MP3 (320 kbps)", "WAV (lossless)"], initial_idx=0,
                             help="Kept song format — exactly one file is kept. MP3 shares cheaply; "
                                  "WAV keeps full quality for further processing.")
@@ -212,6 +232,23 @@ class YuE2SongGenerator(AudioCppJob):
             raise ValueError(f"ABC score file not found: {abc_file}")
         return abc_file
 
+    def _resolve_lyrics(self):
+        """Wired lyrics_uri wins over the lyrics_file param (both snapshot
+        at Generate time). Raises ValueError with a clear message."""
+        lyrics_in = self.inputs.get("lyrics_uri")
+        if lyrics_in is not None and lyrics_in.connected_outputs:
+            wired = lyrics_in.get_uri()
+            if not wired:
+                raise ValueError(
+                    "Wired lyrics are empty — fit first, then generate.")
+            if not Path(wired).exists():
+                raise ValueError(f"Wired lyrics file not found: {wired}")
+            return wired
+        lyrics_file = self.params["lyrics_file"].value
+        if not lyrics_file or not Path(lyrics_file).exists():
+            raise ValueError("Pick a lyrics file first (lyrics_file is empty or missing).")
+        return lyrics_file
+
     def _build_spec(self):
         """Snapshot committed params into a worker spec. Raises ValueError."""
         runtime = AudioCppRuntime()
@@ -226,9 +263,7 @@ class YuE2SongGenerator(AudioCppJob):
                 f"GGUF profile {main_gguf} not found in {model_dir}. "
                 "Run: python tools/audiocpp/fetch_yue2_gguf.py"
             )
-        lyrics_file = self.params["lyrics_file"].value
-        if not lyrics_file or not Path(lyrics_file).exists():
-            raise ValueError("Pick a lyrics file first (lyrics_file is empty or missing).")
+        lyrics_file = self._resolve_lyrics()
         abc_file = self._resolve_score()
         style = self.params["style"].value
         if not style or not style.strip():
@@ -242,6 +277,7 @@ class YuE2SongGenerator(AudioCppJob):
             "cot": COT_MODES[int(self.params["cot"].value)],
             "seed": self._pick_seed(),
             "main_gguf": main_gguf,
+            "weight_type": WTYPES[int(self.params["weight_type"].value)][1],
             "format": FORMATS[int(self.params["format"].value)],
             "backend": default_backend(),
         }
@@ -264,7 +300,8 @@ class YuE2SongGenerator(AudioCppJob):
 
     def _running_status(self, spec):
         return ("Generating",
-                f"seed {spec['seed']}, {spec['cot']}, {spec['main_gguf']}…")
+                f"seed {spec['seed']}, {spec['cot']}, "
+                f"{spec['main_gguf']}, {spec.get('weight_type', 'native')}…")
 
     def _spec_warnings(self, spec):
         """Warn when the cover score and lyrics are shaped too differently
@@ -313,6 +350,7 @@ class YuE2SongGenerator(AudioCppJob):
                 cot=spec["cot"], seed=spec["seed"], main_gguf=spec["main_gguf"],
                 vae_gguf=VAE_GGUF, abc_file=spec["abc_file"], out_wav=out_wav,
                 cancel_event=cancel_event, backend=spec.get("backend"),
+                weight_type=spec.get("weight_type", "native"),
             )
             audio = load_song_file(gen["wav"])
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -354,6 +392,7 @@ class YuE2SongGenerator(AudioCppJob):
             "cot": spec["cot"],
             "seed": spec["seed"], "profile": spec["main_gguf"],
             "vae_gguf": VAE_GGUF,
+            "weight_type": spec.get("weight_type", "native"),
             "format": spec["format"],
             "backend": spec.get("backend", "cuda"),
             "runtime": {"audio_cpp": AUDIOCPP_PIN_VERSION},

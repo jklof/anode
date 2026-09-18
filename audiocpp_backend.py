@@ -398,7 +398,8 @@ def _no_window_kwargs():
 
 
 def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
-                     main_gguf, vae_gguf, abc_file, out_wav, backend="cuda"):
+                     main_gguf, vae_gguf, abc_file, out_wav, backend="cuda",
+                     weight_type="native"):
     """Pure argv builder (no process). Tested without a GPU."""
     if cot not in ("off", "melody", "full"):
         raise ValueError(f"cot must be off/melody/full, got {cot!r}")
@@ -416,6 +417,7 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
         "--request-option", f"cot={cot}",
         "--session-option", f"yue2.model_gguf={main_gguf}",
         "--session-option", f"yue2.vae_gguf={vae_gguf}",
+        "--session-option", f"yue2.model_weight_type={weight_type}",
         "--seed", str(seed),
         "--out", str(out_wav), "--metrics",
     ]
@@ -444,7 +446,7 @@ def _parse_metrics(text):
 def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
                  main_gguf="yue2-3b-q4_k_m.gguf", vae_gguf="yue2-vae-f16.gguf",
                  abc_file=None, out_wav, cancel_event=None, timeout_s=1800,
-                 backend=None):
+                 backend=None, weight_type="native"):
     """Run one YuE2 generation. Blocking; call only from an NRT worker.
 
     Returns ``{"wav": str, "metrics": dict}``. Raises
@@ -467,7 +469,8 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
     argv = _build_yue2_argv(cli, model_dir, lyrics=lyrics, style=style,
                             cot=cot, seed=seed, main_gguf=main_gguf,
                             vae_gguf=vae_gguf, abc_file=abc_file, out_wav=out_wav,
-                            backend=backend or default_backend())
+                            backend=backend or default_backend(),
+                            weight_type=weight_type)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.Popen(

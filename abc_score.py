@@ -324,3 +324,40 @@ def load_score(path):
     if not score.notes:
         raise ValueError(f"score has no playable notes: {path}")
     return score
+
+
+def select_voice(abc_text, voice="Vocal"):
+    """Return ABC text with music lines restricted to one ``V:`` staff.
+
+    SheetSage2 transcriptions carry two interleaved staves (``V: Vocal`` and
+    ``V: Ins``); :func:`parse_score` merges staves sequentially onto one
+    shared timeline, which suits auditioning the full arrangement but doubles
+    the timeline for lyric work (words ride one staff only). This keeps
+    headers, ``%`` sections, meter/key changes and blank lines, and drops
+    music lines sitting under other staves, so the result parses (via
+    :func:`parse_score`) to that staff's own timeline. Scores without any
+    ``V:`` lines pass through unchanged. Matching is case-insensitive on the
+    voice id (first token after ``V:``); an empty `voice` keeps everything.
+    """
+    if not abc_text:
+        return abc_text
+    want = (voice or "").strip().lower()
+    out = []
+    current = None
+    seen_voice = False
+    for raw_line in abc_text.splitlines():
+        line = raw_line.strip()
+        if len(line) > 2 and line[0] == "V" and line[1] == ":":
+            seen_voice = True
+            token = line[2:].strip().split()
+            current = token[0].lower() if token else ""
+            out.append(raw_line)  # V: lines carry no beats; keep them all
+            continue
+        if (not line or line.startswith("%")
+                or (len(line) > 1 and line[1] == ":" and line[0].isalpha())):
+            out.append(raw_line)
+            continue
+        # Music line: keep for single-staff scores, else only under `voice`.
+        if not seen_voice or (current is not None and current.startswith(want)):
+            out.append(raw_line)
+    return "\n".join(out) + "\n"
