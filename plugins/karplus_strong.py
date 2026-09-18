@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class KarplusStrong(FFINode):
-    category = "Sources"
+    category = "Instruments"
     label = "Karplus-Strong String"
     description = (
         "Native C++ Karplus-Strong physical modeling string synthesizer. "

@@ -74,7 +74,7 @@ def test_world_registration_docs_and_telemetry():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("WorldVoiceTransformer")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Voice & Pitch"
     assert cls.label
     assert cls.description
     node = make_node()

@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 
 class Phaser(FFINode):
-    category = "Effects"
+    category = "Time & Space"
     label = "Phaser (6-Stage)"
     description = (
         "Native C++ 6-stage stereo allpass phaser. Features exponential sweep "

@@ -50,7 +50,7 @@ class MIDIDeviceManager:
 
 
 class MIDIInputNode(Node):
-    category = "I/O"
+    category = "MIDI"
     label = "MIDI Device Input"
     description = (
         "Receives real-time MIDI messages from a hardware port on a background "
@@ -180,7 +180,7 @@ class MIDIInputNode(Node):
 
 
 class MIDIOutputNode(Node):
-    category = "I/O"
+    category = "MIDI"
     label = "MIDI Device Output"
     description = (
         "Sends MIDI messages to an external hardware or virtual MIDI port via a "

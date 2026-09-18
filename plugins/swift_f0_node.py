@@ -69,7 +69,7 @@ def _build_decim_kernel():
 
 
 class SwiftF0Node(Node):
-    category = "Utilities"
+    category = "Voice & Pitch"
     label = "SwiftF0 Pitch & MIDI Tracker"
     description = (
         "Real-time neural pitch tracker and audio-to-MIDI transcriber powered by "

@@ -33,7 +33,7 @@ def test_karplus_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("KarplusStrong")
     assert cls is not None
-    assert cls.category == "Sources"
+    assert cls.category == "Instruments"
 
 
 def test_karplus_pluck_edge_vs_held_gate():

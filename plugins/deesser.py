@@ -33,7 +33,7 @@ except ImportError:
 
 
 class DeEsser(FFINode):
-    category = "Effects"
+    category = "Filters & Dynamics"
     label = "De-Esser"
     description = (
         "Split-band de-esser: attenuates only the high-frequency band above "

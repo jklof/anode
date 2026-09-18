@@ -72,7 +72,7 @@ class NamWidget(QWidget):
 
 class NamNode(FFINode):
     LIB_NAME = "neural_amp"
-    category = "Effects"
+    category = "Distortion & Amp"
     label = "Neural Amp Modeler"
     description = (
         "Neural network amplifier/emulator capture player backed by native C++ "

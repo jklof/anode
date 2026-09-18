@@ -42,12 +42,12 @@ def feed(node, block):
 
 def test_rubberband_registration_and_documentation(rb_node):
     node = rb_node
-    assert node.category == "Effects"
+    assert node.category == "Voice & Pitch"
     assert node.label == "RubberBand Pitch Shifter"
     assert len(node.description) >= 15
 
     doc = plugin_system.get_node_documentation("RubberBandPitchShifter")
-    assert doc["category"] == "Effects"
+    assert doc["category"] == "Voice & Pitch"
     assert doc["description"]
     for port in ("in", "pitch_mod", "formant_mod"):
         assert port in doc["inputs"] and doc["inputs"][port]["help"]

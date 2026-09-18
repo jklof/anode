@@ -61,7 +61,7 @@ def write_wav(path, seconds=1.0, sr=SAMPLE_RATE, channels=2):
 # registration
 # ----------------------------------------------------------------------
 def test_registration(node_cls):
-    assert node_cls.category == "Sources"
+    assert node_cls.category == "Offline"
     assert node_cls.label == "YuE2 Song Generator"
     assert "audio.cpp" in node_cls.description
 

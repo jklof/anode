@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class Compressor(FFINode):
     LIB_NAME = "compressor"
-    category = "Effects"
+    category = "Filters & Dynamics"
     label = "Compressor"
     description = (
         "Native C++ feed-forward dynamics compressor with soft-knee, attack/"
@@ -157,7 +157,7 @@ class Compressor(FFINode):
 
 
 class NoiseGate(Node):
-    category = "Effects"
+    category = "Filters & Dynamics"
     label = "Noise Gate"
     description = (
         "Downward expander / noise gate with attack, hold, and release stages. "
@@ -270,7 +270,7 @@ class NoiseGate(Node):
 
 
 class BrickwallLimiter(Node):
-    category = "Effects"
+    category = "Filters & Dynamics"
     label = "Brickwall Limiter"
     description = (
         "Peak limiter with a 240-sample lookahead delay and program-dependent "
@@ -352,7 +352,7 @@ class BrickwallLimiter(Node):
 
 
 class TransientShaper(Node):
-    category = "Effects"
+    category = "Filters & Dynamics"
     label = "Transient Shaper"
     description = (
         "Two-band transient designer: separates the fast attack portion of the "
@@ -425,7 +425,7 @@ class TransientShaper(Node):
 
 
 class AutoGain(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Auto Gain / Leveler"
     description = (
         "Slow automatic leveler: measures the RMS level over a sliding window "

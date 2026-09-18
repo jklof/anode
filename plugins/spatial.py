@@ -22,7 +22,7 @@ SQRT2 = float(np.sqrt(2.0))
 
 
 class StereoPanner(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Stereo Panner"
     description = (
         "Constant-power stereo panner with width control: gL^2 + gR^2 == 2 (unity "
@@ -68,7 +68,7 @@ class StereoPanner(Node):
 
 
 class MidSideEncoder(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Mid/Side Encoder"
     description = (
         "Encodes a stereo signal into orthonormal mid/side components: "
@@ -91,7 +91,7 @@ class MidSideEncoder(Node):
 
 
 class MidSideDecoder(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Mid/Side Decoder"
     description = (
         "Decodes orthonormal mid/side components back to stereo: "

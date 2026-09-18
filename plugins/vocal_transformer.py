@@ -76,7 +76,7 @@ LATENCY_MODES = [
 
 
 class VocalTransformer(FFINode):
-    category = "Effects"
+    category = "Voice & Pitch"
     label = "Vocal Transformer"
     description = (
         "Studio-grade real-time vocal pitch, formant, and gender transformer. "

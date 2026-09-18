@@ -65,7 +65,7 @@ def test_spectrogram_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("SpectrogramDisplay")
     assert cls is not None
-    assert cls.category == "Visual"
+    assert cls.category == "Visual & Analysis"
     assert cls.label == "Spectrogram"
 
 

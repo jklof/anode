@@ -20,7 +20,7 @@ DECIM_MAX = 64
 
 
 class Bitcrusher(Node):
-    category = "Effects"
+    category = "Distortion & Amp"
     label = "Bitcrusher"
     description = (
         "Sample-and-hold decimation combined with bit-depth quantization. The "

@@ -39,7 +39,7 @@ def test_noise_gate_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("NoiseGate")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Filters & Dynamics"
     assert cls.label == "Noise Gate"
 
 
@@ -132,7 +132,7 @@ def test_brickwall_limiter_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("BrickwallLimiter")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Filters & Dynamics"
     assert cls.label == "Brickwall Limiter"
 
 
@@ -183,7 +183,7 @@ def test_transient_shaper_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("TransientShaper")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Filters & Dynamics"
     assert cls.label == "Transient Shaper"
 
 
@@ -261,7 +261,7 @@ def test_autogain_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("AutoGain")
     assert cls is not None
-    assert cls.category == "Utilities"
+    assert cls.category == "Mix & Stereo"
     assert cls.label == "Auto Gain / Leveler"
 
 

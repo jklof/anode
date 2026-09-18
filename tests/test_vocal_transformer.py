@@ -100,7 +100,7 @@ def test_vocal_transformer_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("VocalTransformer")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Voice & Pitch"
     assert cls.label
     assert cls.description
     node = make_node()

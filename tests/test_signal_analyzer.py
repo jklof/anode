@@ -41,7 +41,7 @@ def sine_block(freq=1000.0, amp=0.5):
 
 def test_signal_analyzer_registration_and_metadata():
     node = make_node()
-    assert node.category == "Utilities"
+    assert node.category == "Visual & Analysis"
     assert node.label == "Signal Analyzer"
     assert len(node.description) >= 15
 

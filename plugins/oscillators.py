@@ -18,7 +18,7 @@ from base import Node, BLOCK_SIZE, SAMPLE_RATE, DTYPE, CHANNELS
 
 
 class WaveformOscillator(Node):
-    category = "Sources"
+    category = "Instruments"
     label = "Waveform Oscillator"
     description = (
         "Anti-aliased multi-wave oscillator (Sine, Triangle, Sawtooth, Square/Pulse) "
@@ -121,7 +121,7 @@ class WaveformOscillator(Node):
 
 
 class ColoredNoise(Node):
-    category = "Sources"
+    category = "Instruments"
     label = "Colored Noise Generator"
     description = (
         "Noise generator with selectable spectral color (White, Pink -3 dB/oct, "

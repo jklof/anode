@@ -63,7 +63,7 @@ def test_data_display_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("DataDisplayNode")
     assert cls is not None
-    assert cls.category == "Visual"
+    assert cls.category == "Visual & Analysis"
     assert cls.label == "Data Display"
 
 

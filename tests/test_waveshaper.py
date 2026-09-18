@@ -37,7 +37,7 @@ def set_params(node, **kw):
 def test_waveshaper_registration():
     cls = plugin_system.NODE_REGISTRY.get("WaveShaper")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Distortion & Amp"
 
 
 def test_mix_zero_is_bit_exact_passthrough():

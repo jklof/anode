@@ -81,7 +81,7 @@ class SheetSageWidget(OfflineJobWidget):
 
 
 class SheetSage2Transcriber(AudioCppJob):
-    category = "Utilities"
+    category = "Offline"
     label = "SheetSage2 Transcriber"
     description = (
         "Offline audio-to-ABC transcription (SheetSage2 GGUF via the in-tree "

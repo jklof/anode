@@ -4,7 +4,7 @@ from base import Node, BLOCK_SIZE, CHANNELS, TelemetryRingBuffer
 
 
 class WaveformDisplay(Node):
-    category = "Visual"
+    category = "Visual & Analysis"
     label = "Oscilloscope"
     description = (
         "Oscilloscope visualizer: analyzes a private copy of the signal on the "

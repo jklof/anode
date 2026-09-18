@@ -341,6 +341,8 @@ Fix real correctness, ownership, lifecycle, and regression problems first.
 
 Run the smallest relevant tests after each logical change, then the full suite when practical.
 
+All Python/pytest commands must run inside the activated `anode-dev` conda environment (`conda activate anode-dev`, or `conda run -n anode-dev ...` — note `conda` itself may not be on `PATH` in non-interactive shells, and `README.md`/`environment.yml` are the source of truth for the env name). Invoking the env's `python.exe` by absolute path is not equivalent: it skips activation, leaving `Library\bin` off `PATH`, which breaks native-library discovery — e.g. `import soundfile` fails with `cannot load library 'libsndfile.dll' ... 0x7e` even though `conda list` shows `libsndfile` installed (`conda list` reads package metadata and works without activation, so it cannot confirm the runtime works).
+
 Do not claim tests passed or builds succeeded unless they were actually run.
 
 Do not commit or push unless explicitly requested.

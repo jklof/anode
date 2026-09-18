@@ -46,7 +46,7 @@ except ImportError:
 
 
 class RubberBandPitchShifter(Node):
-    category = "Effects"
+    category = "Voice & Pitch"
     label = "RubberBand Pitch Shifter"
     description = (
         "High-quality real-time pitch and formant shifter powered by the "

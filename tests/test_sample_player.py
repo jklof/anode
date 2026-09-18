@@ -38,7 +38,7 @@ def feed_gate(node, level):
 
 
 def test_sample_player_registration(player_cls):
-    assert player_cls.category == "Sources"
+    assert player_cls.category == "Instruments"
     assert player_cls.label == "Sample Player"
 
 

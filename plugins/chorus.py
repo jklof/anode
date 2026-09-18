@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class ChorusFlanger(FFINode):
-    category = "Effects"
+    category = "Time & Space"
     label = "Chorus / Flanger"
     description = (
         "Native C++ quadrature-modulated stereo delay line. Two LFOs in "

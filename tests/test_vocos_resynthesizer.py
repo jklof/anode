@@ -152,7 +152,7 @@ def test_vocos_registration_and_docs():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("VocosResynthesizer")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Voice & Pitch"
     doc = plugin_system.get_node_documentation("VocosResynthesizer")
     assert "in" in doc["inputs"]
     assert "out" in doc["outputs"]

@@ -21,7 +21,7 @@ from base import Node, SAMPLE_RATE, CHANNELS, BLOCK_SIZE, DTYPE
 
 
 class SamplePlayer(Node):
-    category = "Sources"
+    category = "Instruments"
     label = "Sample Player"
     description = (
         "RAM-cached one-shot/looping sampler. Files are decoded and resampled to "

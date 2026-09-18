@@ -25,7 +25,7 @@ CUTOFF_MAX = 20000.0
 
 
 class BiquadFilter(FFINode):
-    category = "Effects"
+    category = "Filters & Dynamics"
     label = "Biquad Filter (IIR)"
     description = (
         "Native C++ RBJ biquad IIR filter (Low Pass, High Pass, Band Pass, Notch, "
@@ -122,7 +122,7 @@ class BiquadFilter(FFINode):
 
 
 class LinearPhaseEQ(FFINode):
-    category = "Effects"
+    category = "Filters & Dynamics"
     label = "Linear Phase EQ (FIR)"
     description = (
         "Native C++ 255-tap linear-phase FIR equalizer (Low Pass, High Pass, Band "

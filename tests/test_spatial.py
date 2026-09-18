@@ -24,7 +24,7 @@ def test_spatial_registrations():
     for name in ["StereoPanner", "MidSideEncoder", "MidSideDecoder"]:
         cls = plugin_system.NODE_REGISTRY.get(name)
         assert cls is not None, name
-        assert cls.category == "Utilities"
+        assert cls.category == "Mix & Stereo"
 
 
 def test_panner_center_identity():

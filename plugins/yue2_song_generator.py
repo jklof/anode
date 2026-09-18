@@ -114,7 +114,7 @@ class YuE2Widget(OfflineJobWidget):
 
 
 class YuE2SongGenerator(AudioCppJob):
-    category = "Sources"
+    category = "Offline"
     label = "YuE2 Song Generator"
     description = (
         "Offline lyrics-to-song generator (YuE2-3B GGUF via the in-tree "

@@ -31,7 +31,7 @@ def test_bitcrusher_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("Bitcrusher")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Distortion & Amp"
 
 
 def test_max_bits_min_decim_is_near_passthrough():

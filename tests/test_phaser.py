@@ -34,7 +34,7 @@ def test_phaser_registration_and_load():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("Phaser")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Time & Space"
     node = make_node()
     assert node.error_msg is None, f"native library failed to load: {node.error_msg}"
 

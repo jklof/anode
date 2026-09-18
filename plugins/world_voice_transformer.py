@@ -36,7 +36,7 @@ from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE
 
 
 class WorldVoiceTransformer(FFINode):
-    category = "Effects"
+    category = "Voice & Pitch"
     label = "WORLD Voice Transformer"
     description = (
         "Real-time voice pitch and formant transformer combining native "

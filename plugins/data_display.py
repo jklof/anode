@@ -36,7 +36,7 @@ except ImportError:
 # 1. DSP Node Logic Class (Zero-Allocation on Audio Thread)
 # ==============================================================================
 class DataDisplayNode(Node):
-    category = "Visual"
+    category = "Visual & Analysis"
     label = "Data Display"
     description = (
         "HUD statistics display: every ~4 blocks it analyzes a private copy of "

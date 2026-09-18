@@ -39,7 +39,7 @@ MAX_FREQ = 20000.0
 # DSP Node Logic (per-channel sliding FFT, zero net allocations)
 # ==============================================================================
 class SpectrumDisplay(Node):
-    category = "Visual"
+    category = "Visual & Analysis"
     label = "Spectrum Visualizer"
     description = (
         "Real-time FFT spectrum analyzer with log-frequency display. Computes a "

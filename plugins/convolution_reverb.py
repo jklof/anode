@@ -100,7 +100,7 @@ class ReverbWidget(QWidget):
 
 
 class ConvolutionReverb(Node):
-    category = "Effects"
+    category = "Time & Space"
     label = "Convolution Reverb"
     description = (
         "Partitioned frequency-domain convolution reverb. Impulse responses are "

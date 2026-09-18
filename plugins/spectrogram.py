@@ -86,7 +86,7 @@ MAX_FREQ = 20000.0
 # 2. Node DSP Logic (per-channel sliding FFT, zero net allocations)
 # ==============================================================================
 class SpectrogramDisplay(Node):
-    category = "Visual"
+    category = "Visual & Analysis"
     label = "Spectrogram"
     description = (
         "Scrolling spectrogram visualizer with selectable colormap and dB range "

@@ -37,7 +37,7 @@ def test_envelope_registration_and_library_load():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("EnvelopeFollower")
     assert cls is not None
-    assert cls.category == "Utilities"
+    assert cls.category == "Modulation"
     node = make_node()
     assert node.error_msg is None, f"native library failed to load: {node.error_msg}"
 

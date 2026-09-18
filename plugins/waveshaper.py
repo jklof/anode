@@ -18,7 +18,7 @@ MODES = ["Tanh (Tape)", "Soft Clip", "Hard Clip", "Wavefolder", "Asymmetric Tube
 
 
 class WaveShaper(Node):
-    category = "Effects"
+    category = "Distortion & Amp"
     label = "WaveShaper / Saturation"
     description = (
         "Zero-latency nonlinear saturation with five transfer functions: Tanh "

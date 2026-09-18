@@ -18,7 +18,7 @@ from base import Node, CHANNELS, BLOCK_SIZE, DTYPE
 
 
 class MathOp(Node):
-    category = "Utilities"
+    category = "Modulation"
     label = "Math Operator"
     description = (
         "Vectorized arithmetic and CV conditioner. Applies Add, Subtract, "

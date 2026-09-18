@@ -87,7 +87,7 @@ def test_deesser_registration_docs_and_telemetry():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("DeEsser")
     assert cls is not None
-    assert cls.category == "Effects"
+    assert cls.category == "Filters & Dynamics"
     assert cls.label
     assert cls.description
     node = make_node()

@@ -76,7 +76,7 @@ def _pop_newest(queue_in):
 
 
 class VocosResynthesizer(Node):
-    category = "Effects"
+    category = "Voice & Pitch"
     label = "Vocos Neural Resynthesizer"
     description = (
         "Real-time neural vocal resynthesizer powered by Vocos ONNX. Takes pitch/formant "

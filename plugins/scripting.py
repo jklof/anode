@@ -153,7 +153,7 @@ class ScriptNode(Node):
     USE ONLY FOR PROTOTYPING AND OFFLINE PROCESSING.
     Do not use in production real-time audio pipelines.
     """
-    category = "Utilities"
+    category = "Experimental"
     label = "Script Node (Non-RT)"
 
     def __init__(self, name=""):

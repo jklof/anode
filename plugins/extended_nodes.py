@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class Note(Node):
-    category = "Visual"
+    category = "Visual & Analysis"
     label = "Comment / Note"
     description = (
         "Canvas annotation node. Holds a free-form text string and processes no "
@@ -29,7 +29,7 @@ class Note(Node):
 
 
 class Noise(Node):
-    category = "Sources"
+    category = "Instruments"
     label = "White Noise"
     description = (
         "Uniform white noise generator: each sample is drawn from [-1, 1) and "
@@ -55,7 +55,7 @@ class Noise(Node):
 
 
 class Selector(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "A/B Selector"
     description = (
         "Passes one of two inputs to the output based on a menu parameter: "

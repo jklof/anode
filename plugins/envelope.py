@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class EnvelopeFollower(FFINode):
-    category = "Utilities"
+    category = "Modulation"
     label = "Envelope Follower"
     description = (
         "Native C++ peak or RMS envelope extractor with hysteresis gate. All "

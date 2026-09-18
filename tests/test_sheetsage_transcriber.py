@@ -95,7 +95,7 @@ w: la la
 # registration
 # ----------------------------------------------------------------------
 def test_registration(node_cls):
-    assert node_cls.category == "Utilities"
+    assert node_cls.category == "Offline"
     assert node_cls.label == "SheetSage2 Transcriber"
 
 

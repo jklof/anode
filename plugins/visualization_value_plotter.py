@@ -102,7 +102,7 @@ def _zero_line_y(h, min_v, max_v):
 # DSP Node Logic (zero allocation on audio thread)
 # ==============================================================================
 class ValuePlotterNode(Node):
-    category = "Visual"
+    category = "Visual & Analysis"
     label = "Value Plotter"
     description = (
         "Real-time scrolling line plot for control voltages, envelopes, and "

@@ -23,7 +23,7 @@ from base import Node, BLOCK_SIZE, SAMPLE_RATE, DTYPE
 # ADSRNode — sample-accurate multi-stage envelope generator (Utilities)
 # ==============================================================================
 class ADSRNode(Node):
-    category = "Utilities"
+    category = "Modulation"
     label = "ADSR Envelope"
     description = (
         "Multi-stage attack-decay-sustain-release envelope generator driven by "
@@ -134,7 +134,7 @@ class ADSRNode(Node):
 # LFONode — multi-waveform low-frequency oscillator with sync (Sources)
 # ==============================================================================
 class LFONode(Node):
-    category = "Sources"
+    category = "Modulation"
     label = "LFO"
     description = (
         "Multi-waveform low-frequency oscillator providing simultaneous Sine, "
@@ -224,7 +224,7 @@ class LFONode(Node):
 # GateButtonNode — interactive manual gate trigger (Sources)
 # ==============================================================================
 class GateButtonNode(Node):
-    category = "Sources"
+    category = "Modulation"
     label = "Gate Button"
     description = (
         "Interactive manual gate trigger for pulsing or latching control signals."

@@ -27,7 +27,7 @@ from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE
 
 
 class SignalsmithVocal(FFINode):
-    category = "Effects"
+    category = "Voice & Pitch"
     label = "Signalsmith Vocal Transformer"
     description = (
         "Sub-band pitch and formant transformer powered by Signalsmith "

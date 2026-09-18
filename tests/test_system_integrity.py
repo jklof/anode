@@ -11,7 +11,7 @@ def test_plugin_metadata_integrity():
     """
     plugin_system.load_plugins("plugins")
 
-    known_categories = {"Sources", "Utilities", "Effects", "I/O", "Visual", "Uncategorized", "MIDI"}
+    known_categories = {"Instruments", "I/O", "MIDI", "Modulation", "Mix & Stereo", "Filters & Dynamics", "Distortion & Amp", "Time & Space", "Voice & Pitch", "Visual & Analysis", "Offline", "Experimental", "Uncategorized"}
 
     for name, cls in plugin_system.NODE_REGISTRY.items():
         # 1. Check for Label

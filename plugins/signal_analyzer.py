@@ -27,7 +27,7 @@ from base import Node, BLOCK_SIZE, CHANNELS, DTYPE
 
 
 class SignalAnalyzer(Node):
-    category = "Utilities"
+    category = "Visual & Analysis"
     label = "Signal Analyzer"
     description = (
         "Real-time signal analysis node. Computes block-rate RMS, peak amplitude, "

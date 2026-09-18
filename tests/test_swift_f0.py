@@ -28,7 +28,7 @@ def sine_block(freq=440.0, amp=0.5):
 
 def test_swift_f0_registration_and_metadata():
     node = make_node()
-    assert node.category == "Utilities"
+    assert node.category == "Voice & Pitch"
     assert node.label == "SwiftF0 Pitch & MIDI Tracker"
     assert len(node.description) >= 15
 

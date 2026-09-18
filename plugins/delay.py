@@ -5,7 +5,7 @@ class SimpleDelay(FFINode):
     # Matches compiled library name (delay.dll / libdelay.so)
     LIB_NAME = "delay"
 
-    category = "Effects"
+    category = "Time & Space"
     label = "Digital Delay"
     description = (
         "Native C++ feedback delay line with dry/wet mix. Feedback above 1.0 "

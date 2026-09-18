@@ -27,6 +27,15 @@ pip install -e . -v
 python main.py
 ```
 
+## test
+Always run with the environment activated — activation puts `Library\bin`
+on `PATH`, which native-library discovery depends on (without it, e.g.
+`import soundfile` fails even though `libsndfile` is installed).
+```bash
+conda activate anode-dev
+python -m pytest tests/ -q
+```
+
 ## remove the environment
 ```bash
 conda deactivate

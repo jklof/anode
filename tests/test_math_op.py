@@ -37,7 +37,7 @@ def test_math_op_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("MathOp")
     assert cls is not None
-    assert cls.category == "Utilities"
+    assert cls.category == "Modulation"
     assert len(cls.OPERATIONS) == 10
 
 

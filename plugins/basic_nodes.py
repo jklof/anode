@@ -5,7 +5,7 @@ from base import Node, BLOCK_SIZE, DTYPE, SAMPLE_RATE, CHANNELS
 
 
 class SineOscillator(Node):
-    category = "Sources"
+    category = "Instruments"
     label = "Sine Oscillator"
     description = (
         "Pure sine wave generator: phase accumulates at the incoming frequency, "
@@ -53,7 +53,7 @@ class SineOscillator(Node):
 
 
 class StereoToMono(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Stereo to Mono"
     description = (
         "Downmixes a stereo input to mono by averaging the left and right channels "
@@ -81,7 +81,7 @@ class StereoToMono(Node):
 
 
 class MonoToStereo(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Mono to Stereo"
     description = (
         "Upmixes mono (or stereo) input to stereo with an equal-power pan law: "
@@ -109,7 +109,7 @@ class MonoToStereo(Node):
 
 
 class Gain(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Gain"
     description = (
         "Simple linear gain stage: output = input * gain. The 'mod' input is "
@@ -139,7 +139,7 @@ class Gain(Node):
 
 
 class ChannelSplitter(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Channel Splitter"
     description = (
         "Splits the channels of an input signal into separate mono outputs: "
@@ -169,7 +169,7 @@ class ChannelSplitter(Node):
 
 
 class ChannelJoiner(Node):
-    category = "Utilities"
+    category = "Mix & Stereo"
     label = "Channel Joiner"
     description = (
         "Joins two mono signals into a single stereo signal: 'left' becomes "
@@ -205,7 +205,7 @@ class ChannelJoiner(Node):
 
 
 class DialNode(Node):
-    category = "Sources"
+    category = "Modulation"
     label = "Dial"
     description = (
         "Constant CV source: outputs the 'value' parameter as a static signal on "

@@ -41,9 +41,9 @@ def test_modulation_registration():
         for p in doc["params"].values():
             assert p["help"], f"{name} param missing help"
 
-    assert plugin_system.NODE_REGISTRY["LFONode"].category == "Sources"
-    assert plugin_system.NODE_REGISTRY["GateButtonNode"].category == "Sources"
-    assert plugin_system.NODE_REGISTRY["ADSRNode"].category == "Utilities"
+    assert plugin_system.NODE_REGISTRY["LFONode"].category == "Modulation"
+    assert plugin_system.NODE_REGISTRY["GateButtonNode"].category == "Modulation"
+    assert plugin_system.NODE_REGISTRY["ADSRNode"].category == "Modulation"
 
 
 # --------------------------------------------------------------------------

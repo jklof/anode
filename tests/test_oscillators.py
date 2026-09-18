@@ -52,7 +52,7 @@ def test_oscillator_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("WaveformOscillator")
     assert cls is not None
-    assert cls.category == "Sources"
+    assert cls.category == "Instruments"
     assert cls.label == "Waveform Oscillator"
 
 
@@ -185,7 +185,7 @@ def test_colored_noise_registration():
     plugin_system.load_plugins("plugins")
     cls = plugin_system.NODE_REGISTRY.get("ColoredNoise")
     assert cls is not None
-    assert cls.category == "Sources"
+    assert cls.category == "Instruments"
     assert cls.label == "Colored Noise Generator"
 
 
