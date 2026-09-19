@@ -446,3 +446,46 @@ def test_file_source_load_state_relinks(registry, tmp_path):
     gone.load_state(gone.to_dict())
     assert gone.outputs["abc"].uri == ""
     assert gone._status == "Idle"
+
+
+def test_complete_pushes_telemetry_and_snapshot(registry, tmp_path, monkeypatch):
+    """A trigger-staged load must notify the UI immediately: direct
+    set()+sync() emits no param_update and no snapshot, so without an
+    explicit push the editor would refresh only on the next unrelated
+    graph change."""
+    import queue
+    import text_notes
+    monkeypatch.setattr(text_notes, "REPO_ROOT", tmp_path)
+    src = tmp_path / "plan.abc"
+    src.write_text("X:1\nK:C\nC D|\n", encoding="utf-8")
+    node = registry["ABCNote"]()
+    out_q = queue.SimpleQueue()
+    snapshots = []
+    from types import SimpleNamespace
+    node.graph = SimpleNamespace(
+        engine=SimpleNamespace(output_queue=out_q,
+                               _emit_snapshot=lambda: snapshots.append(True)))
+    node._io_epoch = 1
+    result = node._io_nrt({"op": "load", "path": str(src), "epoch": 1})
+    node.on_nrt_complete("io", True, result)
+    assert snapshots == [True]
+    msg = out_q.get_nowait()
+    assert msg["type"] == "telemetry"
+    assert msg["node_data"][node.id]["status"] == "Ready"
+
+
+def test_focused_editor_holds_then_applies_on_focus_out(qapp, registry):
+    import sys
+    from PySide6.QtCore import QEvent
+    node = registry["TextNote"]()
+    proxy = _StubProxy(_widget_params(node.params["text"].value))
+    widget = sys.modules["text_notes"].TextNoteWidget(proxy)
+    widget.editor.setPlainText("user draft")
+    widget.editor.hasFocus = lambda: True  # simulate in-progress typing
+    widget.update_from_params({"text": "remote text"})
+    assert widget.editor.toPlainText() == "user draft"  # not clobbered...
+    assert widget._pending_text == "remote text"  # ...nor dropped
+    widget.editor.hasFocus = lambda: False
+    widget.eventFilter(widget.editor, QEvent(QEvent.FocusOut))
+    assert widget.editor.toPlainText() == "remote text"
+    assert widget._pending_text is None

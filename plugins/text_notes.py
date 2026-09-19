@@ -69,7 +69,7 @@ try:
         QLabel, QListWidget, QSizePolicy,
     )
     from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont
-    from PySide6.QtCore import Qt, QSignalBlocker
+    from PySide6.QtCore import Qt, QSignalBlocker, QEvent
 
     GUI_AVAILABLE = True
 except ImportError:
@@ -300,6 +300,29 @@ class _NoteNodeBase(Node):
         self._status_detail = result.get("summary") or Path(result["path"]).name
         self.params["last_path"].set(result["path"])
         self.params["last_path"].sync()
+        self._refresh_ui()
+
+    def _refresh_ui(self):
+        """Push telemetry + snapshot now so a trigger-staged load updates the
+        editor immediately. The direct set()+sync() above emits neither the
+        param_update side-channel nor a snapshot, so without this the widget
+        text would refresh only on the next unrelated graph change (same
+        rationale as AudioCppJob._refresh_ui; completions are rare)."""
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        if engine is None:
+            return
+        try:
+            engine.output_queue.put_nowait(
+                {"type": "telemetry", "node_data": {self.id: self.get_telemetry()}})
+        except Exception:
+            pass
+        emit = getattr(engine, "_emit_snapshot", None)
+        if callable(emit):
+            try:
+                emit()
+            except Exception:
+                pass
 
     def load_state(self, data: dict):
         super().load_state(data)
@@ -536,6 +559,10 @@ if GUI_AVAILABLE:
             self.editor.setFont(QFont("Courier New", 10))
             self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
             self.editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            # Pending backend text (see update_from_params): applied on
+            # focus-out so remote loads never clobber in-progress typing.
+            self._pending_text = None
+            self.editor.installEventFilter(self)
             if self.USE_ABC_HIGHLIGHT:
                 self.highlighter = ABCSyntaxHighlighter(self.editor.document())
             init_text = self.proxy.node_item.params.get(self.TEXT_PARAM, {}).get("value", "")
@@ -611,10 +638,29 @@ if GUI_AVAILABLE:
         def update_from_params(self, params):
             if self.TEXT_PARAM in params:
                 val = params[self.TEXT_PARAM]
-                if self.editor.toPlainText() != val and not self.editor.hasFocus():
+                if self.editor.toPlainText() != val:
+                    if self.editor.hasFocus():
+                        # Typing in progress: hold for focus-out instead of
+                        # clobbering (or silently dropping) the backend text.
+                        self._pending_text = val
+                    else:
+                        self._pending_text = None
+                        with QSignalBlocker(self.editor):
+                            self.editor.setPlainText(val)
+                        self._refresh_sections()
+
+        def eventFilter(self, obj, event):
+            if obj is self.editor and event.type() == QEvent.FocusOut:
+                self._apply_pending_text()
+            return super().eventFilter(obj, event)
+
+        def _apply_pending_text(self):
+            if self._pending_text is not None:
+                if self.editor.toPlainText() != self._pending_text:
                     with QSignalBlocker(self.editor):
-                        self.editor.setPlainText(val)
+                        self.editor.setPlainText(self._pending_text)
                     self._refresh_sections()
+                self._pending_text = None
 
 
     class TextNoteWidget(_NoteWidgetBase):
