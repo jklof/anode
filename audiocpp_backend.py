@@ -206,6 +206,49 @@ def qwen3_asr_fetch_specs(model_dir):
             for rel, size, sha in QWEN3_ASR_FILES]
 
 
+QWEN3_ALIGN_HF_BASE = "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/main"
+# (repo-relative path, size bytes, sha256). Single-file GGUF with embedded
+# sidecars. Single default Q8 profile only (pinned from the HF tree API:
+# the LFS oid there is the file sha256, same convention as QWEN3_ASR_FILES).
+QWEN3_ALIGN_FILES = [
+    ("Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf", 1129966496,
+     "75209490b11cec2b0db749ca5f4ff92266f58efd30f7fd04d9eb2a3ac9cc929f"),
+]
+QWEN3_ALIGN_DEFAULT_GGUF = "qwen3-forced-aligner-0.6b-q8_0.gguf"
+
+
+def qwen3_align_fetch_specs(model_dir):
+    """DownloadSpecs for the Qwen3 Forced Aligner GGUF model (self-contained)."""
+    model_dir = Path(model_dir)
+    return [DownloadSpec(f"{QWEN3_ALIGN_HF_BASE}/{rel}", model_dir / Path(rel).name,
+                         size, sha, label=f"Qwen3-ForcedAligner model: {Path(rel).name}")
+            for rel, size, sha in QWEN3_ALIGN_FILES]
+
+
+BS_ROFORMER_HF_BASE = "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/main"
+# (repo-relative path, size bytes, sha256). Default ep368 Q8 package only
+# (pinned from the HF tree API: the LFS oid there is the file sha256, same
+# convention as QWEN3_ASR_FILES). Single self-contained GGUF with embedded
+# package spec + config.
+BS_ROFORMER_FILES = [
+    ("BS-RoFormer-ep368-GGUF/bs-roformer-ep368-q8_0.gguf", 172532256,
+     "9a55a8cad369d00f6e0fb208bb0cd87e30e25430772b8491e20a4eace6423ad2"),
+]
+BS_ROFORMER_DEFAULT_GGUF = "bs-roformer-ep368-q8_0.gguf"
+BS_ROFORMER_WEIGHT_TYPES = ("native", "f32", "f16", "bf16", "q8_0")
+# Package overlap default (ep368): the CLI falls back to the package config
+# when the session option is omitted, so the default is omitted, not sent.
+BS_ROFORMER_DEFAULT_NUM_OVERLAP = 4
+
+
+def bs_roformer_fetch_specs(model_dir):
+    """DownloadSpecs for the BS-RoFormer GGUF model (self-contained)."""
+    model_dir = Path(model_dir)
+    return [DownloadSpec(f"{BS_ROFORMER_HF_BASE}/{rel}", model_dir / Path(rel).name,
+                         size, sha, label=f"BS-RoFormer model: {Path(rel).name}")
+            for rel, size, sha in BS_ROFORMER_FILES]
+
+
 _HEADER_LINE_RE = re.compile(r"^[A-Za-z]:")
 _CHORD_RE = re.compile(r'"[^"\n]*"')
 _LYRIC_SECTION_RE = re.compile(r"^\s*\[[^\[\]\n]{1,40}\]\s*$")
@@ -372,8 +415,31 @@ def run_sheetsage_transcribe(cli, model_dir, *, audio_wav, weight_type="native",
     return {"abc": str(out_abc), "metrics": _parse_metrics(output_tail)}
 
 
+SILERO_VAD_URL = (
+    "https://raw.githubusercontent.com/0xShug0/audio.cpp/"
+    f"{AUDIOCPP_PIN_VERSION}/assets/framework/models/silero_vad/"
+    "silero_vad_16k.safetensors"
+)
+# (filename, size bytes, sha256). Upstream publishes no content hash, so
+# integrity is size-checked only (same convention as SHEETSAGE_FILES).
+# Version-pinned to the runtime: blob sha identical on main and v0.8.1.
+SILERO_VAD_FILES = [
+    ("silero_vad_16k.safetensors", 1239748, None),
+]
+SILERO_VAD_FILENAME = "silero_vad_16k.safetensors"
+
+
+def silero_vad_fetch_specs(model_dir):
+    """DownloadSpecs for the Silero VAD asset (bundled chunking model)."""
+    model_dir = Path(model_dir)
+    return [DownloadSpec(f"{SILERO_VAD_URL}", model_dir / name,
+                         size, sha, label=f"Silero VAD: {name}")
+            for name, size, sha in SILERO_VAD_FILES]
+
+
 def _build_qwen3_asr_argv(cli, gguf, *, audio_wav, language, max_tokens,
-                          out_txt, backend="cuda"):
+                          out_txt, backend="cuda", forced_aligner=None,
+                          words_out=None, vad_model=None):
     """Pure argv builder (no process). Tested without a GPU."""
     if (not isinstance(max_tokens, int) or isinstance(max_tokens, bool)
             or max_tokens < 1):
@@ -381,6 +447,12 @@ def _build_qwen3_asr_argv(cli, gguf, *, audio_wav, language, max_tokens,
     if language is not None and (not isinstance(language, str)
                                  or not language.strip()):
         raise ValueError("language must be a non-empty string or None")
+    if (forced_aligner is None) != (words_out is None):
+        raise ValueError(
+            "forced_aligner and words_out must be given together")
+    if forced_aligner is not None and not vad_model:
+        raise ValueError(
+            "vad_model is required with words_out (VAD chunking)")
     argv = [
         str(cli), "--task", "asr", "--family", "qwen3_asr",
         "--model", str(gguf), "--backend", backend, "--threads", "8",
@@ -390,16 +462,36 @@ def _build_qwen3_asr_argv(cli, gguf, *, audio_wav, language, max_tokens,
     ]
     if language:
         argv += ["--language", language]
+    if forced_aligner is not None:
+        # Long-audio timestamping: the sidecar chunks the audio first and
+        # aligns each recognized transcript to its matching chunk. Fixed
+        # chunking is pinned because v0.8.1's VAD chunking with --words-out
+        # stops after the first chunk (3 words of a 4.6 min song in
+        # testing); fixed traverses the whole file. The VAD override points
+        # at our fetched copy: the CLI default
+        # (assets/framework/models/silero_vad, relative to the audio.cpp
+        # checkout) is not shipped with the runtime archives.
+        argv += ["--session-option",
+                 f"qwen3_asr.forced_aligner_model_path={forced_aligner}",
+                 "--session-option",
+                 f"qwen3_asr.vad_model_path={vad_model}",
+                 "--audio-chunk-mode", "fixed",
+                 "--words-out", str(words_out)]
     return argv
 
 
 def run_qwen3_asr(cli, gguf, *, audio_wav, language=None,
                   max_tokens=QWEN3_ASR_DEFAULT_MAX_TOKENS,
                   out_txt, cancel_event=None, timeout_s=3600,
-                  backend=None):
+                  backend=None, forced_aligner=None, words_out=None,
+                  vad_model=None):
     """Transcribe speech to a transcript text file. Blocking; NRT only.
 
-    Returns ``{"txt": str, "metrics": dict}``. Raises
+    With ``forced_aligner`` + ``words_out`` (+ ``vad_model``) the sidecar
+    additionally writes word timestamps (the long-audio path: VAD-chunk
+    first, align per chunk).
+
+    Returns ``{"txt": str, "words": str | None, "metrics": dict}``. Raises
     :class:`GenerationCancelled` on cancellation, ``RuntimeError`` /
     ``ValueError`` / ``FileNotFoundError`` on failure.
     """
@@ -412,13 +504,30 @@ def run_qwen3_asr(cli, gguf, *, audio_wav, language=None,
             f"Qwen3-ASR weights not downloaded: {gguf} "
             "(run tools/audiocpp/fetch_qwen3_asr_gguf.py)"
         )
+    if forced_aligner is not None and not Path(forced_aligner).exists():
+        raise FileNotFoundError(
+            f"Qwen3-ForcedAligner weights not downloaded: {forced_aligner} "
+            "(run tools/audiocpp/fetch_qwen3_align_gguf.py)"
+        )
+    if (forced_aligner is not None
+            and (vad_model is None or not Path(vad_model).exists())):
+        raise FileNotFoundError(
+            f"Silero VAD model not downloaded: {vad_model} "
+            "(run tools/audiocpp/fetch_silero_vad.py)"
+        )
     if not audio_wav.exists():
         raise FileNotFoundError(f"input audio not found: {audio_wav}")
+    words_path = Path(words_out) if words_out is not None else None
     argv = _build_qwen3_asr_argv(cli, gguf, audio_wav=audio_wav,
                                  language=language, max_tokens=max_tokens,
                                  out_txt=out_txt,
-                                 backend=backend or default_backend())
+                                 backend=backend or default_backend(),
+                                 forced_aligner=forced_aligner,
+                                 words_out=words_path,
+                                 vad_model=vad_model)
     out_txt.parent.mkdir(parents=True, exist_ok=True)
+    if words_path is not None:
+        words_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -456,7 +565,203 @@ def run_qwen3_asr(cli, gguf, *, audio_wav, language=None,
         )
     if not out_txt.exists():
         raise RuntimeError("audio.cpp reported success but wrote no transcript file")
-    return {"txt": str(out_txt), "metrics": _parse_metrics(output_tail)}
+    words = None
+    if words_path is not None:
+        if not words_path.exists():
+            raise RuntimeError("audio.cpp reported success but wrote no words file")
+        words = str(words_path)
+    return {"txt": str(out_txt), "words": words,
+            "metrics": _parse_metrics(output_tail)}
+
+
+def _build_qwen3_align_argv(cli, gguf, *, audio_wav, text, language,
+                            out_words, backend="cuda",
+                            clamp_timestamps=False):
+    """Pure argv builder (no process). Tested without a GPU."""
+    if not text or not text.strip():
+        raise ValueError("text must be the non-empty exact transcript to align")
+    if not isinstance(language, str) or not language.strip():
+        raise ValueError("language must be a non-empty string")
+    if not out_words or not str(out_words).strip():
+        raise ValueError("out_words must be a non-empty words output path")
+    argv = [
+        str(cli), "--task", "align", "--family", "qwen3_forced_aligner",
+        "--model", str(gguf), "--backend", backend, "--threads", "8",
+        "--audio", str(audio_wav), "--text", text,
+        "--language", language,
+        "--words-out", str(out_words), "--metrics",
+    ]
+    if clamp_timestamps:
+        argv += ["--request-option", "clamp_timestamps_to_audio"]
+    return argv
+
+
+def run_qwen3_align(cli, gguf, *, audio_wav, text, language,
+                    out_words, cancel_event=None, timeout_s=3600,
+                    backend=None, clamp_timestamps=False):
+    """Align an exact transcript to speech, writing a words JSON file.
+
+    Blocking; NRT only. Returns ``{"words": str, "metrics": dict}``.
+    Raises :class:`GenerationCancelled` on cancellation, ``RuntimeError`` /
+    ``ValueError`` / ``FileNotFoundError`` on failure.
+    """
+    cli, gguf = Path(cli), Path(gguf)
+    audio_wav, out_words = Path(audio_wav), Path(out_words)
+    if not cli.exists():
+        raise FileNotFoundError(f"audiocpp_cli not found: {cli}")
+    if not gguf.exists():
+        raise FileNotFoundError(
+            f"Qwen3-ForcedAligner weights not downloaded: {gguf} "
+            "(run tools/audiocpp/fetch_qwen3_align_gguf.py)"
+        )
+    if not audio_wav.exists():
+        raise FileNotFoundError(f"input audio not found: {audio_wav}")
+    argv = _build_qwen3_align_argv(cli, gguf, audio_wav=audio_wav,
+                                   text=text, language=language,
+                                   out_words=out_words,
+                                   backend=backend or default_backend(),
+                                   clamp_timestamps=clamp_timestamps)
+    out_words.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, **_no_window_kwargs(),
+        )
+    except OSError as e:
+        raise RuntimeError(f"failed to launch audio.cpp: {e}")
+    try:
+        elapsed = 0.0
+        step = 0.5
+        output_tail = ""
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelled("alignment cancelled")
+            try:
+                # May be retried after TimeoutExpired; returns full output.
+                output_tail, _ = proc.communicate(timeout=step)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed += step
+                if elapsed >= timeout_s:
+                    raise TimeoutError(
+                        f"Qwen3 forced alignment exceeded {timeout_s}s; terminating"
+                    )
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"audio.cpp exited with code {proc.returncode}: "
+            f"{output_tail[-2000:].strip()}"
+        )
+    if not out_words.exists():
+        raise RuntimeError("audio.cpp reported success but wrote no words file")
+    return {"words": str(out_words), "metrics": _parse_metrics(output_tail)}
+
+
+def _build_bs_roformer_argv(cli, gguf, *, audio_wav, weight_type,
+                            num_overlap, out_dir, backend="cuda"):
+    """Pure argv builder (no process). Tested without a GPU.
+
+    Standalone-GGUF route (no --family, per upstream docs): --model points
+    at the GGUF file. num_overlap at the package default is omitted so the
+    CLI keeps its stock boundary-blending behavior.
+    """
+    if weight_type not in BS_ROFORMER_WEIGHT_TYPES:
+        raise ValueError(f"weight_type must be one of {BS_ROFORMER_WEIGHT_TYPES}")
+    if (not isinstance(num_overlap, int) or isinstance(num_overlap, bool)
+            or num_overlap < 1):
+        raise ValueError("num_overlap must be an integer >= 1")
+    argv = [
+        str(cli), "--task", "sep",
+        "--model", str(gguf), "--backend", backend, "--threads", "8",
+        "--session-option", f"bs_roformer.weight_type={weight_type}",
+        "--audio", str(audio_wav),
+        "--out-dir", str(out_dir), "--metrics",
+    ]
+    if num_overlap != BS_ROFORMER_DEFAULT_NUM_OVERLAP:
+        # Insert before --audio to keep session options grouped.
+        argv.insert(argv.index("--audio"),
+                    f"bs_roformer.num_overlap={num_overlap}")
+        argv.insert(argv.index("--audio"), "--session-option")
+    return argv
+
+
+def run_bs_roformer(cli, gguf, *, audio_wav, weight_type="native",
+                    num_overlap=BS_ROFORMER_DEFAULT_NUM_OVERLAP,
+                    out_dir, cancel_event=None, timeout_s=3600,
+                    backend=None):
+    """Separate one mixture into vocals (+ derived instrumental). Blocking.
+
+    NRT only. Returns ``{"stems_dir": str, "vocals": str, "instrumental":
+    str | None, "metrics": dict}``. ``instrumental`` is None when the CLI
+    writes vocals only (tolerated, not an error). Raises
+    :class:`GenerationCancelled` on cancellation, ``RuntimeError`` /
+    ``ValueError`` / ``FileNotFoundError`` on failure.
+    """
+    cli, gguf = Path(cli), Path(gguf)
+    audio_wav, out_dir = Path(audio_wav), Path(out_dir)
+    if not cli.exists():
+        raise FileNotFoundError(f"audiocpp_cli not found: {cli}")
+    if not gguf.exists():
+        raise FileNotFoundError(
+            f"BS-RoFormer weights not downloaded: {gguf} "
+            "(run tools/audiocpp/fetch_bs_roformer_gguf.py)"
+        )
+    if not audio_wav.exists():
+        raise FileNotFoundError(f"input audio not found: {audio_wav}")
+    argv = _build_bs_roformer_argv(cli, gguf, audio_wav=audio_wav,
+                                   weight_type=weight_type,
+                                   num_overlap=num_overlap,
+                                   out_dir=out_dir,
+                                   backend=backend or default_backend())
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, **_no_window_kwargs(),
+        )
+    except OSError as e:
+        raise RuntimeError(f"failed to launch audio.cpp: {e}")
+    try:
+        elapsed = 0.0
+        step = 0.5
+        output_tail = ""
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelled("separation cancelled")
+            try:
+                # May be retried after TimeoutExpired; returns full output.
+                output_tail, _ = proc.communicate(timeout=step)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed += step
+                if elapsed >= timeout_s:
+                    raise TimeoutError(
+                        f"BS-RoFormer separation exceeded {timeout_s}s; terminating"
+                    )
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"audio.cpp exited with code {proc.returncode}: "
+            f"{output_tail[-2000:].strip()}"
+        )
+    vocals = out_dir / "vocals.wav"
+    if not vocals.exists():
+        raise RuntimeError("audio.cpp reported success but wrote no vocals.wav")
+    instrumental = out_dir / "instrumental.wav"
+    return {"stems_dir": str(out_dir),
+            "vocals": str(vocals),
+            "instrumental": str(instrumental) if instrumental.exists() else None,
+            "metrics": _parse_metrics(output_tail)}
 
 
 class GenerationCancelled(RuntimeError):

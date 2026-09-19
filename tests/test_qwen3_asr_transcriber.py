@@ -519,3 +519,324 @@ def test_build_fetch_payload_lists_missing(node_cls, tmp_path, monkeypatch):
     payload = node._build_fetch_payload()
     assert payload["runtime"] == []
     assert payload["models"] == []
+
+
+# ----------------------------------------------------------------------
+# word_timestamps path (chunked long-audio alignment via the aligner)
+# ----------------------------------------------------------------------
+def test_argv_words_options_omitted_by_default(tmp_path):
+    argv = _build_qwen3_asr_argv("cli", "m.gguf", backend="cuda", **_spec())
+    assert "--words-out" not in argv
+    assert not any("forced_aligner" in a for a in argv)
+
+
+def test_argv_words_options_emitted(tmp_path):
+    argv = _build_qwen3_asr_argv("cli", "m.gguf", backend="cuda", **_spec(),
+                                 forced_aligner="a.gguf",
+                                 words_out=str(tmp_path / "w.json"),
+                                 vad_model="v.onnx")
+    assert "qwen3_asr.forced_aligner_model_path=a.gguf" in argv
+    assert "qwen3_asr.vad_model_path=v.onnx" in argv
+    # Fixed chunking: v0.8.1's VAD chunking with --words-out stops after
+    # the first chunk; fixed traverses the whole file.
+    i = argv.index("--audio-chunk-mode")
+    assert argv[i + 1] == "fixed"
+    i = argv.index("--words-out")
+    assert argv[i + 1] == str(tmp_path / "w.json")
+
+
+def test_argv_transcript_only_has_no_chunk_mode(tmp_path):
+    argv = _build_qwen3_asr_argv("cli", "m.gguf", backend="cuda", **_spec())
+    assert "--audio-chunk-mode" not in argv
+
+
+def test_argv_words_options_must_pair(tmp_path):
+    with pytest.raises(ValueError, match="together"):
+        _build_qwen3_asr_argv("cli", "m.gguf", backend="cuda", **_spec(),
+                              forced_aligner="a.gguf")
+    with pytest.raises(ValueError, match="together"):
+        _build_qwen3_asr_argv("cli", "m.gguf", backend="cuda", **_spec(),
+                              words_out="w.json")
+
+
+def test_argv_words_requires_vad_model(tmp_path):
+    argv = _build_qwen3_asr_argv("cli", "m.gguf", backend="cuda", **_spec(),
+                                 forced_aligner="a.gguf",
+                                 words_out=str(tmp_path / "w.json"),
+                                 vad_model="v.onnx")
+    assert "qwen3_asr.vad_model_path=v.onnx" in argv
+    with pytest.raises(ValueError, match="vad_model"):
+        _build_qwen3_asr_argv("cli", "m.gguf", backend="cuda", **_spec(),
+                              forced_aligner="a.gguf",
+                              words_out=str(tmp_path / "w.json"))
+
+
+def test_run_asr_words_success(tmp_path, monkeypatch):
+    cli, gguf, audio = _model_files(tmp_path)
+    out = tmp_path / "run" / "transcript.txt"
+    words = tmp_path / "run" / "words.json"
+    aligner = tmp_path / "a.gguf"
+    aligner.write_text("x")
+    vad = tmp_path / "v.onnx"
+    vad.write_text("x")
+    seen = _patch_popen(monkeypatch)
+
+    def fake_popen_words(argv, **kwargs):
+        proc = _StubProc(argv, seen.get("out"), code=seen.get("code", 0),
+                         metrics_text=seen.get("text", ""))
+        if "--words-out" in argv:
+            w = Path(argv[argv.index("--words-out") + 1])
+            w.parent.mkdir(parents=True, exist_ok=True)
+            w.write_text('[{"w": "la"}]', encoding="utf-8")
+        seen["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(backend.subprocess, "Popen", fake_popen_words)
+    seen["out"] = str(out)
+    import threading
+    result = run_qwen3_asr(str(cli), str(gguf), audio_wav=str(audio),
+                           out_txt=str(out), cancel_event=threading.Event(),
+                           forced_aligner=str(aligner), words_out=str(words),
+                           vad_model=str(vad))
+    assert result["words"] == str(words)
+
+
+def test_run_asr_missing_vad_rejected(tmp_path):
+    import threading
+    cli, gguf, audio = _model_files(tmp_path)
+    aligner = tmp_path / "a.gguf"
+    aligner.write_text("x")
+    with pytest.raises(FileNotFoundError, match="Silero VAD"):
+        run_qwen3_asr(str(cli), str(gguf), audio_wav=str(audio),
+                      out_txt=str(tmp_path / "o.txt"),
+                      cancel_event=threading.Event(),
+                      forced_aligner=str(aligner),
+                      words_out=str(tmp_path / "w.json"),
+                      vad_model=str(tmp_path / "gone.onnx"))
+
+
+def test_run_asr_missing_aligner_rejected(tmp_path):
+    import threading
+    cli, gguf, audio = _model_files(tmp_path)
+    with pytest.raises(FileNotFoundError, match="ForcedAligner"):
+        run_qwen3_asr(str(cli), str(gguf), audio_wav=str(audio),
+                      out_txt=str(tmp_path / "o.txt"),
+                      cancel_event=threading.Event(),
+                      forced_aligner=str(tmp_path / "gone.gguf"),
+                      words_out=str(tmp_path / "w.json"))
+
+
+def test_run_asr_missing_words_output_rejected(tmp_path, monkeypatch):
+    cli, gguf, audio = _model_files(tmp_path)
+    out = tmp_path / "run" / "transcript.txt"
+    aligner = tmp_path / "a.gguf"
+    aligner.write_text("x")
+    vad = tmp_path / "v.onnx"
+    vad.write_text("x")
+    seen = _patch_popen(monkeypatch)  # stub writes txt only, no words
+    seen["out"] = str(out)
+    import threading
+    with pytest.raises(RuntimeError, match="no words file"):
+        run_qwen3_asr(str(cli), str(gguf), audio_wav=str(audio),
+                      out_txt=str(out), cancel_event=threading.Event(),
+                      forced_aligner=str(aligner),
+                      words_out=str(tmp_path / "run" / "words.json"),
+                      vad_model=str(vad))
+
+
+def _complete_lyrics_with_words(node, txt="l.txt", words="w.json"):
+    node.on_nrt_complete("job", True, {"text": "la la", "txt_path": txt,
+                                       "words_path": words,
+                                       "metrics": {"rtf": 0.2}})
+
+
+def test_complete_with_words_publishes_words_uri(node_cls):
+    node = make_node(node_cls)
+    _complete_lyrics_with_words(node, txt="l.txt", words="w.json")
+    assert node.outputs["lyrics"].uri == "l.txt"
+    assert node.outputs["words"].uri == "w.json"
+    assert node.params["last_words"].value == "w.json"
+    assert "+ words" in node._status_detail
+
+
+def test_complete_without_words_clears_stale_words(node_cls):
+    node = make_node(node_cls)
+    _complete_lyrics_with_words(node, txt="a.txt", words="w.json")
+    assert node.outputs["words"].uri == "w.json"
+    _complete_lyrics(node, txt="b.txt")  # legacy result without words
+    assert node.outputs["lyrics"].uri == "b.txt"
+    assert node.outputs["words"].uri == ""
+    assert node.params["last_words"].value == ""
+    assert "+ words" not in node._status_detail
+
+
+def test_relink_restores_words_uri(node_cls, tmp_path):
+    txt = tmp_path / "lyrics.txt"
+    txt.write_text("la la\n", encoding="utf-8")
+    words = tmp_path / "words.json"
+    words.write_text("[]", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["last_txt"].set(str(txt))
+    node.params["last_txt"].sync()
+    node.params["last_words"].set(str(words))
+    node.params["last_words"].sync()
+    node2 = make_node(node_cls)
+    node2.load_state(node.to_dict())
+    assert node2.outputs["lyrics"].uri == str(txt)
+    assert node2.outputs["words"].uri == str(words)
+    node2.process()  # relink must not pulse
+    assert torch.all(node2.done.buffer == 0.0)
+
+
+def test_relink_missing_words_clears_uri(node_cls, tmp_path):
+    txt = tmp_path / "lyrics.txt"
+    txt.write_text("la la\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["last_txt"].set(str(txt))
+    node.params["last_txt"].sync()
+    node.params["last_words"].set(str(tmp_path / "gone.json"))
+    node.params["last_words"].sync()
+    node2 = make_node(node_cls)
+    node2.load_state(node.to_dict())
+    assert node2.outputs["lyrics"].uri == str(txt)
+    assert node2.outputs["words"].uri == ""
+
+
+def test_build_spec_words_requires_aligner(node_cls, tmp_path, monkeypatch):
+    mod = _live()
+    # Hermetic: the dev machine may hold real weights at the repo-fixed dirs.
+    monkeypatch.setattr(mod, "ALIGNER_DIR", tmp_path / "align-missing")
+    monkeypatch.setattr(mod, "VAD_DIR", tmp_path / "vad-missing")
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
+
+        def check_ready(self):
+            return True, ""
+
+    monkeypatch.setattr(mod, "AudioCppRuntime", StubRuntime)
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "qwen3-asr-0.6b-q8_0.gguf").write_text("x")
+    audio = write_wav(tmp_path / "in.wav", seconds=0.2)
+    node = make_node(node_cls)
+    node.params["model_dir"].set(str(model_dir))
+    node.params["model_dir"].sync()
+    node.params["audio_file"].set(str(audio))
+    node.params["audio_file"].sync()
+    spec = node._build_spec()
+    assert spec["word_timestamps"] is False
+    assert spec["aligner_gguf"] is None
+    node.params["word_timestamps"].set(True)
+    node.params["word_timestamps"].sync()
+    with pytest.raises(ValueError, match="ForcedAligner"):
+        node._build_spec()
+
+
+def test_run_nrt_full_pipeline_with_words(node_cls, tmp_path, monkeypatch):
+    """Stub run_qwen3_asr writing both files; worker keeps both."""
+    mod = _live()
+    src = write_wav(tmp_path / "song.wav", seconds=0.5)
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    def fake_run(cli, gguf, **kw):
+        out = Path(kw["out_txt"])
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("la la la\n", encoding="utf-8")
+        assert kw["forced_aligner"] == "a.gguf"
+        assert kw["vad_model"] == "v.onnx"
+        words = Path(kw["words_out"])
+        words.write_text('[{"w": "la"}]', encoding="utf-8")
+        return {"txt": str(out), "words": str(words),
+                "metrics": {"rtf": 0.2}}
+
+    monkeypatch.setattr(mod, "run_qwen3_asr", fake_run)
+    node = make_node(node_cls)
+    spec = {"cli": "c", "model_dir": str(model_dir),
+            "gguf": "qwen3-asr-0.6b-q8_0.gguf", "audio_file": str(src),
+            "language": None, "max_tokens": 4096, "backend": "cpu",
+            "word_timestamps": True, "aligner_gguf": "a.gguf",
+            "vad_model": "v.onnx"}
+    import threading
+    result = node._run_nrt(threading.Event(), spec)
+    assert Path(result["words_path"]).name == "words.json"
+    import json
+    req = json.loads((Path(result["txt_path"]).parent / "request.json")
+                     .read_text())
+    assert req["word_timestamps"] is True
+    assert req["aligner_gguf"] == "a.gguf"
+    assert req["vad_model"] == "v.onnx"
+    node.on_nrt_complete("job", True, result)
+    assert node.outputs["words"].uri == result["words_path"]
+    assert "+ words" in node._status_detail
+
+
+def test_fetch_payload_includes_aligner_when_enabled(
+        node_cls, tmp_path, monkeypatch):
+    import audiocpp_backend
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.root = tmp_path / "tools" / "audiocpp"
+            self.bin_dir = self.root / "bin"
+            self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
+
+    monkeypatch.setattr(audiocpp_backend, "AudioCppRuntime", StubRuntime)
+    mod = _live()
+    # Hermetic: the dev machine may hold real weights at the repo-fixed dirs.
+    monkeypatch.setattr(mod, "ALIGNER_DIR", tmp_path / "align-missing")
+    monkeypatch.setattr(mod, "VAD_DIR", tmp_path / "vad-missing")
+    node = make_node(node_cls)
+    node.params["model_dir"].set(str(tmp_path / "models" / "Qwen3-ASR-GGUF"))
+    node.params["model_dir"].sync()
+    assert len(node._build_fetch_payload()["models"]) == 1
+    node.params["word_timestamps"].set(True)
+    node.params["word_timestamps"].sync()
+    payload = node._build_fetch_payload()
+    # NB: the aligner/VAD specs point at repo-fixed dirs, so only assert
+    # names here — materializing gigabyte placeholders is not an option.
+    names = sorted(s["dest"].split("/")[-1].split("\\")[-1]
+                   for s in payload["models"])
+    assert names == ["qwen3-asr-0.6b-q8_0.gguf",
+                     "qwen3-forced-aligner-0.6b-q8_0.gguf",
+                     "silero_vad_16k.safetensors"]
+
+
+def test_build_spec_words_requires_vad(node_cls, tmp_path, monkeypatch):
+    """Aligner present but VAD missing -> clear Silero error."""
+    mod = _live()
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
+
+        def check_ready(self):
+            return True, ""
+
+    monkeypatch.setattr(mod, "AudioCppRuntime", StubRuntime)
+    aligner_dir = tmp_path / "aligner"
+    aligner_dir.mkdir(parents=True, exist_ok=True)
+    (aligner_dir / "qwen3-forced-aligner-0.6b-q8_0.gguf").write_text("x")
+    monkeypatch.setattr(mod, "ALIGNER_DIR", aligner_dir)
+    monkeypatch.setattr(mod, "VAD_DIR", tmp_path / "vad-missing")
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "qwen3-asr-0.6b-q8_0.gguf").write_text("x")
+    audio = write_wav(tmp_path / "in.wav", seconds=0.2)
+    node = make_node(node_cls)
+    node.params["model_dir"].set(str(model_dir))
+    node.params["model_dir"].sync()
+    node.params["audio_file"].set(str(audio))
+    node.params["audio_file"].sync()
+    node.params["word_timestamps"].set(True)
+    node.params["word_timestamps"].sync()
+    with pytest.raises(ValueError, match="Silero VAD"):
+        node._build_spec()
+    vad_dir = tmp_path / "vad"
+    vad_dir.mkdir(parents=True, exist_ok=True)
+    (vad_dir / "silero_vad_16k.safetensors").write_text("x")
+    monkeypatch.setattr(mod, "VAD_DIR", vad_dir)
+    spec = node._build_spec()
+    assert spec["vad_model"].endswith("silero_vad_16k.safetensors")
