@@ -136,7 +136,8 @@ def _read_length(text, pos):
             pos += 1
         denom = text[start2:pos]
         num = int(digits) if digits else 1
-        return Fraction(num, int(denom) if denom else 2), pos
+        d = int(denom) if (denom and denom != "0") else 2
+        return Fraction(num, d), pos
     if digits:
         return Fraction(int(digits), 1), pos
     return Fraction(1, 1), pos

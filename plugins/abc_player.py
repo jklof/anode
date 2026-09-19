@@ -207,16 +207,18 @@ class ABCPlayer(Node):
         self._is_playing = True
 
     def _all_off(self):
-        """Emit note-offs for hanging notes at offset 0 and forget them."""
+        """Emit note-offs for hanging notes at end of block and forget them."""
         if not _MIDO_AVAILABLE:
             self._active = []
             return
         channel = int(self.params["channel"].value)
+        offset = BLOCK_SIZE - 1
         for midi_note, _off in self._active:
             self.midi_out.packet.messages.append(
-                (0, mido.Message("note_off", note=midi_note, velocity=0,
+                (offset, mido.Message("note_off", note=midi_note, velocity=0,
                                  channel=channel)))
         self._active = []
+        self.midi_out.packet.messages.sort(key=lambda m: m[0])
 
     def _on_trigger_edge(self):
         """Rising gate edge. With a wired, non-empty URI this loads a

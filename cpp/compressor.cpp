@@ -140,7 +140,7 @@ public:
 
         // 5. Apply Gain + Delay + Makeup
         for (int i = 0; i < frames; ++i) {
-            int read_head = (_write_head - (_delay_samples - 1) + _delay_samples) % _delay_samples;
+            int read_head = (_write_head + 1) % _delay_samples;
             
             for (int ch = 0; ch < channels; ++ch) {
                 size_t write_idx = static_cast<size_t>(ch) * _delay_samples + _write_head;

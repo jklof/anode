@@ -325,6 +325,7 @@ class InputSlot:
         for out in self.connected_outputs:
             if getattr(out, "slot_type", "audio") == "midi":
                 self._scratch_packet.messages.extend(out.packet.messages)
+        self._scratch_packet.messages.sort(key=lambda m: m[0])
         return self._scratch_packet
 
     def get_uri(self) -> str:
@@ -372,7 +373,11 @@ class Parameter:
         elif self.type == "bool":
             self._staging = bool(val)
         elif self.type == "menu":
-            self._staging = int(val)
+            idx = int(val)
+            items = self.meta.get("items")
+            if isinstance(items, (list, tuple)) and len(items) > 0:
+                idx = min(max(idx, 0), len(items) - 1)
+            self._staging = idx
         else:
             self._staging = val
 

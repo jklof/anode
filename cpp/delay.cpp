@@ -97,8 +97,9 @@ public:
 
                 // 3. Feedback Loop -> Buffer
                 float fb_val = dry + (wet * _feedback);
-                
-                // Soft clipping in feedback loop to prevent explosion
+
+                // Hard clamp in feedback loop to prevent explosion
+                // (not soft saturation; do not swap to tanh without DSP audition)
                 if (fb_val > 2.0f) fb_val = 2.0f;
                 else if (fb_val < -2.0f) fb_val = -2.0f;
 

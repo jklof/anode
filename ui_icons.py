@@ -162,7 +162,7 @@ def create_icon(icon_name: str) -> QIcon:
         text_color = app.palette().color(QPalette.ColorRole.ButtonText)
         hex_color = text_color.name()
 
-    colored_svg_data = _create_colored_svg(ICONS.get(icon_name), hex_color)
+    colored_svg_data = _create_colored_svg(ICONS.get(icon_name) or "", hex_color)
 
     pixmap = QPixmap()
     if not pixmap.loadFromData(colored_svg_data, "svg"):

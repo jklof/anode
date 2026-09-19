@@ -456,7 +456,6 @@ class AutoGain(Node):
         self._current_gain_lin = 1.0
         self._prev_gain_lin = 1.0
         self._ramp = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
-        self._mono = torch.zeros(BLOCK_SIZE, dtype=DTYPE)
         # Pre-allocated scratch buffer for power computation
         self._pow_scratch = torch.zeros((CHANNELS, BLOCK_SIZE), dtype=DTYPE)
 
@@ -481,8 +480,7 @@ class AutoGain(Node):
 
         # Use pre-allocated scratch buffer for power computation
         torch.pow(sig, 2.0, out=self._pow_scratch)
-        torch.mean(self._pow_scratch, dim=0, out=self._mono)
-        rms = float(torch.sqrt(torch.mean(self._mono)).item())
+        rms = float(torch.sqrt(torch.mean(self._pow_scratch)).item())
         rms_db = 20.0 * math.log10(max(rms, 1e-9))
 
         if rms_db < silence_gate_db:

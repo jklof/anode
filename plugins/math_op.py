@@ -71,7 +71,10 @@ class MathOp(Node):
         elif op == 3:    # Divide (sign-correct epsilon, zero-safe)
             if b_conn:
                 # denom = B + sign(B)*eps, treating exact zeros as positive
-                torch.sign(sig_b, out=self._tmp)
+                # copy_-first: torch.sign(mono, out=stereo) would RESIZE
+                # _tmp down to (1, BLOCK) (AGENTS.md §2).
+                self._tmp.copy_(sig_b)
+                self._tmp.sign_()
                 torch.eq(self._tmp, 0.0, out=self._maskb)
                 self._maskf.copy_(self._maskb)
                 self._tmp.add_(self._maskf).mul_(1e-6).add_(sig_b)

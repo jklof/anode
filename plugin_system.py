@@ -18,7 +18,8 @@ _loaded_modules = {}
 # Top-level modules of the app itself. A plugin file with one of these names
 # would shadow the real module on sys.path.
 _PROJECT_MODULES = frozenset(
-    {"base", "core", "commands", "controller", "main", "plugin_system", "theme", "ui_icons", "ui_system", "ffi_base"}
+    {"base", "core", "commands", "controller", "main", "plugin_system", "theme", "ui_icons", "ui_system", "ffi_base",
+     "abc_score", "audio_io", "audiocpp_backend", "download_util", "offline_job_widget"}
 )
 
 
@@ -123,6 +124,7 @@ def get_node_documentation(node_type: str) -> dict:
         is_native = False
 
     inputs, outputs, params = {}, {}, {}
+    instance = None
     try:
         instance = cls()
         inputs = {
@@ -169,6 +171,12 @@ def get_node_documentation(node_type: str) -> dict:
         }
     except Exception as e:
         logger.warning(f"Failed to inspect documentation for {node_type}: {e}")
+    finally:
+        if instance is not None and hasattr(instance, "remove"):
+            try:
+                instance.remove()
+            except Exception:
+                pass
 
     doc_text = (getattr(cls, "description", "") or "").strip() or (cls.__doc__ or "").strip()
 
