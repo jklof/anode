@@ -68,6 +68,9 @@ class EnvelopeFollower(FFINode):
 
     def process(self):
         if not self.lib or not self.dsp_handle:
+            for slot in self.outputs.values():
+                if getattr(slot, "slot_type", "audio") == "audio":
+                    slot.buffer.zero_()
             return
 
         # MANDATORY: Sync parameters before native processing

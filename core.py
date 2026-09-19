@@ -837,6 +837,7 @@ class Engine:
                             self.output_queue.put_nowait({"type": "node_added", "node": self.graph._get_node_data(node)})
                         except Exception:
                             pass
+                        rejected_wires = []
                         for c in connections_to_restore:
                             if self.graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]):
                                 # Announce the wire to the UI (mirrors the
@@ -851,6 +852,21 @@ class Engine:
                                     )
                                 except Exception:
                                     pass
+                            else:
+                                rejected_wires.append(
+                                    f"{c.get('src_id')}.{c.get('src_port')}->"
+                                    f"{c.get('dst_id')}.{c.get('dst_port')}"
+                                )
+                        if rejected_wires:
+                            logging.warning(
+                                f"Restore dropped {len(rejected_wires)} wire(s): "
+                                + ", ".join(rejected_wires)
+                            )
+                    else:
+                        logging.warning(
+                            f"Restore dropped unknown node type "
+                            f"'{node_data.get('type')}' (id '{node_data.get('id')}')"
+                        )
             # --------------------------------------------
 
             elif op == "clear":
@@ -904,6 +920,7 @@ class Engine:
 
                     new_graph = Graph()
                     new_graph.engine = self  # Fix: Set engine reference before loading nodes so submit_nrt works
+                    unknown_types = []
                     for n_data in data.get("nodes", []):
                         if not isinstance(n_data, dict):
                             continue
@@ -915,13 +932,40 @@ class Engine:
                             # Fix: Add node to graph first so load_state has graph reference
                             new_graph.add_node(node)
                             node.load_state(n_data)
+                        else:
+                            unknown_types.append(
+                                f"'{n_data.get('type')}' (id '{n_data.get('id')}')"
+                            )
+                    rejected_wires = []
                     for c in data.get("connections", []):
                         if not isinstance(c, dict):
                             continue
                         src_id = c.get("src_id")
                         dst_id = c.get("dst_id")
                         if src_id in new_graph.node_map and dst_id in new_graph.node_map:
-                            new_graph.connect(src_id, c.get("src_port"), dst_id, c.get("dst_port"))
+                            if not new_graph.connect(src_id, c.get("src_port"), dst_id, c.get("dst_port")):
+                                rejected_wires.append(
+                                    f"{src_id}.{c.get('src_port')}->"
+                                    f"{dst_id}.{c.get('dst_port')}"
+                                )
+                        else:
+                            rejected_wires.append(
+                                f"{src_id}.{c.get('src_port')}->"
+                                f"{dst_id}.{c.get('dst_port')}"
+                            )
+                    if unknown_types or rejected_wires:
+                        parts = []
+                        if unknown_types:
+                            parts.append(
+                                f"dropped {len(unknown_types)} unknown node type(s): "
+                                + ", ".join(unknown_types)
+                            )
+                        if rejected_wires:
+                            parts.append(
+                                f"dropped {len(rejected_wires)} wire(s): "
+                                + ", ".join(rejected_wires)
+                            )
+                        logging.warning("Load " + "; ".join(parts))
                     if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
                         new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
                     else:
@@ -963,6 +1007,7 @@ class Engine:
                     data = json.loads(current_json)
                     new_graph = Graph()
                     new_graph.engine = self  # Fix: Set engine reference before loading nodes so submit_nrt works
+                    unknown_types = []
                     for n_data in data["nodes"]:
                         cls = plugin_system.NODE_REGISTRY.get(n_data["type"])
                         if cls:
@@ -971,9 +1016,36 @@ class Engine:
                             # Fix: Add node to graph first so load_state has graph reference
                             new_graph.add_node(node)
                             node.load_state(n_data)
+                        else:
+                            unknown_types.append(
+                                f"'{n_data.get('type')}' (id '{n_data.get('id')}')"
+                            )
+                    rejected_wires = []
                     for c in data["connections"]:
                         if c["src_id"] in new_graph.node_map and c["dst_id"] in new_graph.node_map:
-                            new_graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"])
+                            if not new_graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]):
+                                rejected_wires.append(
+                                    f"{c.get('src_id')}.{c.get('src_port')}->"
+                                    f"{c.get('dst_id')}.{c.get('dst_port')}"
+                                )
+                        else:
+                            rejected_wires.append(
+                                f"{c.get('src_id')}.{c.get('src_port')}->"
+                                f"{c.get('dst_id')}.{c.get('dst_port')}"
+                            )
+                    if unknown_types or rejected_wires:
+                        parts = []
+                        if unknown_types:
+                            parts.append(
+                                f"dropped {len(unknown_types)} unknown node type(s): "
+                                + ", ".join(unknown_types)
+                            )
+                        if rejected_wires:
+                            parts.append(
+                                f"dropped {len(rejected_wires)} wire(s): "
+                                + ", ".join(rejected_wires)
+                            )
+                        logging.warning("Reload " + "; ".join(parts))
                     if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
                         new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
                     else:

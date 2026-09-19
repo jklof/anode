@@ -155,6 +155,11 @@ class FFINode(Node):
 
     def process(self):
         if not self.lib or not self.dsp_handle:
+            for slot in self.outputs.values():
+                if getattr(slot, "slot_type", "audio") == "audio":
+                    slot.buffer.zero_()
+                elif getattr(slot, "slot_type", "") == "midi":
+                    slot.clear_packet()
             return
 
         # 1. Synchronize staged parameters to native DSP (CANONICAL PATH)
@@ -176,6 +181,11 @@ class FFINode(Node):
 
         out_slot = self.outputs.get("out")
         if not out_slot:
+            for slot in self.outputs.values():
+                if getattr(slot, "slot_type", "audio") == "audio":
+                    slot.buffer.zero_()
+                elif getattr(slot, "slot_type", "") == "midi":
+                    slot.clear_packet()
             return
         out_tensor = out_slot.buffer
         out_channels = out_tensor.shape[0]

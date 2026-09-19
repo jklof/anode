@@ -27,6 +27,14 @@
     #define NAM_SAMPLE double
 #endif
 
+// The process() path below type-puns the engine's float* block buffers to
+// NAM_SAMPLE* (mono_in/out_ptr). That aliasing is only valid when NAM_SAMPLE
+// is 32-bit float; a double build would read/write past the block and corrupt
+// audio. Fail the build instead of corrupting audio at runtime.
+static_assert(sizeof(NAM_SAMPLE) == sizeof(float),
+    "NAM_SAMPLE must be 4 bytes (float): process() type-puns float* buffers to "
+    "NAM_SAMPLE*; rebuild with NAM_SAMPLE_FLOAT defined");
+
 class NamProcessor {
 public:
     NamProcessor() : _sample_rate(48000.0), _block_size(512) {}

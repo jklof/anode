@@ -97,6 +97,16 @@ class SamplePlayer(Node):
             # clear error there if no decoder is installed).
             self.submit_nrt(self._load_file_nrt, path, tag="load")
 
+    def load_state(self, data):
+        super().load_state(data)
+        if "sample_path" in self.params:
+            path = self.params["sample_path"].value
+            if path:
+                self._current_path = path
+                self._pending_autoplay = False  # param loads wait for a trigger
+                self._submitted_source = path
+                self.submit_nrt(self._load_file_nrt, path, tag="load")
+
     def _load_file_nrt(self, path):
         from audio_io import to_engine_audio
         # Shared decode + mono-dup + resample (WAV/FLAC/OGG via soundfile,

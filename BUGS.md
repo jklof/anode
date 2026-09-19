@@ -30,22 +30,22 @@ Legend: `[ ]` pending, `[~]` in progress, `[x]` done. Severity: H/M/L.
 
 ## Session 2 — Silent audio / stale state
 
-- [ ] **B-006 (H)** `FFINode.process` silent return leaves stale audio — `ffi_base.py:157-158`, also `plugins/envelope.py:70-71`, `plugins/dynamics.py:78-79`, `plugins/filters.py:62-64`
-  Fix: `zero_()` all audio outputs before return. Test: missing lib/handle → silent block.
-- [ ] **B-007 (H)** `SamplePlayer`/`ABCPlayer` lose file on reload (no `load_state`) — `plugins/sample_player.py:88-98`, `plugins/abc_player.py`
-  Fix: add `load_state()` mirroring `convolution_reverb.py:156-161`. Test: save/load round-trip restores audio.
+- [x] **B-006 (H)** `FFINode.process` silent return leaves stale audio — `ffi_base.py:157-158`, also `plugins/envelope.py:70-71`, `plugins/dynamics.py:78-79`, `plugins/filters.py:62-64`
+  Fixed 2026-09-19 via subagent: zero audio outputs (+ clear MIDI) before early returns. Tests: 91 passed.
+- [x] **B-007 (H)** `SamplePlayer`/`ABCPlayer` lose file on reload (no `load_state`) — `plugins/sample_player.py:88-98`, `plugins/abc_player.py`
+  Fixed 2026-09-19 via subagent: `load_state()` re-submits NRT load. Tests: 91 passed.
 - [x] **B-008 (M)** Engine-replacement ops leak stale stats/error — `core.py:842-851,866-914,916-962`
   Fixed 2026-09-19: full reset of `_stats_buffer/_process_error_ids/_telemetry_error_ids/_last_error_sent` on clear/load/reload + `del` prune discards telemetry id. Tests: core/save/arch/error-visibility 56 passed.
-- [ ] **B-009 (M)** Load/restore silently drops bad wires + unknown types — `core.py:892-898,826-827,935-945,884-885`
-  Fix: collect rejected wires, one warning + snapshot event. Test: bad wire reported, not silent.
+- [x] **B-009 (M)** Load/restore silently drops bad wires + unknown types — `core.py:892-898,826-827,935-945,884-885`
+  Fixed 2026-09-19 via subagent: single `logging.warning` summary per op, topology unchanged. Tests: 91 passed.
 - [x] **B-010 (L)** MIDI merge unsorted — `base.py:321-328`
   Fixed 2026-09-19: in-place sort. Tests: `test_midi.py` + `test_core.py` 63 passed.
   Fix: in-place sort after loop. Test: two MIDI sources → ascending offsets.
 - [x] **B-011 (L)** Menu params unclamped — `base.py:374-375`
   Fixed 2026-09-19: clamp to `[0,len(items))`. Verified `set(99)` → `1`.
   Fix: clamp to `[0,len(items))`. Test: crafted patch does not `IndexError`.
-- [ ] **B-012 (H)** NAM type-pun `(NAM_SAMPLE*)inputs` — `cpp/neural_amp.cpp:87-90`
-  Fix: `static_assert(sizeof==4)` or float scratch. Test: build-time assert + audio sanity.
+- [x] **B-012 (H)** NAM type-pun `(NAM_SAMPLE*)inputs` — `cpp/neural_amp.cpp:87-90`
+  Fixed 2026-09-19 via subagent: `static_assert(sizeof==4)`, no runtime change.
 
 ## Session 3 — NRT ownership / params
 

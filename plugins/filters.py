@@ -61,6 +61,9 @@ class BiquadFilter(FFINode):
 
     def process(self):
         if not self.lib or not self.dsp_handle:
+            for slot in self.outputs.values():
+                if getattr(slot, "slot_type", "audio") == "audio":
+                    slot.buffer.zero_()
             return
 
         # 1. Sync staged parameters first
@@ -87,6 +90,9 @@ class BiquadFilter(FFINode):
 
         out_slot = self.outputs.get("out")
         if not out_slot:
+            for slot in self.outputs.values():
+                if getattr(slot, "slot_type", "audio") == "audio":
+                    slot.buffer.zero_()
             return
         out_tensor = out_slot.buffer
         out_channels = out_tensor.shape[0]

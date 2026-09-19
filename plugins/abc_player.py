@@ -166,6 +166,16 @@ class ABCPlayer(Node):
             self._submitted_source = path
             self.submit_nrt(self._load_score_nrt, path, tag="load")
 
+    def load_state(self, data):
+        super().load_state(data)
+        if "score_file" in self.params:
+            path = self.params["score_file"].value
+            if path:
+                self._current_path = path
+                self._pending_restart = False  # param loads wait for a trigger
+                self._submitted_source = path
+                self.submit_nrt(self._load_score_nrt, path, tag="load")
+
     @staticmethod
     def _load_score_nrt(path):
         from abc_score import load_score
