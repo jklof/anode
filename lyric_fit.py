@@ -22,6 +22,152 @@ from abc_score import Score
 #: A rest gap of this many beats (or more) between notes starts a new phrase.
 PHRASE_GAP_BEATS = 1.0
 
+#: Sample rate that ``start_sample``/``end_sample`` word timestamps count
+#: against (Qwen3 / forced-aligner convention).
+WORDS_SAMPLE_RATE = 16000.0
+
+
+@dataclass(frozen=True)
+class WordTimestamp:
+    word: str
+    start_s: float
+    end_s: float
+
+
+def _words_items(data):
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ("words", "tokens", "segments"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+        if any(k in data for k in ("word", "text", "token")):
+            return [data]
+        return []
+    return []
+
+
+def _num(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number
+
+
+def parse_words_json(text_or_data, sample_rate: float = WORDS_SAMPLE_RATE):
+    """Parse word-timestamp JSON into ascending WordTimestamp items."""
+    if isinstance(text_or_data, (bytes, bytearray)):
+        text_or_data = bytes(text_or_data).decode("utf-8", errors="replace")
+    if isinstance(text_or_data, str):
+        try:
+            import json
+            data = json.loads(text_or_data)
+        except Exception as e:
+            raise ValueError(f"invalid words JSON: {e}")
+    else:
+        data = text_or_data
+    items = _words_items(data)
+    words = []
+    rate = sample_rate if sample_rate and sample_rate > 0 else WORDS_SAMPLE_RATE
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        text = entry.get("word", entry.get("text", entry.get("token", "")))
+        text = str(text).strip() if text is not None else ""
+        if not text:
+            continue
+        start_s = end_s = None
+        if "start_sample" in entry or "end_sample" in entry:
+            s = _num(entry.get("start_sample"))
+            e = _num(entry.get("end_sample"))
+            if s is not None:
+                start_s = s / rate
+            if e is not None:
+                end_s = e / rate
+        elif "start_ms" in entry or "end_ms" in entry:
+            s = _num(entry.get("start_ms"))
+            e = _num(entry.get("end_ms"))
+            if s is not None:
+                start_s = s / 1000.0
+            if e is not None:
+                end_s = e / 1000.0
+        elif "t0" in entry or "t1" in entry:
+            s = _num(entry.get("t0"))
+            e = _num(entry.get("t1"))
+            if s is not None:
+                start_s = s
+            if e is not None:
+                end_s = e
+        elif "start" in entry or "end" in entry:
+            s = _num(entry.get("start"))
+            e = _num(entry.get("end"))
+            if s is not None:
+                start_s = s / 1000.0 if abs(s) > 10000 else s
+            if e is not None:
+                end_s = e / 1000.0 if abs(e) > 10000 else e
+        if start_s is None:
+            continue
+        if end_s is None:
+            end_s = start_s
+        if end_s < start_s:
+            end_s = start_s
+        words.append(WordTimestamp(text, float(start_s), float(end_s)))
+    if not words:
+        raise ValueError("no words")
+    words.sort(key=lambda w: w.start_s)
+    return words
+
+
+def is_words_json(text: str) -> bool:
+    """True when text looks like word-timestamp JSON (never raises)."""
+    if not isinstance(text, str):
+        return False
+    stripped = text.strip()
+    if not stripped or stripped[0] not in "[{":
+        return False
+    try:
+        import json
+        data = json.loads(stripped)
+    except Exception:
+        return False
+    items = _words_items(data)
+    if not items:
+        return False
+    timing_keys = ("start_sample", "end_sample", "start", "end",
+                   "start_ms", "end_ms", "t0", "t1")
+    word_keys = ("word", "text", "token")
+    for entry in items:
+        if not isinstance(entry, dict):
+            continue
+        if any(k in entry for k in timing_keys) and any(
+                k in entry for k in word_keys):
+            return True
+    return False
+
+
+def group_words_to_lines(words, gap_s: float = 0.8,
+                         max_line_s: float = 6.0, max_words: int = 12):
+    """Group word timestamps into plain lyric lines (no score involved)."""
+    lines = []
+    current: list = []
+    line_start = 0.0
+    prev_end = 0.0
+    for w in words or []:
+        if current and ((w.start_s - prev_end) >= gap_s
+                        or (w.end_s - line_start) > max_line_s
+                        or len(current) >= max_words):
+            lines.append(" ".join(x.word for x in current))
+            current = []
+        if not current:
+            line_start = w.start_s
+        current.append(w)
+        prev_end = w.end_s
+    if current:
+        lines.append(" ".join(x.word for x in current))
+    return lines
+
 
 @dataclass(frozen=True)
 class LyricLine:
@@ -237,8 +383,101 @@ def fit_lyrics(lyric_sections, section_plans):
                      dropped=tuple(dropped), warnings=tuple(warnings))
 
 
+def fit_timed_words_to_score(words_or_text, score,
+                             sample_rate: float = WORDS_SAMPLE_RATE,
+                             gap_s: float = 0.8):
+    """Align word timestamps onto the score's sung phrases 1:1."""
+    if isinstance(words_or_text, str):
+        words = parse_words_json(words_or_text, sample_rate)
+    elif isinstance(words_or_text, (list, tuple)) and words_or_text and isinstance(
+            words_or_text[0], WordTimestamp):
+        words = sorted(words_or_text, key=lambda w: w.start_s)
+    else:
+        words = parse_words_json(words_or_text, sample_rate)
+    if not words:
+        raise ValueError("no words")
+    bpm = float(getattr(score, "bpm", 0.0) or 0.0) or 120.0
+    sec_per_beat = 60.0 / bpm
+    plans = score_sections(score)
+    marks = list(score.sections)
+    spans = []
+    prev_start = 0.0
+    for mark in marks:
+        spans.append((prev_start, mark.start))
+        prev_start = mark.start
+    spans.append((prev_start, None))
+    total = float(getattr(score, "total_beats", 0.0) or 0.0)
+    detail = []
+    for start_b, end_b in spans:
+        span = [n for n in score.notes
+                if n.start >= start_b - 1e-9
+                and (end_b is None or n.start < end_b - 1e-9)]
+        phrases = []
+        run: list = []
+        run_start = 0.0
+        prev_end = None
+        for note in span:
+            if run and note.start - prev_end >= PHRASE_GAP_BEATS - 1e-9:
+                phrases.append((run_start, prev_end, len(run)))
+                run = []
+            if not run:
+                run_start = note.start
+            run.append(note)
+            prev_end = note.start + note.dur
+        if run:
+            phrases.append((run_start, prev_end, len(run)))
+        sec_end = total if end_b is None else float(end_b)
+        detail.append((float(start_b), sec_end, phrases))
+    buckets: list = [[] for _ in detail]
+    for w in words:
+        t_mid = (w.start_s + w.end_s) / 2.0
+        placed = None
+        for idx, (s_b, e_b, _ph) in enumerate(detail):
+            s0, s1 = s_b * sec_per_beat, e_b * sec_per_beat
+            if s0 - 0.25 <= t_mid < s1 + 0.25:
+                # Last match wins so a word in the tolerance overlap (or in
+                # a zero-length opening span) lands in the later section.
+                placed = idx
+        if placed is None:
+            placed = 0 if t_mid < detail[0][0] else len(detail) - 1
+        buckets[placed].append(w)
+    lyric_sections = []
+    for idx, plan in enumerate(plans):
+        if plan.instrumental:
+            continue
+        _, _, phrases = detail[idx]
+        if not phrases:
+            continue
+        section_words = buckets[idx] if idx < len(buckets) else []
+        if not section_words:
+            lyric_sections.append(LyricSection(plan.name or "Verse", ()))
+            continue
+        if len(phrases) == 1:
+            text = " ".join(w.word for w in section_words)
+            lines = [text] if text.strip() else []
+        else:
+            splits = [((p0[1] + p1[0]) / 2.0) * sec_per_beat
+                      for p0, p1 in zip(phrases, phrases[1:])]
+            groups: list = [[] for _ in phrases]
+            for w in section_words:
+                t_mid = (w.start_s + w.end_s) / 2.0
+                li = 0
+                while li < len(splits) and t_mid >= splits[li]:
+                    li += 1
+                groups[li].append(w)
+            lines = [" ".join(w.word for w in g) for g in groups if g]
+            if not lines:
+                lines = group_words_to_lines(section_words, gap_s=gap_s)
+        lyric_sections.append(LyricSection(
+            plan.name or "Verse",
+            tuple(LyricLine(t, count_syllables(t)) for t in lines)))
+    return fit_lyrics(lyric_sections, plans)
+
+
 def fit_lyrics_to_score(lyrics_text, score):
     """Parse + align in one call. The node's worker entry point."""
+    if isinstance(lyrics_text, str) and is_words_json(lyrics_text):
+        return fit_timed_words_to_score(lyrics_text, score)
     return fit_lyrics(parse_lyrics(lyrics_text), score_sections(score))
 
 

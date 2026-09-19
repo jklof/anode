@@ -35,6 +35,7 @@ from base import Node
 
 logger = logging.getLogger(__name__)
 
+WORD_TIMES_FILTER = "JSON Files (*.json);;All Files (*.*)"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LYRICS_FILTER = "Text Files (*.txt *.md);;All Files (*.*)"
 ABC_FILTER = "ABC Files (*.abc);;All Files (*.*)"
@@ -44,7 +45,7 @@ class LyricFitterWidget(QWidget):
     IS_NODE_UI = True
     NODE_CLASS_NAME = "LyricFitter"
 
-    PARAM_KEYS = ("lyrics_file", "abc_file")
+    PARAM_KEYS = ("words_file", "lyrics_file", "abc_file")
 
     def __init__(self, node_proxy):
         super().__init__()
@@ -70,6 +71,12 @@ class LyricFitterWidget(QWidget):
         self.lbl_status.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.lbl_status)
 
+        self.lbl_detail = QLabel("No fit yet")
+        self.lbl_detail.setStyleSheet("color: #aaa;")
+        self.lbl_detail.setWordWrap(True)
+        self.lbl_detail.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.lbl_detail)
+
         self.report_browser = QTextBrowser()
         self.report_browser.setFont(QFont("Monospace", 8))
         self.report_browser.setReadOnly(True)
@@ -79,6 +86,15 @@ class LyricFitterWidget(QWidget):
     def on_telemetry(self, data: dict):
         if "status" in data:
             self.lbl_status.setText(data["status"])
+        if "audio" in data:
+            self.lbl_detail.setText(data["audio"] or "")
+            status = data.get("status", "")
+            if status == "Ready":
+                self.lbl_detail.setStyleSheet("color: #00FF00;")
+            elif status == "Error":
+                self.lbl_detail.setStyleSheet("color: #FF5555;")
+            else:
+                self.lbl_detail.setStyleSheet("color: #aaa;")
         if "report" in data:
             text = data["report"] or ""
             if text != self.report_browser.toPlainText():
@@ -118,12 +134,16 @@ class LyricFitter(Node):
         self.add_uri_input("lyrics_uri",
                            help="Wired lyrics path (future ASR nodes). While connected and non-empty "
                                 "it overrides lyrics_file; snapshots at Fit time.")
+        self.add_uri_input("words_uri",
+                           help="Wired word timestamps JSON (from Qwen3 ASR or Forced Aligner).")
         self.add_uri_output("lyrics",
                             help="Kept fitted-lyrics path; published on completion and on patch-load relink.")
         self.done = self.add_output("done", channels=1,
                                     help="One-block 1.0 pulse when new fitted lyrics are ready.")
         self.add_file_param("lyrics_file", "", filter=LYRICS_FILTER,
                             help="Lyric words to fit (any tagged or plain text file).")
+        self.add_file_param("words_file", "", filter=WORD_TIMES_FILTER,
+                            help="Word timestamps JSON file (optional; overrides plain lyrics).")
         self.add_file_param("abc_file", "", filter=ABC_FILTER,
                             help="ABC score whose phrase structure the words must ride. "
                                  "A connected abc_uri input overrides this.")
@@ -196,10 +216,37 @@ class LyricFitter(Node):
         return path
 
     def _build_spec(self):
-        """Snapshot committed params into a worker spec. Raises ValueError."""
+        """Snapshot committed params into a worker spec. Raises ValueError.
+
+        Filesystem paths only -- content reads and JSON detection run on the
+        NRT worker in _fit_nrt (AGENTS.md sections 6/11).
+        """
+        abc_path = self._snapshot_source("abc_uri", "abc_file", "score")
+        source_path = None
+        source_kind = "lyrics"
+        words_uri_slot = self.inputs.get("words_uri")
+        if words_uri_slot is not None and words_uri_slot.connected_outputs:
+            wired = words_uri_slot.get_uri()
+            if not wired:
+                raise ValueError("Wired words is empty — produce it first, then fit.")
+            if not Path(wired).exists():
+                raise ValueError(f"Wired words file not found: {wired}")
+            source_path = wired
+            source_kind = "words"
+        if not source_path and "words_file" in self.params:
+            cand = self.params["words_file"].value
+            if cand and Path(cand).exists():
+                source_path = cand
+                source_kind = "words"
+        if not source_path:
+            source_path = self._snapshot_source("lyrics_uri", "lyrics_file", "lyrics")
+        words_val = self.params["words_file"].value if "words_file" in self.params else ""
         return {
-            "lyrics_file": self._snapshot_source("lyrics_uri", "lyrics_file", "lyrics"),
-            "abc_file": self._snapshot_source("abc_uri", "abc_file", "score"),
+            "source_path": source_path,
+            "source_kind": source_kind,
+            "abc_file": abc_path,
+            "lyrics_file": source_path,
+            "words_file": words_val,
         }
 
     def on_ui_param_change(self, param_name: str):
@@ -214,6 +261,7 @@ class LyricFitter(Node):
             spec = self._build_spec()
         except ValueError as e:
             self._fail(str(e))
+            self._refresh_ui()
             return
         self.error_msg = None
         self._status = "Fitting"
@@ -227,6 +275,23 @@ class LyricFitter(Node):
         self.error_msg = message
         logger.error(f"LyricFitter {self.name}: {message}")
 
+    def _refresh_ui(self):
+        import queue
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        if engine is None:
+            return
+        try:
+            data = self.get_telemetry()
+            if data:
+                engine.output_queue.put_nowait(
+                    {"type": "telemetry", "node_data": {self.id: data}})
+        except queue.Full:
+            pass
+        emit = getattr(engine, "_emit_snapshot", None)
+        if callable(emit):
+            emit()
+
     # ------------------------------------------------------------------
     # NRT worker
     # ------------------------------------------------------------------
@@ -234,20 +299,25 @@ class LyricFitter(Node):
         """Read inputs, align, keep fitted file + report. Fast (ms), but
         file I/O keeps it on the worker per AGENTS.md section 11."""
         from abc_score import load_score
-        from lyric_fit import fit_lyrics_to_score
-        lyrics_text = Path(spec["lyrics_file"]).read_text(encoding="utf-8")
+        from lyric_fit import fit_lyrics_to_score, is_words_json
+        source_path = Path(spec.get("source_path") or spec["lyrics_file"])
+        content = source_path.read_text(encoding="utf-8")
         score = load_score(spec["abc_file"])
-        result = fit_lyrics_to_score(lyrics_text, score)
+        is_timed = is_words_json(content)
+        result = fit_lyrics_to_score(content, score)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        stem = Path(spec["lyrics_file"]).stem
+        stem = source_path.stem
         keep = REPO_ROOT / "outputs" / "lyric_fits" / f"{stamp}_{stem}"
         keep.mkdir(parents=True, exist_ok=True)
         (keep / "fitted.txt").write_text(result.text, encoding="utf-8")
         (keep / "report.txt").write_text(result.report, encoding="utf-8")
         (keep / "request.json").write_text(
             json.dumps({
-                "lyrics_file": spec["lyrics_file"],
-                "lyrics_text": lyrics_text,
+                "lyrics_file": str(source_path),
+                "lyrics_text": content if not is_timed else "",
+                "words_file": str(source_path) if is_timed else "",
+                "source_path": str(source_path),
+                "timed": is_timed,
                 "abc_file": spec["abc_file"],
                 "coverage": result.coverage,
                 "repeated": result.repeated,
@@ -256,7 +326,7 @@ class LyricFitter(Node):
             }, indent=2) + "\n",
             encoding="utf-8")
         return {"path": str(keep / "fitted.txt"), "report": result.report,
-                "coverage": result.coverage}
+                "coverage": result.coverage, "timed": is_timed}
 
     def on_nrt_complete(self, tag, ok, result):
         if tag != "fit":

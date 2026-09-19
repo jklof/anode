@@ -110,3 +110,61 @@ def test_cram_warning_on_dense_line():
 def test_empty_lyrics_rejected():
     with pytest.raises(ValueError, match="no singable lines"):
         fit_lyrics_to_score("[Verse]\n", parse_score(SCORE))
+
+
+def test_parse_words_json_sample_rate_seconds():
+    import json
+    from lyric_fit import parse_words_json
+    payload = json.dumps([
+        {"word": "night", "start_sample": 390400, "end_sample": 400000},
+        {"word": "falls", "start": 25.0, "end": 25.4},
+    ])
+    words = parse_words_json(payload)
+    assert words[0].start_s == 24.4
+    assert words[1].start_s == 25.0
+    assert [w.word for w in words] == ["night", "falls"]
+
+
+def test_parse_words_json_ms_and_wrappers():
+    import json
+    from lyric_fit import parse_words_json
+    payload = json.dumps({"words": [
+        {"text": "hello", "start_ms": 1000, "end_ms": 1500},
+        {"token": "world", "t0": 2.0, "t1": 2.5},
+    ]})
+    words = parse_words_json(payload)
+    assert [w.word for w in words] == ["hello", "world"]
+    assert words[0].start_s == 1.0
+    assert words[1].end_s == 2.5
+
+
+def test_parse_words_json_rejects_invalid_and_empty():
+    import pytest as _pytest
+    from lyric_fit import parse_words_json
+    with _pytest.raises(ValueError, match="invalid words JSON"):
+        parse_words_json("{not json")
+    with _pytest.raises(ValueError, match="no words"):
+        parse_words_json("[]")
+
+
+def test_timed_fit_partitions_by_score_rests():
+    import json
+    from lyric_fit import fit_timed_words_to_score, is_words_json
+    # 0.5 s/beat: 48-beat intro (24 s), then a verse with a 2-beat rest.
+    abc = ("X:1\nL:1/4\nQ:1/4=120\nK:C\n% intro\n"
+           + "z4|" * 12 + "\n% verse\nC2 D2|z4 E2 F2|\n")
+    score = parse_score(abc)
+    words = ([{"word": f"w{i}", "start": 24.2 + 0.2 * i,
+               "end": 24.3 + 0.2 * i} for i in range(4)]
+             + [{"word": f"v{i}", "start": 27.5 + 0.2 * i,
+                 "end": 27.6 + 0.2 * i} for i in range(4)])
+    text = json.dumps(words)
+    assert is_words_json(text) is True
+    assert is_words_json("[Verse]\nla\n") is False
+    result = fit_timed_words_to_score(text, score)
+    assert result.coverage == 1.0
+    assert result.dropped == () and result.repeated == 0
+    assert "[intro]\n\n" in result.text
+    verse_block = result.text.split("[verse]\n")[1]
+    verse_lines = [ln for ln in verse_block.splitlines() if ln.strip()]
+    assert verse_lines == ["w0 w1 w2 w3", "v0 v1 v2 v3"]
