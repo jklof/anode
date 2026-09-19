@@ -418,7 +418,8 @@ class _FileSourceBase(Node):
                        help="Gate/trigger signal; a rising edge re-publishes the selected "
                             "file and emits the done pulse (e.g. wired from a done pulse).")
         self.add_uri_output(self.URI_OUT,
-                            help="Selected file path; published on pick, on trigger, "
+                            help="Selected file path (labeled 'file' for wiring); "
+                                 "published on pick, on trigger, "
                                  "and on patch-load relink.")
         self.done = self.add_output("done", channels=1,
                                     help="One-block 1.0 pulse when the file is (re-)published.")
