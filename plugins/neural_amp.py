@@ -138,6 +138,20 @@ class NamNode(FFINode):
         except Exception as e:
             logger.error(f"NAM handle destroy failed: {e}")
 
+    def _destroy_handle_background(self, handle):
+        """Retire a native handle off the engine/audio thread, without
+        bumping the shared NRT epoch: teardown traffic must not invalidate
+        in-flight loads (the load epoch lives in _load_epoch)."""
+        if not handle or not self.lib:
+            return
+        engine = getattr(getattr(self, "graph", None), "engine", None)
+        nrt = getattr(engine, "nrt", None) if engine is not None else None
+        if nrt is not None:
+            nrt.submit_detached(self._destroy_handle_blocking, handle)
+        else:
+            # Headless / no engine: synchronous fallback on the control thread.
+            self._destroy_handle_blocking(handle)
+
     def _load_blocking(self, path, epoch):
         """NRT thread: builds a NEW, independently owned native DSP state and
         loads the model into it. The live handle being processed by the audio
@@ -167,12 +181,10 @@ class NamNode(FFINode):
                 self._status = "Error"
                 return
             if epoch != self._load_epoch:
-                # Superseded by a newer load request: retire the prepared state
-                # safely here (engine/control thread, audio path not running).
-                try:
-                    self.lib.destroy(new_handle)
-                except Exception:
-                    pass
+                # Superseded by a newer load request: retire the prepared
+                # state in the background (engine/control thread must never
+                # synchronously destroy large native models — AGENTS.md §6).
+                self._destroy_handle_background(new_handle)
                 self._status = "Idle"
                 return
             # Install replacement state and retire the old one outside of
@@ -184,8 +196,9 @@ class NamNode(FFINode):
             if old_handle:
                 # Deallocate large native weight structures on the NRT pool,
                 # not on the engine/audio thread (destroy() of big models can
-                # stall long enough to cause dropouts).
-                self.submit_nrt(self._destroy_handle_blocking, old_handle, tag="cleanup_old_handle")
+                # stall long enough to cause dropouts). Detached submit: no
+                # shared-epoch bump, so in-flight loads stay valid.
+                self._destroy_handle_background(old_handle)
             self._status, self._current_filename = "Active", filename
         else:
             self._status = "Error"
@@ -194,14 +207,18 @@ class NamNode(FFINode):
     def on_nrt_discarded(self, tag, ok, result):
         if tag == "load_model" and ok and result:
             # Superseded load: the fully prepared native handle is never
-            # installed, so destroy it here (engine thread, off the audio
-            # path) to avoid leaking the model weights.
+            # installed, so destroy it in the background (never synchronously
+            # on the engine thread) to avoid leaking the model weights.
             new_handle = result[0] if isinstance(result, tuple) else None
-            if new_handle and self.lib:
-                try:
-                    self.lib.destroy(new_handle)
-                except Exception as e:
-                    logger.error(f"NAM discarded-handle destroy failed: {e}")
+            self._destroy_handle_background(new_handle)
+
+    def remove(self):
+        # Detach the live handle so the audio path can never touch it again,
+        # then destroy the large native weight structures on the NRT pool —
+        # never synchronously on the engine thread (AGENTS.md §6).
+        handle = self.dsp_handle
+        self.dsp_handle = None
+        self._destroy_handle_background(handle)
 
     def get_telemetry(self) -> dict:
         return {"status": self._status, "filename": self._current_filename}

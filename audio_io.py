@@ -63,25 +63,35 @@ def _orient_channels(data):
 def _decode_av(path):
     """Decode via PyAV. Returns (channels, samples) float32 + sample rate."""
     container = av.open(str(path))
-    stream = container.streams.audio[0]
-    sr = stream.sample_rate
-    # Orient frame-by-frame: layouts are not guaranteed uniform (mixed
-    # planar/packed or trailing mono flush frames break bulk concatenation).
-    parts = []
-    for frame in container.decode(audio=0):
-        parts.append(_orient_channels(frame.to_ndarray()).astype(np.float32))
-    if not parts:
-        raise RuntimeError(f"no audio frames decoded from {path.name}")
-    channels = max(p.shape[0] for p in parts)
-    aligned = []
-    for p in parts:
-        if p.shape[0] == 1 and channels > 1:
-            p = np.repeat(p, channels, axis=0)  # mono flush frame
-        if p.shape[0] != channels:
-            raise RuntimeError(
-                f"inconsistent channel counts while decoding {path.name}")
-        aligned.append(p)
-    return np.concatenate(aligned, axis=-1), sr
+    try:
+        stream = container.streams.audio[0]
+        sr = stream.sample_rate
+        # Orient frame-by-frame: layouts are not guaranteed uniform (mixed
+        # planar/packed or trailing mono flush frames break bulk concatenation).
+        parts = []
+        for frame in container.decode(audio=0):
+            parts.append(_orient_channels(frame.to_ndarray()).astype(np.float32))
+        if not parts:
+            raise RuntimeError(f"no audio frames decoded from {path.name}")
+        channels = max(p.shape[0] for p in parts)
+        aligned = []
+        for p in parts:
+            if p.shape[0] == 1 and channels > 1:
+                p = np.repeat(p, channels, axis=0)  # mono flush frame
+            if p.shape[0] != channels:
+                raise RuntimeError(
+                    f"inconsistent channel counts while decoding {path.name}")
+            aligned.append(p)
+        return np.concatenate(aligned, axis=-1), sr
+    finally:
+        # Tolerant close: real PyAV containers have close(); test fakes
+        # may not. Never let teardown mask a decode error.
+        close = getattr(container, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
 
 
 def decode_audio_file(path):
@@ -114,7 +124,7 @@ def decode_audio_file(path):
 
 def write_wav_file(path, audio, sample_rate):
     """Write a (channels, samples) float array as PCM WAV. Returns path."""
-    if sf is None:
+    if not _SF_AVAILABLE:
         raise RuntimeError("'soundfile' is required to write WAV files")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

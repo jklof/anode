@@ -151,6 +151,12 @@ def create_colored_logo(color: str) -> QByteArray:
     return _create_colored_svg(LOGO_SVG_DATA, color)
 
 
+# Cache for colored icons keyed on (icon_name, hex_color): create_icon()
+# re-parses the SVG and re-renders the pixmap on every call, but the result
+# depends only on the name + theme text color.
+_ICON_CACHE: dict = {}
+
+
 def create_icon(icon_name: str) -> QIcon:
     """
     Creates a QIcon from raw SVG data string, dynamically setting its color
@@ -162,9 +168,18 @@ def create_icon(icon_name: str) -> QIcon:
         text_color = app.palette().color(QPalette.ColorRole.ButtonText)
         hex_color = text_color.name()
 
+    key = (icon_name, hex_color)
+    cached = _ICON_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    # B-023 None-guard: unknown names yield an empty icon (plus warning),
+    # never a crash.
     colored_svg_data = _create_colored_svg(ICONS.get(icon_name) or "", hex_color)
 
     pixmap = QPixmap()
     if not pixmap.loadFromData(colored_svg_data, "svg"):
         logger.warning("Failed to load SVG icon.")
-    return QIcon(pixmap)
+    icon = QIcon(pixmap)
+    _ICON_CACHE[key] = icon
+    return icon

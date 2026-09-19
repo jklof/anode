@@ -101,13 +101,20 @@ class AppController(QObject):
                 inbox = getattr(node, "_nrt_inbox", None)
                 if inbox and not inbox.empty():
                     nrt_completed = True
-            
+            # Nodes deleted while stopped leave _discarded_nodes non-empty;
+            # drain those too so on_nrt_discarded() still releases resources.
+            nrt = getattr(self.engine, "nrt", None)
+            if nrt is not None and nrt._discarded_nodes:
+                nrt_completed = True
             if nrt_completed:
                 self.engine._drain_nrt_all()
                 self.engine._emit_snapshot()
                 node_data = {}
                 for node in self.engine.graph.nodes:
-                    telemetry = node.get_telemetry()
+                    try:
+                        telemetry = node.get_telemetry()
+                    except Exception:
+                        continue
                     if telemetry:
                         node_data[node.id] = telemetry
                 self.engine._emit_telemetry(0.0, node_data)
@@ -294,9 +301,18 @@ class AppController(QObject):
         cmd.execute()
         self.history.push(cmd)
 
-        # Optimistic Update: Remove from local snapshot
+        # Optimistic Update (copy-on-write: the emitted snapshot may be
+        # shared with the UI): drop the node AND its wires, mirroring the
+        # engine's node_removed handling, so no ghost wires linger.
         if "nodes" in self._latest_snapshot:
-            self._latest_snapshot["nodes"] = [n for n in self._latest_snapshot["nodes"] if n["id"] != node_id]
+            ws = self._latest_snapshot.copy()
+            ws["nodes"] = [n for n in ws["nodes"] if n["id"] != node_id]
+            if "connections" in ws:
+                ws["connections"] = [
+                    c for c in ws["connections"]
+                    if c["src_id"] != node_id and c["dst_id"] != node_id
+                ]
+            self._latest_snapshot = ws
 
     def move_nodes(self, moves_dict):
         """
@@ -308,13 +324,20 @@ class AppController(QObject):
         cmd.execute()
         self.history.push(cmd)
 
-        # CRITICAL FIX: Optimistic Update
-        # Update local snapshot immediately so if we delete right after moving,
-        # the DeleteCommand captures the NEW position, not the old one.
+        # CRITICAL FIX: Optimistic Update (copy-on-write: copy each touched
+        # node dict before mutating pos so the shared snapshot is never
+        # mutated in place). Update local snapshot immediately so if we
+        # delete right after moving, the DeleteCommand captures the NEW
+        # position, not the old one.
         if "nodes" in self._latest_snapshot:
-            for n in self._latest_snapshot["nodes"]:
+            ws = self._latest_snapshot.copy()
+            ws["nodes"] = ws["nodes"].copy()
+            for i, n in enumerate(ws["nodes"]):
                 if n["id"] in moves_dict:
-                    n["pos"] = moves_dict[n["id"]][0]
+                    n_new = n.copy()
+                    n_new["pos"] = moves_dict[n["id"]][0]
+                    ws["nodes"][i] = n_new
+            self._latest_snapshot = ws
 
     def delete_selection(self, node_ids, connection_tuples):
         """
@@ -343,9 +366,18 @@ class AppController(QObject):
             macro.add(DeleteNodeCommand(self, nid))
 
         # Perform optimistic snapshot updates AFTER building all commands
-        for nid in node_ids:
-            if "nodes" in self._latest_snapshot:
-                self._latest_snapshot["nodes"] = [n for n in self._latest_snapshot["nodes"] if n["id"] != nid]
+        # (copy-on-write): drop the nodes AND their wires so no ghost wires
+        # linger until the engine snapshot arrives.
+        if "nodes" in self._latest_snapshot:
+            ws = self._latest_snapshot.copy()
+            gone = set(node_ids)
+            ws["nodes"] = [n for n in ws["nodes"] if n["id"] not in gone]
+            if "connections" in ws:
+                ws["connections"] = [
+                    c for c in ws["connections"]
+                    if c["src_id"] not in gone and c["dst_id"] not in gone
+                ]
+            self._latest_snapshot = ws
 
         if macro.commands:
             macro.execute()

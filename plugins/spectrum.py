@@ -190,6 +190,11 @@ if GUI_AVAILABLE:
             return default
 
         def poll_queue(self):
+            # Hidden widget: skip the 40 FPS poll entirely (the bounded
+            # monitor queue keeps only the latest frame, so nothing is lost
+            # but a paint pass — resumed on next visible poll).
+            if not self.isVisible():
+                return
             queue = getattr(self.proxy, "monitor_queue", None)
             if not queue:
                 return

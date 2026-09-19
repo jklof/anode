@@ -49,38 +49,38 @@ Legend: `[ ]` pending, `[~]` in progress, `[x]` done. Severity: H/M/L.
 
 ## Session 3 — NRT ownership / params
 
-- [ ] **B-013 (H)** `MediaPlayer.on_nrt_discarded` joins 2s on engine thread — `plugins/media_player.py:554-562`
-  Fix: detach + `nrt.stop_stream` like `:659-666`. Test: discard does not block.
-- [ ] **B-014 (H)** `NamNode` sync destroy on engine thread (stale-load + `remove`) — `plugins/neural_amp.py:169-177`, `ffi_base.py:237-241`
-  Fix: background destroy via `submit_nrt`; override `remove()`. Test: code path review + no audio-thread destroy.
-- [ ] **B-015 (M)** Teardown submits pollute shared NRT epoch — `plugins/neural_amp.py:188` + `core.py:480-498,406`
-  Fix: pool-only submit skipping epoch bump for teardown. Test: load still installs after cleanup submit.
-- [ ] **B-016 (M)** Reverb IR load has no epoch/tag — `plugins/convolution_reverb.py:163-168,254-267`
-  Fix: add `_load_epoch` + stale-reject. Test: rapid IR switch → newest wins.
-- [ ] **B-017 (M)** Sync device close in `on_nrt_complete` — `plugins/midi_devices.py:101-105,233-237`
-  Fix: route via `nrt.submit/stop_stream`. Test: review, no close on engine thread.
-- [ ] **B-018 (M)** Stopped-engine poll misses discarded nodes — `controller.py:98-113`
-  Fix: wake drain when `nrt._discarded_nodes` non-empty. Test: delete-while-stopped drains.
-- [ ] **B-019 (M)** FileRecorder writer mutates `params["record"]` cross-thread — `plugins/extended_nodes.py:161-165`
-  Fix: `push_command(("param",...))` like `deesser.py:299-301`. Test: no direct set from writer.
-- [ ] **B-020 (M)** PyAV container leak — `audio_io.py:63-84`
-  Fix: try/finally `container.close()`. Test: handle count stable.
+- [x] **B-013 (H)** `MediaPlayer.on_nrt_discarded` joins 2s on engine thread — `plugins/media_player.py:554-562`
+  Fixed 2026-09-19 via subagent: detach + `stop_stream`. Tests: 86 passed.
+- [x] **B-014 (H)** `NamNode` sync destroy on engine thread (stale-load + `remove`) — `plugins/neural_amp.py:169-177`, `ffi_base.py:237-241`
+  Fixed 2026-09-19 via subagent: background destroy + `remove()` override. Tests: 86 passed.
+- [x] **B-015 (M)** Teardown submits pollute shared NRT epoch — `plugins/neural_amp.py:188` + `core.py:480-498,406`
+  Fixed 2026-09-19 via subagent: `submit_detached` (no epoch bump) for teardown. Tests: 86 passed. Follow-up: vocos still uses epoch-bumping destroy (out of scope).
+- [x] **B-016 (M)** Reverb IR load has no epoch/tag — `plugins/convolution_reverb.py:163-168,254-267`
+  Fixed 2026-09-19 via subagent: `_load_epoch` + tag + stale-reject. Tests: 86 passed.
+- [x] **B-017 (M)** Sync device close in `on_nrt_complete` — `plugins/midi_devices.py:101-105,233-237`
+  Fixed 2026-09-19 via subagent: non-blocking stale-port close. Tests: 86 passed.
+- [x] **B-018 (M)** Stopped-engine poll misses discarded nodes — `controller.py:98-113`
+  Fixed 2026-09-19 via subagent: drain on `_discarded_nodes`. Tests: 86 passed.
+- [x] **B-019 (M)** FileRecorder writer mutates `params["record"]` cross-thread — `plugins/extended_nodes.py:161-165`
+  Fixed 2026-09-19 via subagent: `push_command` with guard. Tests: 86 passed.
+- [x] **B-020 (M)** PyAV container leak — `audio_io.py:63-84`
+  Fixed 2026-09-19 via subagent: try/finally close (tolerant to fakes). Tests: 125 passed.
 
 ## Session 4 — DSP / I/O / UI correctness (small)
 
-- [ ] **B-021 (M)** Reverb duplicates loader, MP3 fails — `plugins/convolution_reverb.py:170-186` vs `audio_io.py:125-145`
-  Fix: call `audio_io.to_engine_audio`. Test: MP3 IR decodes.
-- [ ] **B-022 (M)** Rubberband per-block alloc on audio thread — `plugins/rubberband_pitch_shifter.py:283,221,224`
-  Fix: pool or document exception. Test: quarantine / doc.
+- [x] **B-021 (M)** Reverb duplicates loader, MP3 fails — `plugins/convolution_reverb.py:170-186` vs `audio_io.py:125-145`
+  Fixed 2026-09-19 via subagent: shared `to_engine_audio`, lazy import. Tests: 74 passed.
+- [x] **B-022 (M)** Rubberband per-block alloc on audio thread — `plugins/rubberband_pitch_shifter.py:283,221,224`
+  Fixed 2026-09-19 via subagent: persistent FIFO view + quarantine doc. Tests: 74 passed.
 - [x] **B-023 (M)** Unknown icon crashes — `ui_icons.py:165`
   Fixed 2026-09-19: `or ""` guard → empty icon via failed load + warning.
   Fix: `if svg is None: return QIcon()`. Test: unknown name returns empty icon.
-- [ ] **B-024 (M)** `audiocpp_backend.py:717-720` hides valid repairs
-  Fix: rely on `missing_specs()` alone. Test: corrupt cudart re-offered.
-- [ ] **B-025 (L)** `FFINode` hardcoded `BLOCK_SIZE` + missing float32 check — `ffi_base.py:220,189-197`, `plugins/envelope.py:92`
-  Fix: pass `shape[1]`, assert dtype. Test: non-standard frames + dtype guard.
-- [ ] **B-026 (L)** Misc low-risk: stale-plan one tick (`core.py:1075-1095`), spurious `connect_rejected` (`:707-734`), unguarded stopped telemetry (`controller.py:108-113`), `disconnect` unconditional dirty (`core.py:248-256`), param-array always-changed (`base.py:379-393`), gain-race (`plugins/dynamics.py:150-156`), ScriptNode `ndim>2` (`plugins/scripting.py:249-265`), visual step assume (`plugins/visualization.py:50`), sentinel drop (`extended_nodes.py:257`), delete-vs-snapshot race (`controller.py:289-299`), `gc.disable` global (`core.py:1000,605-608`)
-  Fix: per review notes. Test: as touched.
+- [ ] **B-024 (M)** `audiocpp_backend.py:717-720` hides valid repairs — REVERTED 2026-09-19, needs redesign
+  Reason: staging zips are deleted after install, so `missing_specs()` alone always re-offers runtime even when fully installed (broke 3 fetch tests + "Everything already downloaded" UX). Proper fix needs an installed-runtime health check (CLI + libs in bin_dir), not gate removal. Gate restored.
+- [x] **B-025 (L)** `FFINode` hardcoded `BLOCK_SIZE` + missing float32 check — `ffi_base.py:220,189-197`, `plugins/envelope.py:92`
+  Fixed 2026-09-19 via subagent: actual frames + dtype guards. Tests: 74 passed.
+- [x] **B-026 (L)** Misc low-risk: stale-plan one tick (`core.py:1075-1095`), spurious `connect_rejected` (`:707-734`), unguarded stopped telemetry (`controller.py:108-113`), `disconnect` unconditional dirty (`core.py:248-256`), param-array always-changed (`base.py:379-393`), gain-race (`plugins/dynamics.py:150-156`), ScriptNode `ndim>2` (`plugins/scripting.py:249-265`), visual step assume (`plugins/visualization.py:50`), sentinel drop (`extended_nodes.py:257`), delete-vs-snapshot race (`controller.py:289-299`), `gc.disable` global (`core.py:1000,605-608`)
+  Fixed 2026-09-19 via subagent (safe one-liners only; gain-race/snapshot-race/gc.disable skipped as risky with reasons). Tests: 74 passed.
 
 ## Session 5 — Gemini batch (verified 2026-09-19)
 
@@ -100,45 +100,54 @@ Legend: `[ ]` pending, `[~]` in progress, `[x]` done. Severity: H/M/L.
   Fixed 2026-09-19: `denom != "0"` guard. Tests: `test_abc_score.py` passed + manual `C/0` parse ok.
   `C/0` → `Fraction(num,0)` escapes (siblings guard via `except ZeroDivisionError` at `:103,116`).
   Fix: `d = int(denom) if (denom and denom != "0") else 2`. Test: `parse_score("C/0")` does not raise.
-- [ ] **B-031 (L)** VocalTransformer breath sideband reads uninitialized/OOB at non-48k rates — `cpp/vocal_transformer.cpp:1334-1335,1351-1357,1377-1388`
+- [x] **B-031 (L)** VocalTransformer breath sideband reads uninitialized/OOB at non-48k rates — `cpp/vocal_transformer.cpp:1334-1335,1351-1357,1377-1388`
+  Fixed 2026-09-19 via subagent: clamp k_high + guard kd±k0 (no-op at 48k). Re-read only, no build.
   Latent at shipped 48k/2048 (comment `:1382` claims `kd+k0<=nb_hi` "by construction" — false once `nb_hi` clamps). At low SR `k_high+k0` exceeds `num_bins_-1`.
   Fix: clamp `k_high` to `num_bins_-1-k0` when pitch_sync + guard `kd±k0`. Test: code review + low-SR unit case. Not a current-rate crash.
 
 ## Backlog — Optimizations (easy wins, do between sessions)
 
-- [ ] **O-01** MediaPlayer queue 500 → 64–128 — `plugins/media_player.py:382,519,169`
-- [ ] **O-02** Gate per-block double `perf_counter` (~3750/s @20 nodes) — `core.py:1062/1067`
-  Fix: total block time once per block; per-node timers only on telemetry tick or behind flag.
-- [ ] **O-03** Throttle fetch progress (every 5%) + fix `_in_flight` — `audiocpp_backend.py:729-740`, `core.py:431-434`
-- [ ] **O-04** Raw thread per save/GC → pool — `core.py:600-601,608`
+- [x] **O-01** MediaPlayer queue 500 → 96 (~1s) — `plugins/media_player.py:382,519,169`
+  Fixed 2026-09-19 via subagent: `DECODE_QUEUE_MAXSIZE=96`, fallback intact. Tests: 125 passed.
+- [x] **O-02** Gate per-block double `perf_counter` (~3750/s @20 nodes) — `core.py:1062/1067`
+  Fixed 2026-09-19 via subagent: `_enable_profiling` (default on), per-node timers only on telemetry-due blocks, block total for global CPU. Tests: 125 passed.
+- [x] **O-03** Throttle fetch progress (every 5%) + fix `_in_flight` — `audiocpp_backend.py:729-740`, `core.py:431-434`
+  Fixed 2026-09-19 via subagent: throttle + `_PROGRESS_TAGS` quiescence fix. Tests: 125 passed.
+- [x] **O-04** Raw thread per save/GC → pool — `core.py:600-601,608`
+  Fixed 2026-09-19 via subagent: `_gc_deferred` via `submit_detached` with fallback. Tests: 125 passed.
 - [ ] **O-05** `_get_downstream_nodes` O(V·E) only if slow — `core.py:69-79`
 - [ ] **O-06** Analyzer `.item()` syncs already rate-limited, keep/document — `plugins/data_display.py:124`, `signal_analyzer.py:91-98`
-- [ ] **O-07** Cache `QPainterPathStroker` shape — `ui_system.py:333-336`
-  `shape()` runs per mouse-move hit-test. Fix: build stroked path once in `update_path()`, return cached.
-- [ ] **O-08** Reuse `energy` in NSDF loop (~115k redundant squarings/hop) — `cpp/pitch_tracker.h:77-103`
-  Fix: seed `den` with `energy`, accumulate only `y*y`. Numerically identical.
+- [x] **O-07** Cache `QPainterPathStroker` shape — `ui_system.py:333-336`
+  Fixed 2026-09-19 via subagent: `_hit_path` cache + fallback. Tests: 125 passed.
+- [x] **O-08** Reuse `energy` in NSDF loop (~115k redundant squarings/hop) — `cpp/pitch_tracker.h:77-103`
+  Fixed 2026-09-19 via subagent: identical math, re-read only.
 - [x] **O-09** Single-pass RMS in `AutoGain` — `plugins/dynamics.py:483-485`
   Fixed 2026-09-19. Tests: `test_dynamics.py` passed.
   `mean(dim=0)` then `mean()` == global `mean()`. Fix: `rms = sqrt(mean(_pow_scratch))`. Identical output.
-- [ ] **O-10** Cache colored icons — `ui_icons.py:138-170`
-  `create_icon()` re-parses SVG + Qt render per call. Fix: dict cache on `(name, hex_color)`. Complements B-023 (which still needs the `None` guard).
-- [ ] **O-11** Skip hidden visual timers — `plugins/spectrum.py:176-192`, `spectrogram.py:236-272`, `visualization.py:80`
-  30–40 FPS `QTimer` runs even when hidden. Fix: `if not self.isVisible(): return` at top of `poll_queue`.
+- [x] **O-10** Cache colored icons — `ui_icons.py:138-170`
+  Fixed 2026-09-19 via subagent: `_ICON_CACHE` on `(name,hex)`, B-023 guard kept. Tests: 125 passed.
+- [x] **O-11** Skip hidden visual timers — `plugins/spectrum.py:176-192`, `spectrogram.py:236-272`, `visualization.py:80`
+  Fixed 2026-09-19 via subagent: `isVisible()` guards. Tests: 125 passed.
 
 ## Backlog — KISS / Maintainability (refactor only when touching)
 
 - [ ] **K-01** Shared sliding-FFT helper — `plugins/spectrum.py:69-87` vs `spectrogram.py:116-133`
-- [ ] **K-02** Single `normalize_param_value()` — `core.py:655-667` + `base.py:571-579`
+- [x] **K-02** Single `normalize_param_value()` — `core.py:655-667` + `base.py:571-579`
+  Fixed 2026-09-19 via subagent: helper in `base.py`, both call sites. Tests: 83 passed.
 - [ ] **K-03** `BiquadFilter` reuse `FFINode` mono-dup — `plugins/filters.py:106-115`
 - [ ] **K-04** Split `_apply_command` (~350 lines) to `_op_<name>` — `core.py:625-973`
-- [ ] **K-05** One epoch idiom doc (executor = staleness, node counters = intra-tag) — `core.py:406`
-- [ ] **K-06** Comment `remove_node`/`del` pairing, `stop_stream` epoch bump, `_tensor_cache` read-only — `core.py:89-110,480-498`, `base.py:315-316`
-- [ ] **K-07** Fix CoW breaks: ghost wires + in-place `n["pos"]` — `controller.py:297-299,313-317,345-348`
-- [ ] **K-08** Dead code: reverb display bins, theme container, `self.graph=None`, editor size, `sf is None`, `queue` shadow, redundant save branch — see review
+- [x] **K-05** One epoch idiom doc (executor = staleness, node counters = intra-tag) — `core.py:406`
+  Fixed 2026-09-19 via subagent: 10-line block.
+- [x] **K-06** Comment `remove_node`/`del` pairing, `stop_stream` epoch bump, `_tensor_cache` read-only — `core.py:89-110,480-498`, `base.py:315-316`
+  Fixed 2026-09-19 via subagent: docs only. Tests: 83 passed.
+- [x] **K-07** Fix CoW breaks: ghost wires + in-place `n["pos"]` — `controller.py:297-299,313-317,345-348`
+  Fixed 2026-09-19 via subagent: filter wires + copy dicts. Tests: 83 passed.
+- [x] **K-08** Dead code: reverb display bins, theme container, `self.graph=None`, editor size, `sf is None`, `queue` shadow, redundant save branch — see review
+  Fixed 2026-09-19 via subagent (theme container kept: live ref at `ui_system.py:917`). Tests: 83 passed.
 - [ ] **K-09** Standardize on `.value` (not `get_staging_safe`) + push UI state from completions via `_refresh_ui/_push_telemetry` — `audiocpp_backend.py:791-837`
 - [ ] **K-10** `ui_system.py:1983` split only when touching; test gaps: SamplePlayer restore, FFINode zero-fill, unknown icon, rubberband quarantine.
-- [ ] **K-11** Deduplicate `load`/`reload` deserialization — `core.py:866-962`
-  ~30-line instantiate→attach→`load_state`→connect→clock loops duplicated. Fix: `_deserialize_graph(data, target_graph)` called from both.
+- [x] **K-11** Deduplicate `load`/`reload` deserialization — `core.py:866-962`
+  Fixed 2026-09-19 via subagent: `_deserialize_graph()` shared helper, B-008/B-009 preserved. Tests: 83 passed.
 - [x] **K-12** Simplify compressor read-head math (no behavior change) — `cpp/compressor.cpp:143`
   Fixed 2026-09-19.
   `(_write_head - (_delay_samples-1) + _delay_samples) % _delay_samples` == `(_write_head+1) % _delay_samples`.

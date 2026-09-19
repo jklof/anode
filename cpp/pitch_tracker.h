@@ -92,12 +92,14 @@ public:
 
         for (int tau = min_lag_; tau < max_lag_; ++tau) {
             float num = 0.0f;
-            float den = 1e-9f;
+            // Seed with energy (== sum of x*x over this window): the loop
+            // below then only needs the y*y half of the denominator.
+            float den = energy + 1e-9f;
             for (int j = 0; j < n; ++j) {
                 const float x = pitch_downsample_buf_[start + j];
                 const float y = pitch_downsample_buf_[start + tau + j];
                 num += 2.0f * x * y;
-                den += x * x + y * y;
+                den += y * y;
             }
             nsdf_[tau] = num / den;
         }

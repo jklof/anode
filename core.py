@@ -9,7 +9,7 @@ import logging
 import concurrent.futures
 from typing import Dict, List, Optional, Tuple
 import plugin_system
-from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE, IClockProvider, Node, apply_bypass
+from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE, IClockProvider, Node, apply_bypass, normalize_param_value
 
 _STRUCTURAL_OPS = frozenset({"add", "del", "conn", "disconn", "restore", "clear", "load", "reload", "clock"})
 
@@ -87,6 +87,10 @@ class Graph:
         self.recalculate_order()
 
     def remove_node(self, node_id):
+        # Topology only: NRT discard + stop()/remove() + stat-prune pairing
+        # lives in the "del" command handler, which runs those BEFORE this
+        # (discard invalidates in-flight results, remove() frees native
+        # handles, then the stats buffers are pruned by node id).
         if node_id not in self.node_map:
             return
         node = self.node_map[node_id]
@@ -250,7 +254,10 @@ class Graph:
         dst_node = self.node_map.get(dst_id)
         if src_node and dst_node and src_port in src_node.outputs and dst_port in dst_node.inputs:
             output_slot = src_node.outputs[src_port]
-            dst_node.inputs[dst_port].disconnect(target=output_slot)
+            inp = dst_node.inputs[dst_port]
+            if output_slot not in inp.connected_outputs:
+                return
+            inp.disconnect(target=output_slot)
             # Topology changed, not just execution order: mark both flags so
             # plan recompilation and snapshot invalidation trigger (AGENTS.md §8).
             self.mark_dirty()
@@ -289,11 +296,14 @@ class Graph:
             for u_id in upstream_ids:
                 adj[u_id].append(n.id)
 
-        queue = collections.deque([n.id for n in self.nodes if in_degree[n.id] == 0])
+        # Local worklist renamed (was `queue`): never shadow the imported
+        # `queue` module — this method runs far from the import but the
+        # shadowing confused readers and risked misuse.
+        ready = collections.deque([n.id for n in self.nodes if in_degree[n.id] == 0])
         order = []
 
-        while queue:
-            curr_id = queue.popleft()
+        while ready:
+            curr_id = ready.popleft()
             curr_node = self.node_map.get(curr_id)
             if curr_node:
                 order.append(curr_node)
@@ -301,7 +311,7 @@ class Graph:
             for neighbor_id in adj[curr_id]:
                 in_degree[neighbor_id] -= 1
                 if in_degree[neighbor_id] == 0:
-                    queue.append(neighbor_id)
+                    ready.append(neighbor_id)
 
         if len(order) != len(self.nodes):
             logging.warning("Cycle detected in graph! Cyclic nodes omitted from execution.")
@@ -365,9 +375,17 @@ class Graph:
         return json.dumps(data, indent=2)
 
 
+# Inbox tags that report progress for a still-running job without
+# terminating it (AudioCppJob._fetch_nrt "fetch_progress"). They are
+# delivered to on_nrt_complete() like results, but draining one must not
+# consume the _in_flight count: submit() counts one per job, so a progress
+# item would zero the count early and a node deleted mid-download would
+# look quiescent while its worker is still running.
+_PROGRESS_TAGS = frozenset({"fetch_progress"})
+
+
 class NRTExecutor:
-    """
-    Centralized non-real-time task runner. Replaces the ad hoc background-thread
+    """Centralized non-real-time task runner. Replaces the ad hoc background-thread
     patterns scattered across plugins (action queues, loader threads, mgmt threads).
 
     Two APIs:
@@ -394,6 +412,15 @@ class NRTExecutor:
         # on_nrt_discarded() never runs and native handles / descriptors /
         # stream threads leak. These are strong references held only until
         # the node is quiescent (bounded).
+        # NRT epoch idiom (sole full statement of it):
+        # - submit() bumps node._nrt_epoch and tags the result with it. The
+        #   EXECUTOR owns staleness: drain() delivers only results matching
+        #   the current epoch and routes older ones to on_nrt_discarded().
+        # - Per-node counters (e.g. ConvolutionReverb._load_epoch) own
+        #   INTRA-TAG ordering: they disambiguate rapid re-submits under one
+        #   tag so the newest request wins even when epochs line up.
+        # - submit_detached() bumps nothing and delivers nothing: teardown
+        #   and GC traffic only, never a staleness signal.
         self._discarded_nodes = set()
         # Node -> count of submitted jobs that have not yet been drained.
         # Only mutated from submit()/drain()/drain_discarded(), all of which
@@ -419,6 +446,19 @@ class NRTExecutor:
 
         self._pool.submit(_run)
 
+    def submit_detached(self, fn, *args):
+        """Fire-and-forget pool job: no epoch bump, no inbox, no result
+        delivery. For teardown/destroy traffic (native handle destruction,
+        port closes, stream shutdowns) that must not invalidate in-flight
+        loads sharing the node's NRT epoch (AGENTS.md §6)."""
+        def _run():
+            try:
+                fn(*args)
+            except Exception as e:
+                logging.error(f"NRT background job failed: {e}")
+
+        self._pool.submit(_run)
+
     def drain(self, node):
         inbox = node._nrt_inbox
         if inbox is None:
@@ -428,7 +468,11 @@ class NRTExecutor:
                 epoch, tag, ok, payload = inbox.get_nowait()
             except queue.Empty:
                 return
-            if node in self._in_flight:
+            # Only a terminal job result consumes the _in_flight count placed
+            # by submit(). Progress reports (_PROGRESS_TAGS) belong to a job
+            # that is still running: they are delivered below but leave the
+            # count — and therefore quiescence — untouched.
+            if tag not in _PROGRESS_TAGS and node in self._in_flight:
                 self._in_flight[node] -= 1
                 if self._in_flight[node] <= 0:
                     del self._in_flight[node]
@@ -483,7 +527,11 @@ class NRTExecutor:
 
     def stop_stream(self, node, stop_fn, thread, timeout=2.0):
         """Non-blocking stream teardown: stop+join happens on a pool thread,
-        not the caller."""
+        not the caller. Fire-and-forget via submit_detached(): no epoch bump,
+        so teardown traffic never invalidates in-flight loads sharing the
+        node's NRT epoch, and no inbox delivery — nodes must therefore
+        tolerate completions arriving with tag=None (the default submit tag)
+        by ignoring unknown tags in on_nrt_complete()."""
         if thread is None:
             return
 
@@ -498,7 +546,7 @@ class NRTExecutor:
                         f"within {timeout}s; abandoning it."
                     )
 
-        self.submit(node, _shutdown, ())
+        self.submit_detached(_shutdown)
 
     def shutdown(self, wait=True):
         self._pool.shutdown(wait=wait)
@@ -520,6 +568,12 @@ class Engine:
         # Per-node processing stats. Lives on the Engine (not _worker locals) so
         # entries can be pruned when nodes are deleted.
         self._stats_buffer = {}
+        # Gate for the per-node perf_counter pairs in the processing loop
+        # (~2/node/block). On by default to preserve the load view; when on,
+        # per-node timers run only on the block preceding a telemetry
+        # broadcast (~10 Hz, the only consumer of _stats_buffer), while the
+        # total block time is measured once per block for the global CPU.
+        self._enable_profiling = True
         # Ids whose error_msg was set by the processing loop itself. Only
         # those are auto-cleared on recovery: async (NRT/UI) errors are owned
         # by their context and must survive successful blocks.
@@ -575,10 +629,9 @@ class Engine:
         self._next_cmd_id += 1
         cmd_id = self._next_cmd_id
         if self.running:
-            if cmd[0] == "save":
-                # Queue save command for engine thread to serialize, then background write
-                self.command_queue.put((cmd_id, cmd))
-                return cmd_id
+            # All commands (including "save": serialization happens on the
+            # engine thread at the coherent boundary, file I/O on a
+            # background stream) go through the queue when running.
             self.command_queue.put((cmd_id, cmd))
         else:
             self._apply_command(cmd, cmd_id)
@@ -612,7 +665,15 @@ class Engine:
 
     def _gc_deferred(self):
         """Run a full collection off-thread. Full gc.collect() calls can stall for
-        hundreds of milliseconds and must never execute on the RT loop."""
+        hundreds of milliseconds and must never execute on the RT loop: reuse
+        the NRT pool instead of spawning a raw thread per call."""
+        nrt = getattr(self, "nrt", None)
+        if nrt is not None:
+            try:
+                nrt.submit_detached(gc.collect)
+                return
+            except Exception:
+                pass
         threading.Thread(target=gc.collect, daemon=True, name="anode-gc").start()
 
     def _emit_snapshot(self):
@@ -632,6 +693,65 @@ class Engine:
         except queue.Full:
             # Non-blocking: drop telemetry rather than stall the engine thread.
             pass
+
+    def _deserialize_graph(self, data, target_graph, op_name):
+        """Rebuild a graph from parsed patch data: instantiate nodes, attach
+        them (so load_state() can submit NRT work), restore state, reconnect
+        wires, restore the clock. Shared by "load" and "reload" so the two
+        stay behavior-identical; B-009 warning summaries keep their per-op
+        prefix via op_name. Callers own teardown, graph swap, B-008 stat
+        resets, running-start, snapshot and GC."""
+        target_graph.engine = self  # Set engine ref before loading nodes so submit_nrt works
+        unknown_types = []
+        for n_data in data.get("nodes", []):
+            if not isinstance(n_data, dict):
+                continue
+            cls = plugin_system.NODE_REGISTRY.get(n_data.get("type"))
+            if cls:
+                node = cls(n_data.get("name", ""))
+                if "id" in n_data:
+                    node.id = n_data["id"]
+                # Add node to graph first so load_state has graph reference
+                target_graph.add_node(node)
+                node.load_state(n_data)
+            else:
+                unknown_types.append(
+                    f"'{n_data.get('type')}' (id '{n_data.get('id')}')"
+                )
+        rejected_wires = []
+        for c in data.get("connections", []):
+            if not isinstance(c, dict):
+                continue
+            src_id = c.get("src_id")
+            dst_id = c.get("dst_id")
+            if src_id in target_graph.node_map and dst_id in target_graph.node_map:
+                if not target_graph.connect(src_id, c.get("src_port"), dst_id, c.get("dst_port")):
+                    rejected_wires.append(
+                        f"{src_id}.{c.get('src_port')}->"
+                        f"{dst_id}.{c.get('dst_port')}"
+                    )
+            else:
+                rejected_wires.append(
+                    f"{src_id}.{c.get('src_port')}->"
+                    f"{dst_id}.{c.get('dst_port')}"
+                )
+        if unknown_types or rejected_wires:
+            parts = []
+            if unknown_types:
+                parts.append(
+                    f"dropped {len(unknown_types)} unknown node type(s): "
+                    + ", ".join(unknown_types)
+                )
+            if rejected_wires:
+                parts.append(
+                    f"dropped {len(rejected_wires)} wire(s): "
+                    + ", ".join(rejected_wires)
+                )
+            logging.warning(f"{op_name} " + "; ".join(parts))
+        if data.get("clock_id") and data["clock_id"] in target_graph.node_map:
+            target_graph.set_master_clock(target_graph.node_map[data["clock_id"]])
+        else:
+            target_graph.clear_master_clock()
 
     def _apply_command(self, cmd, cmd_id=None):
         try:
@@ -667,12 +787,9 @@ class Engine:
                     if initial_params:
                         for param_name, param_data in initial_params.items():
                             if param_name in node.params:
-                                # Support both dictionary format: {"value": actual_value} and raw values
-                                if isinstance(param_data, dict) and "value" in param_data:
-                                    val = param_data["value"]
-                                else:
-                                    # Handle raw values (e.g., from Node.to_dict() for Undo functionality)
-                                    val = param_data
+                                # Snapshot dicts vs raw values: same shared
+                                # shim as Node.load_state().
+                                val = normalize_param_value(param_data)
                                 node.params[param_name].set(val)
                                 # Commit staged value before notifying the node so
                                 # on_ui_param_change sees a synchronized parameter.
@@ -738,7 +855,9 @@ class Engine:
                         )
                     except Exception:
                         pass
-                else:
+                elif not already:
+                    # A benign re-drag of an existing edge (already=True) is
+                    # a silent no-op, not a rejection.
                     try:
                         self.output_queue.put_nowait(
                             {"type": "connect_rejected", "src_id": sid, "src_port": sp,
@@ -919,59 +1038,8 @@ class Engine:
                         raise ValueError("Loaded data is not a valid JSON object.")
 
                     new_graph = Graph()
-                    new_graph.engine = self  # Fix: Set engine reference before loading nodes so submit_nrt works
-                    unknown_types = []
-                    for n_data in data.get("nodes", []):
-                        if not isinstance(n_data, dict):
-                            continue
-                        cls = plugin_system.NODE_REGISTRY.get(n_data.get("type"))
-                        if cls:
-                            node = cls(n_data.get("name", ""))
-                            if "id" in n_data:
-                                node.id = n_data["id"]
-                            # Fix: Add node to graph first so load_state has graph reference
-                            new_graph.add_node(node)
-                            node.load_state(n_data)
-                        else:
-                            unknown_types.append(
-                                f"'{n_data.get('type')}' (id '{n_data.get('id')}')"
-                            )
-                    rejected_wires = []
-                    for c in data.get("connections", []):
-                        if not isinstance(c, dict):
-                            continue
-                        src_id = c.get("src_id")
-                        dst_id = c.get("dst_id")
-                        if src_id in new_graph.node_map and dst_id in new_graph.node_map:
-                            if not new_graph.connect(src_id, c.get("src_port"), dst_id, c.get("dst_port")):
-                                rejected_wires.append(
-                                    f"{src_id}.{c.get('src_port')}->"
-                                    f"{dst_id}.{c.get('dst_port')}"
-                                )
-                        else:
-                            rejected_wires.append(
-                                f"{src_id}.{c.get('src_port')}->"
-                                f"{dst_id}.{c.get('dst_port')}"
-                            )
-                    if unknown_types or rejected_wires:
-                        parts = []
-                        if unknown_types:
-                            parts.append(
-                                f"dropped {len(unknown_types)} unknown node type(s): "
-                                + ", ".join(unknown_types)
-                            )
-                        if rejected_wires:
-                            parts.append(
-                                f"dropped {len(rejected_wires)} wire(s): "
-                                + ", ".join(rejected_wires)
-                            )
-                        logging.warning("Load " + "; ".join(parts))
-                    if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
-                        new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
-                    else:
-                        new_graph.clear_master_clock()
+                    self._deserialize_graph(data, new_graph, "Load")
                     self.graph = new_graph
-                    self.graph.engine = self
                     if self.running:
                         for n in self.graph.nodes:
                             if n == self.graph.clock_source:
@@ -1006,52 +1074,8 @@ class Engine:
                 try:
                     data = json.loads(current_json)
                     new_graph = Graph()
-                    new_graph.engine = self  # Fix: Set engine reference before loading nodes so submit_nrt works
-                    unknown_types = []
-                    for n_data in data["nodes"]:
-                        cls = plugin_system.NODE_REGISTRY.get(n_data["type"])
-                        if cls:
-                            node = cls(n_data["name"])
-                            node.id = n_data["id"]
-                            # Fix: Add node to graph first so load_state has graph reference
-                            new_graph.add_node(node)
-                            node.load_state(n_data)
-                        else:
-                            unknown_types.append(
-                                f"'{n_data.get('type')}' (id '{n_data.get('id')}')"
-                            )
-                    rejected_wires = []
-                    for c in data["connections"]:
-                        if c["src_id"] in new_graph.node_map and c["dst_id"] in new_graph.node_map:
-                            if not new_graph.connect(c["src_id"], c["src_port"], c["dst_id"], c["dst_port"]):
-                                rejected_wires.append(
-                                    f"{c.get('src_id')}.{c.get('src_port')}->"
-                                    f"{c.get('dst_id')}.{c.get('dst_port')}"
-                                )
-                        else:
-                            rejected_wires.append(
-                                f"{c.get('src_id')}.{c.get('src_port')}->"
-                                f"{c.get('dst_id')}.{c.get('dst_port')}"
-                            )
-                    if unknown_types or rejected_wires:
-                        parts = []
-                        if unknown_types:
-                            parts.append(
-                                f"dropped {len(unknown_types)} unknown node type(s): "
-                                + ", ".join(unknown_types)
-                            )
-                        if rejected_wires:
-                            parts.append(
-                                f"dropped {len(rejected_wires)} wire(s): "
-                                + ", ".join(rejected_wires)
-                            )
-                        logging.warning("Reload " + "; ".join(parts))
-                    if data.get("clock_id") and data["clock_id"] in new_graph.node_map:
-                        new_graph.set_master_clock(new_graph.node_map[data["clock_id"]])
-                    else:
-                        new_graph.clear_master_clock()
+                    self._deserialize_graph(data, new_graph, "Reload")
                     self.graph = new_graph
-                    self.graph.engine = self
                     if self.running:
                         for n in self.graph.nodes:
                             if n == self.graph.clock_source:
@@ -1160,25 +1184,35 @@ class Engine:
                 for node in plan.nodes:
                     node.sync()
 
+                # Total block time, measured once per block: the source of
+                # the global CPU figure. Per-node timers run only on the
+                # block preceding a telemetry broadcast (the sole consumer
+                # of _stats_buffer), or never when profiling is disabled.
+                t_block0 = time.perf_counter()
+                profile = self._enable_profiling and t_block0 >= next_telemetry_time
                 for node in plan.nodes:
                     try:
-                        t0 = time.perf_counter()
+                        if profile:
+                            t0 = time.perf_counter()
                         self._process_plan_node(node)
                         if node.id in self._process_error_ids:
                             node.error_msg = None
                             self._process_error_ids.discard(node.id)
-                        dt = time.perf_counter() - t0
-                        self._stats_buffer[node.id] = (dt / block_duration_sec) * 100.0
+                        if profile:
+                            dt = time.perf_counter() - t0
+                            self._stats_buffer[node.id] = (dt / block_duration_sec) * 100.0
                     except Exception as e:
                         node.error_msg = str(e)
                         if node.id not in self._process_error_ids:
                             logging.exception(f"Error processing node {node.name} (id: {node.id}): {e}")
                         self._process_error_ids.add(node.id)
+                block_cpu = ((time.perf_counter() - t_block0) / block_duration_sec) * 100.0
 
                 # Check if any node marked structure as dirty during the current block processing
                 if self.graph.structure_dirty:
                     self.graph.structure_dirty = False
                     self._active_plan = self.graph.compile_execution_plan()
+                    plan = self._active_plan
                     self._emit_snapshot()
 
                 now = time.perf_counter()
@@ -1186,7 +1220,10 @@ class Engine:
                     self._drain_nrt_all()
                     self._emit_snapshot_on_error_change(plan)
                     stats_buffer = self._stats_buffer
-                    global_cpu = sum(stats_buffer.values()) / len(stats_buffer) if stats_buffer else 0.0
+                    # Global CPU comes from the once-per-block total timer
+                    # above; per-node entries (refreshed this block when
+                    # profiling) ride along for the per-node load view.
+                    global_cpu = block_cpu
                     node_data = {"__cpu__": stats_buffer.copy()}
                     for node in plan.nodes:
                         try:

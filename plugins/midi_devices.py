@@ -98,11 +98,7 @@ class MIDIInputNode(Node):
             if ok:
                 new_port, status_str, epoch = result
                 if epoch != self._device_epoch:
-                    if new_port:
-                        try:
-                            new_port.close()
-                        except Exception:
-                            pass
+                    self._close_stale_port_non_blocking(new_port)
                     return
                 self._close_port_non_blocking()
                 self._inport = new_port
@@ -116,13 +112,9 @@ class MIDIInputNode(Node):
     def on_nrt_discarded(self, tag, ok, result):
         if tag == "open_input" and ok and result:
             # Superseded open: the port was created but never installed, so
-            # close it here (engine thread) to avoid leaking the device.
+            # retire it without blocking the engine thread (AGENTS.md §6).
             new_port = result[0] if isinstance(result, tuple) else None
-            if new_port:
-                try:
-                    new_port.close()
-                except Exception:
-                    pass
+            self._close_stale_port_non_blocking(new_port)
 
     def _midi_callback(self, message):
         self._queue.try_push((0, message))
@@ -135,11 +127,33 @@ class MIDIInputNode(Node):
                 pass
             self._inport = None
 
+    def _close_stale_port_non_blocking(self, port):
+        """Retire a never-installed port opened by a superseded request.
+        Same non-blocking contract as _close_port_non_blocking: the native
+        close() runs on the NRT pool (never the engine thread), or
+        synchronously when headless (no engine to race)."""
+        if port is None:
+            return
+
+        def _teardown():
+            try:
+                port.close()
+            except Exception:
+                pass
+
+        engine = getattr(getattr(self, "graph", None), "engine", None)
+        nrt = getattr(engine, "nrt", None) if engine is not None else None
+        if nrt is not None:
+            nrt.submit_detached(_teardown)
+        else:
+            _teardown()
+
     def _close_port_non_blocking(self):
         """Non-blocking port teardown for use from on_nrt_complete(), which
         runs on the engine/audio thread (AGENTS.md §4: no blocking work on
         the audio path). The port handle is detached synchronously; the
-        native close() runs on the NRT pool."""
+        native close() runs on the NRT pool. Detached submit: no shared-epoch
+        bump, so in-flight opens stay valid."""
         port = self._inport
         self._inport = None
 
@@ -151,7 +165,7 @@ class MIDIInputNode(Node):
                     pass
 
         if getattr(self, "graph", None) and getattr(self.graph, "engine", None):
-            self.graph.engine.nrt.submit(self, _teardown, (), tag="close_input")
+            self.graph.engine.nrt.submit_detached(_teardown)
         else:
             _teardown()
 
@@ -230,11 +244,7 @@ class MIDIOutputNode(Node):
             if ok:
                 new_port, status_str, epoch = result
                 if epoch != self._device_epoch:
-                    if new_port:
-                        try:
-                            new_port.close()
-                        except Exception:
-                            pass
+                    self._close_stale_port_non_blocking(new_port)
                     return
                 self._close_port_non_blocking()
                 self._outport = new_port
@@ -254,14 +264,10 @@ class MIDIOutputNode(Node):
     def on_nrt_discarded(self, tag, ok, result):
         if tag == "open_output" and ok and result:
             # Superseded open: the port was created but never installed (and
-            # no writer thread was started for it), so close it here to avoid
-            # leaking the device.
+            # no writer thread was started for it), so retire it without
+            # blocking the engine thread (AGENTS.md §6).
             new_port = result[0] if isinstance(result, tuple) else None
-            if new_port:
-                try:
-                    new_port.close()
-                except Exception:
-                    pass
+            self._close_stale_port_non_blocking(new_port)
 
     def _writer_loop(self):
         while not self._stop_event.is_set():
@@ -285,6 +291,27 @@ class MIDIOutputNode(Node):
             except Exception:
                 pass
             self._outport = None
+
+    def _close_stale_port_non_blocking(self, port):
+        """Retire a never-installed port opened by a superseded request.
+        Same non-blocking contract as _close_port_non_blocking: the native
+        close() runs on the NRT pool (never the engine thread), or
+        synchronously when headless (no engine to race)."""
+        if port is None:
+            return
+
+        def _teardown():
+            try:
+                port.close()
+            except Exception:
+                pass
+
+        engine = getattr(getattr(self, "graph", None), "engine", None)
+        nrt = getattr(engine, "nrt", None) if engine is not None else None
+        if nrt is not None:
+            nrt.submit_detached(_teardown)
+        else:
+            _teardown()
 
     def _close_port_non_blocking(self):
         """Non-blocking teardown for use from on_nrt_complete(), which runs on
@@ -313,9 +340,9 @@ class MIDIOutputNode(Node):
                 self.graph.engine.nrt.stop_stream(self, _teardown, worker)
             else:
                 # No writer thread to stop (startup failed or never spawned):
-                # stop_stream() early-returns when thread is None, so submit
-                # the close directly or the port handle would leak.
-                self.graph.engine.nrt.submit(self, _teardown, (), tag="close_output")
+                # detached submit runs the close on the pool without bumping
+                # the shared NRT epoch, so in-flight opens stay valid.
+                self.graph.engine.nrt.submit_detached(_teardown)
         else:
             # No engine (node construction/removal outside a running engine):
             # synchronous fallback is acceptable on the control thread.

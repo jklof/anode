@@ -14,6 +14,8 @@ a strict [0, 1] CV.
 import ctypes
 import logging
 
+import torch
+
 from ffi_base import FFINode
 from base import BLOCK_SIZE
 
@@ -79,12 +81,24 @@ class EnvelopeFollower(FFINode):
         sig = self.inputs["in"].get_tensor()
         if sig.device.type != "cpu":
             sig = sig.cpu()
+        if sig.dtype != torch.float32:
+            self._ffi_in_buffer.copy_(sig)
+            sig = self._ffi_in_buffer
         if not sig.is_contiguous():
             self._ffi_in_buffer.copy_(sig)
             sig = self._ffi_in_buffer
 
         cv = self.outputs["cv_out"].buffer[0]
         gate = self.outputs["gate_out"].buffer[0]
+        # Native process() takes float* (AGENTS.md §7): buffers must be
+        # CPU, contiguous float32 before data_ptr() is reinterpreted.
+        for buf, label in ((cv, "cv_out"), (gate, "gate_out")):
+            if buf.device.type != "cpu":
+                raise RuntimeError(f"Envelope {label} must be CPU.")
+            if not buf.is_contiguous():
+                raise RuntimeError(f"Envelope {label} is not contiguous.")
+            if buf.dtype != torch.float32:
+                raise RuntimeError(f"Envelope {label} must be float32.")
 
         self.lib.process(
             self.dsp_handle,
@@ -92,5 +106,5 @@ class EnvelopeFollower(FFINode):
             ctypes.cast(cv.data_ptr(), ctypes.POINTER(ctypes.c_float)),
             ctypes.cast(gate.data_ptr(), ctypes.POINTER(ctypes.c_float)),
             int(sig.shape[0]),
-            BLOCK_SIZE,
+            int(cv.shape[0]),
         )

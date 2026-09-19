@@ -512,6 +512,13 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
     return {"wav": str(out_wav), "metrics": _parse_metrics(output_tail)}
 
 
+# Fetch-progress throttle: _fetch_nrt reports at most every 5% or 64 MB per
+# label so multi-GB model downloads don't flood the NRT result inbox (the
+# download callback fires per 1 MB chunk).
+_FETCH_PROGRESS_PCT = 5.0
+_FETCH_PROGRESS_BYTES = 64 * 1024 * 1024
+
+
 class AudioCppJob(Node):
     """Node base with generate/cancel plumbing for audio.cpp sidecar jobs.
 
@@ -728,10 +735,24 @@ class AudioCppJob(Node):
         """Download missing runtime/models with inbox progress. NRT only."""
         epoch = self._nrt_epoch
         inbox = self._nrt_inbox
+        # Progress reports share the result inbox (delivered to
+        # on_nrt_complete("fetch_progress")), but a 1 MB-chunk callback
+        # would flood it on multi-GB downloads. Throttle to every 5% or
+        # 64 MB per label; terminal states always pass through. Draining a
+        # progress item consumes no _in_flight count (core.py).
+        last_report = {}
 
         def _progress(label, done, total, state):
             if inbox is None:
                 return
+            if state == "downloading":
+                prev_pct, prev_done = last_report.get(label, (-1.0, -_FETCH_PROGRESS_BYTES))
+                pct = (100.0 * done / total) if total else prev_pct
+                complete = bool(total) and done >= total
+                if (not complete and (pct - prev_pct) < _FETCH_PROGRESS_PCT
+                        and (done - prev_done) < _FETCH_PROGRESS_BYTES):
+                    return
+                last_report[label] = (pct, done)
             try:
                 inbox.put((epoch, "fetch_progress", True,
                            {"label": label, "done": done, "total": total,

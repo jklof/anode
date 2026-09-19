@@ -163,7 +163,6 @@ class ScriptNode(Node):
         self.compiled_code = None
         self.state_dict = {}
         self.error_line = -1
-        self.graph = None
 
         self._recompile()
 
@@ -253,6 +252,11 @@ class ScriptNode(Node):
                             v = v.reshape(1, 1).expand(1, out.buffer.shape[1])
                         elif v.ndim == 1:
                             v = v.unsqueeze(0)  # (B,) -> (1, B)
+                        elif v.ndim > 2:
+                            # Higher-rank tensors have no audio meaning:
+                            # zero-fill so no stale audio survives.
+                            out.buffer.zero_()
+                            continue
                         out_c, out_f = out.buffer.shape[0], out.buffer.shape[1]
                         if v.shape[0] <= out_c and v.shape[1] == out_f:
                             # Channel adaptation (AGENTS.md §2): a mono (1, B)

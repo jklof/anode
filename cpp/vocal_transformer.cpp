@@ -1332,7 +1332,7 @@ private:
         // Tract-shaped aspiration: signal-proportional noise scaled by the vocal tract
         // envelope and gated by voicing (natural vocal cord leakage occurs during phonation).
         const int k_low = static_cast<int>(1500.0f * (fft_size_ / sr_));
-        const int k_high = static_cast<int>(7000.0f * (fft_size_ / sr_));
+        int k_high = static_cast<int>(7000.0f * (fft_size_ / sr_));
         const float breath_scale = breathiness_ * 0.04f * voiced_prob;
 
         // Pitch-synchronous (glottally modulated) aspiration: blending the noise
@@ -1351,6 +1351,10 @@ private:
         if (pitch_sync) {
             k0 = current_h1_bin_;
             if (k0 > fft_size_ / 32) k0 = fft_size_ / 32;   // sanity clamp (F0 <= ~1.5 kHz)
+            // Clamp the breath band so kd+k0 stays in-bounds: at non-48k
+            // rates k_high alone can exceed num_bins_-1 (no behavior change
+            // at 48k/2048 where k_high+k0 << num_bins_).
+            if (k_high > num_bins_ - 1 - k0) k_high = num_bins_ - 1 - k0;
             nb_lo = k_low - k0;
             if (nb_lo < 0) nb_lo = 0;
             nb_hi = k_high + k0;
@@ -1379,13 +1383,20 @@ private:
                 float n_im;
                 if (pitch_sync) {
                     // N(k) + beta*N(k-k0) + beta*N(k+k0), energy-normalized.
-                    // kd - k0 >= nb_lo and kd + k0 <= nb_hi by construction.
-                    n_re = sideband_norm * (noise_raw_re_[kd]
-                                            + beta * noise_raw_re_[kd - k0]
-                                            + beta * noise_raw_re_[kd + k0]);
-                    n_im = sideband_norm * (noise_raw_im_[kd]
-                                            + beta * noise_raw_im_[kd - k0]
-                                            + beta * noise_raw_im_[kd + k0]);
+                    // Guarded: the "by construction" claim above fails once
+                    // nb_hi clamps at non-48k rates, so verify kd±k0 are
+                    // filled and in-bounds (always true at 48k/2048).
+                    if (kd - k0 >= 0 && kd + k0 < num_bins_) {
+                        n_re = sideband_norm * (noise_raw_re_[kd]
+                                                + beta * noise_raw_re_[kd - k0]
+                                                + beta * noise_raw_re_[kd + k0]);
+                        n_im = sideband_norm * (noise_raw_im_[kd]
+                                                + beta * noise_raw_im_[kd - k0]
+                                                + beta * noise_raw_im_[kd + k0]);
+                    } else {
+                        n_re = sideband_norm * noise_raw_re_[kd];
+                        n_im = sideband_norm * noise_raw_im_[kd];
+                    }
                 } else {
                     rng_state_ ^= rng_state_ << 13;
                     rng_state_ ^= rng_state_ >> 17;

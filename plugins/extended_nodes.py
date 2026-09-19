@@ -162,7 +162,16 @@ class FileRecorder(Node):
                             self._writer_close()
                             self._recording = False
                             if "record" in self.params:
-                                self.params["record"].set(False)
+                                # Writer thread must never mutate params
+                                # directly (AGENTS.md §5): request the change
+                                # through the engine command queue instead
+                                # (cf. deesser.py on_nrt_complete).
+                                graph = getattr(self, "graph", None)
+                                engine = getattr(graph, "engine", None) if graph is not None else None
+                                if engine is not None:
+                                    engine.push_command(("param", self.id, "record", False))
+                                else:
+                                    self.params["record"].set(False)
             else:
                 if self._shutdown_event.is_set():
                     # Drain remaining queued frames before exiting
@@ -253,8 +262,13 @@ class FileRecorder(Node):
             return
 
         # Signal writer thread to close; it drains queued blocks first.
+        # Retry the sentinel briefly: a full index queue would otherwise
+        # drop it and leave the writer to the shutdown-event drain path.
         self._shutdown_event.set()
-        self._index_queue.try_push(-1)
+        for _ in range(50):
+            if self._index_queue.try_push(-1):
+                break
+            threading.Event().wait(0.001)
 
         writer = self._writer_thread
         self._writer_thread = None

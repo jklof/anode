@@ -270,6 +270,10 @@ if GUI_AVAILABLE:
                     img.setPixel(x, y, int(colors[y]))
 
         def poll_queue(self):
+            # Hidden widget: skip the 40 FPS poll entirely (frames accumulate
+            # in the bounded monitor queue; pop_all() catches up on return).
+            if not self.isVisible():
+                return
             queue = getattr(self.proxy, "monitor_queue", None)
             if not queue:
                 return

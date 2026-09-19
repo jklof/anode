@@ -3,8 +3,6 @@ import torch.fft
 import numpy as np
 import os
 import logging
-import soundfile as sf
-import resampy
 from dataclasses import dataclass
 from typing import Optional
 
@@ -41,7 +39,6 @@ class PreparedReverbState:
     ordered_input: torch.Tensor              # (num_partitions, proc_channels, num_bins) complex64
     dry_buffer: torch.Tensor                 # (proc_channels, PARTITION_SIZE) float32
     wet_buffer: torch.Tensor                 # (proc_channels, PARTITION_SIZE) float32
-    log_indices: torch.Tensor                # (DISPLAY_BINS,) long
     history_ptr: int = 0
 
 
@@ -127,25 +124,12 @@ class ConvolutionReverb(Node):
         self._status = "Idle"
         self._current_filename = "No IR Loaded"
 
+        # Epoch for NRT IR loads: stale (superseded) results are rejected so
+        # a rapid IR switch always leaves the newest IR installed.
+        self._load_epoch = 0
+
         # DSP State - PreparedReverbState or None
         self._prepared_state: Optional[PreparedReverbState] = None
-
-        # Log-frequency mapping (shared, computed once)
-        self._fft_bins = FFT_SIZE // 2 + 1
-        self._log_indices = self._compute_log_indices()
-
-    def _compute_log_indices(self):
-        """Compute log-frequency mapping indices (constant, can be shared)."""
-        import numpy as np
-        MIN_FREQ = 20.0
-        MAX_FREQ = 20000.0
-        DISPLAY_BINS = 128  # Not used but kept for compatibility
-        bin_freqs = torch.linspace(0, SAMPLE_RATE / 2.0, steps=self._fft_bins)
-        targets = torch.tensor(
-            np.logspace(np.log10(MIN_FREQ), np.log10(MAX_FREQ), num=128),  # Use a default
-            dtype=DTYPE,
-        )
-        return torch.searchsorted(bin_freqs, targets).clamp_(0, self._fft_bins - 1)
 
     def on_ui_param_change(self, param_name):
         if param_name == "ir_path":
@@ -165,27 +149,28 @@ class ConvolutionReverb(Node):
         self.current_ir_path = path
         self._status = "Loading..."
         self._current_filename = os.path.basename(path)
-        self.submit_nrt(self._load_ir_blocking, path)
+        self._load_epoch += 1
+        self.submit_nrt(self._load_ir_blocking, path, self._load_epoch, tag="load_ir")
 
-    def _load_ir_blocking(self, path):
-        """Runs on an NRT pool thread. Uses soundfile/resampy (0% PyTorch) for
-        file I/O and resampling to avoid OpenMP deadlocks with the audio thread.
-        Returns a fully constructed PreparedReverbState."""
+    def _load_ir_blocking(self, path, epoch):
+        """Runs on an NRT pool thread. Decodes via the shared
+        ``audio_io.to_engine_audio`` helper (soundfile with PyAV fallback,
+        so MP3 IRs decode) and resamples to the engine rate — NRT only,
+        since resampy is banned from the real-time path (AGENTS.md §4).
+        Returns a (PreparedReverbState, epoch) tuple: the fully constructed
+        state plus the load epoch it was requested under."""
         if not os.path.exists(path):
             raise FileNotFoundError(f"File not found: {path}")
 
-        # 1. Load WAV file into numpy array using soundfile (Pure C/Numpy, 0% PyTorch)
-        data, sr = sf.read(path, dtype='float32')
-        if len(data.shape) == 1:
-            waveform = data[np.newaxis, :]  # Mono: Shape (1, samples)
-        else:
-            waveform = data.T  # Stereo/Multi: Shape (channels, samples)
+        # Shared decode + channel-adapt + resample (NRT worker only).
+        # to_engine_audio returns a (channels, samples) float32 array;
+        # lazy-imported so a missing optional decoder never breaks module import.
+        from audio_io import to_engine_audio
+        waveform = to_engine_audio(
+            path, target_sr=SAMPLE_RATE, target_channels=2, label="IR")
 
-        # 2. Resample using resampy if sample rate doesn't match
-        if sr != SAMPLE_RATE:
-            waveform = resampy.resample(waveform, sr, SAMPLE_RATE, axis=-1)
-
-        # 3. Limit to max 2 channels
+        # Limit to max 2 channels (to_engine_audio already truncates to the
+        # leading target channels; keep the guard for forward compat).
         if waveform.shape[0] > 2:
             waveform = waveform[:2, :]
 
@@ -232,29 +217,39 @@ class ConvolutionReverb(Node):
         dry_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
         wet_buffer = torch.zeros((proc_channels, PARTITION_SIZE), dtype=DTYPE)
 
-        return PreparedReverbState(
-            ir_ffts=ir_ffts,
-            num_partitions=num_partitions,
-            ir_channels=num_ir_channels,
-            input_history=input_history,
-            overlap_buffer=overlap_buffer,
-            padding_buffer=padding_buffer,
-            product_buffer=product_buffer,
-            accum_fft_buffer=accum_fft_buffer,
-            result_buffer=result_buffer,
-            partition_indices=partition_indices,
-            wrap_indices=wrap_indices,
-            ordered_input=ordered_input,
-            dry_buffer=dry_buffer,
-            wet_buffer=wet_buffer,
-            log_indices=self._log_indices,
-            history_ptr=0,
+        return (
+            PreparedReverbState(
+                ir_ffts=ir_ffts,
+                num_partitions=num_partitions,
+                ir_channels=num_ir_channels,
+                input_history=input_history,
+                overlap_buffer=overlap_buffer,
+                padding_buffer=padding_buffer,
+                product_buffer=product_buffer,
+                accum_fft_buffer=accum_fft_buffer,
+                result_buffer=result_buffer,
+                partition_indices=partition_indices,
+                wrap_indices=wrap_indices,
+                ordered_input=ordered_input,
+                dry_buffer=dry_buffer,
+                wet_buffer=wet_buffer,
+                history_ptr=0,
+            ),
+            epoch,
         )
 
     def on_nrt_complete(self, tag, ok, result):
-        if ok and isinstance(result, PreparedReverbState):
+        if tag != "load_ir":
+            return
+        if ok and isinstance(result, tuple) and isinstance(result[0], PreparedReverbState):
+            state, epoch = result
+            if epoch != self._load_epoch:
+                # Superseded by a newer IR request: drop it so the newest
+                # IR always wins. Plain tensors carry no native resources,
+                # so nothing needs releasing.
+                return
             # Atomic state swap on engine thread
-            self._prepared_state = result
+            self._prepared_state = state
             # current_ir_path and _current_filename already set in _start_loading;
             # no need to reassign here.
             self.loading = False

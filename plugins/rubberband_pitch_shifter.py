@@ -14,6 +14,12 @@ Real-time notes:
 - pylibrb has no retrieve_into(): retrieve() returns a freshly allocated numpy
   array on every call. This is bounded and freed every block, so the steady
   state does not grow, but it is NOT a zero-allocation path.
+- Quarantine (accepted non-RT exception): the per-block transient
+  allocations (pylibrb retrieve() burst + the FIFO copy) are bounded to a
+  few KB at the block rate (~94 blocks/s at 512/48k), freed every block,
+  and never grow. A risky zero-alloc rewrite of the binding is
+  deliberately NOT attempted; see _fifo_read() for the one trivially safe
+  pooling (a persistent torch view over the FIFO).
 - mix blends the UNDELAYED dry signal with the DELAYED wet signal. Below 1.0
   this is a comb-filtering special effect, not a latency-compensated crossfade.
 - The pitch_mod/formant_mod inputs are parameter-bound block-rate CV: the
@@ -100,6 +106,10 @@ class RubberBandPitchShifter(Node):
         # Pre-allocated audio-thread state.
         self._in_np = np.zeros((CHANNELS, BLOCK_SIZE), dtype=np.float32)
         self._fifo = np.zeros((CHANNELS, self.FIFO_CAPACITY), dtype=np.float32)
+        # Persistent torch view over _fifo: avoids a per-block
+        # torch.from_numpy() wrapper allocation in _fifo_read(). Safe because
+        # _fifo is never reallocated (only fill()/copyto in place).
+        self._fifo_t = torch.from_numpy(self._fifo)
         self._fifo_head = 0
         self._fifo_tail = 0
         self._fifo_count = 0
@@ -215,13 +225,19 @@ class RubberBandPitchShifter(Node):
         self._fifo_count += n
 
     def _fifo_read(self, out):
-        """Consume BLOCK_SIZE samples from the ring buffer into `out`."""
+        """Consume BLOCK_SIZE samples from the ring buffer into `out`.
+
+        Uses the persistent torch view (self._fifo_t) so no per-block
+        torch.from_numpy() wrapper is allocated; the slice copies below
+        are views into pre-allocated storage. The remaining per-block
+        transient (pylibrb retrieve() in process()) is a quarantined,
+        rate-limited (~94/s) accepted exception, not a growth leak.
+        """
         first = min(BLOCK_SIZE, self.FIFO_CAPACITY - self._fifo_tail)
-        out[:, :first].copy_(
-            torch.from_numpy(self._fifo[:, self._fifo_tail:self._fifo_tail + first]))
+        out[:, :first].copy_(self._fifo_t[:, self._fifo_tail:self._fifo_tail + first])
         second = BLOCK_SIZE - first
         if second > 0:
-            out[:, first:].copy_(torch.from_numpy(self._fifo[:, :second]))
+            out[:, first:].copy_(self._fifo_t[:, :second])
         self._fifo_tail = (self._fifo_tail + BLOCK_SIZE) % self.FIFO_CAPACITY
         self._fifo_count -= BLOCK_SIZE
 

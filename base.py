@@ -313,6 +313,8 @@ class InputSlot:
             return target
 
         if self.param_name and self.param_name in self.parent.params:
+            # Shared cache: read-only. Copy out (or compute into your own
+            # scratch) — never mutate the returned tensor in place.
             return self.parent.params[self.param_name].get_tensor_cache()
 
         self._scratch.zero_()
@@ -343,6 +345,18 @@ class InputSlot:
             if getattr(out, "slot_type", "audio") == "uri":
                 return getattr(out, "uri", "") or ""
         return ""
+
+
+def normalize_param_value(v):
+    """Unwrap a stored parameter value to its raw form.
+
+    Undo/restore mementos carry full param dicts ({"value", "type",
+    "meta"}) while save/load and to_dict() paths carry raw values. Accept
+    both so callers share this one shim instead of duplicating it.
+    """
+    if isinstance(v, dict) and "value" in v:
+        return v["value"]
+    return v
 
 
 class Parameter:
@@ -383,7 +397,23 @@ class Parameter:
 
     def sync(self):
         try:
-            if isinstance(self.value, (np.ndarray, torch.Tensor)) or isinstance(
+            if isinstance(self.value, torch.Tensor) and isinstance(
+                self._staging, torch.Tensor
+            ):
+                # Element-wise compare so identical arrays don't spuriously
+                # mark native params dirty; shape/dtype mismatch => changed.
+                try:
+                    changed = not torch.equal(self.value, self._staging)
+                except Exception:
+                    changed = True
+            elif isinstance(self.value, np.ndarray) and isinstance(
+                self._staging, np.ndarray
+            ):
+                try:
+                    changed = not np.array_equal(self.value, self._staging)
+                except Exception:
+                    changed = True
+            elif isinstance(self.value, (np.ndarray, torch.Tensor)) or isinstance(
                 self._staging, (np.ndarray, torch.Tensor)
             ):
                 changed = True
@@ -573,14 +603,9 @@ class Node:
         if "params" in data:
             for k, v in data["params"].items():
                 if k in self.params:
-                    # FIX: Handle full snapshot dicts (from Undo/Restore) vs simple values (from Load/Save)
-                    # Snapshot format: {"value": 0.5, "type": "float", ...}
-                    # Simple format: 0.5
-                    val = v
-                    if isinstance(v, dict) and "value" in v:
-                        val = v["value"]
-
-                    self.params[k].set(val)
+                    # Snapshot dicts (undo/restore) vs raw values (load/save):
+                    # unwrapped by the shared normalize_param_value() helper.
+                    self.params[k].set(normalize_param_value(v))
                     self.params[k].sync()
 
 

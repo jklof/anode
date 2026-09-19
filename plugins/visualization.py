@@ -36,9 +36,11 @@ class WaveformDisplay(Node):
         self.out.buffer.copy_(sig)
 
         # 2. Visualization: Perform analysis on private buffer copy
-        # Downsample for the visual trace
-        num_samples = sig.shape[-1]
-        step = max(1, num_samples // self.VISUAL_WIDTH)
+        # Downsample for the visual trace. The engine format is fixed
+        # (BLOCK_SIZE frames); derive the stride from it so the slice is
+        # exactly VISUAL_WIDTH points long.
+        assert BLOCK_SIZE % self.VISUAL_WIDTH == 0, "BLOCK_SIZE must be a multiple of VISUAL_WIDTH"
+        step = max(1, BLOCK_SIZE // self.VISUAL_WIDTH)
 
         # Copy to analysis buffer (private, can be sanitized)
         self._analysis_buf.copy_(sig)
@@ -86,6 +88,11 @@ try:
             self._last_width = 0
 
         def poll(self):
+            # Hidden widget: skip the ~30 FPS poll entirely (the bounded
+            # monitor queue keeps only the latest frame for the next
+            # visible poll).
+            if not self.isVisible():
+                return
             q = getattr(self.proxy, "monitor_queue", None)
             if q is not None:
                 latest = q.pop_latest()

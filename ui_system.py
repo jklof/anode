@@ -195,6 +195,10 @@ class ConnectionItem(QGraphicsPathItem):
         self.logic_key = logic_key
         self.temp_mode = False
         self.temp_color = None
+        # Cached hit-test shape: shape() runs per mouse-move, so the
+        # QPainterPathStroker stroke is built once here in update_path(),
+        # not per hit-test.
+        self._hit_path = QPainterPath()
 
         # Store references to parents to manage signals
         self.start_node = start_item.parentItem() if isinstance(start_item, QGraphicsItem) else None
@@ -257,6 +261,9 @@ class ConnectionItem(QGraphicsPathItem):
         cp2 = QPointF(p2.x() - curvature, p2.y())
         path.cubicTo(cp1, cp2, p2)
         self.setPath(path)
+        stroker = QPainterPathStroker()
+        stroker.setWidth(20)
+        self._hit_path = stroker.createStroke(path)
 
     def paint(self, p, o, w):
         # URI wires are out-of-band control links (file reference, no
@@ -331,9 +338,10 @@ class ConnectionItem(QGraphicsPathItem):
         event.accept()
 
     def shape(self):
-        stroker = QPainterPathStroker()
-        stroker.setWidth(20)
-        return stroker.createStroke(self.path())
+        cached = getattr(self, "_hit_path", None)
+        if cached is not None and not cached.isEmpty():
+            return cached
+        return super().shape()
 
 
 class FloatParamWidget(QWidget):

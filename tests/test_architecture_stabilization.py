@@ -151,6 +151,10 @@ def make_nam_node(load_ok=True):
         def submit(self, n, fn, args, tag):
             submitted.append((fn, args, tag))
 
+        def submit_detached(self, fn, *args):
+            # Epoch-free teardown path (B-015): no tag, no inbox delivery.
+            submitted.append((fn, args, None))
+
         def spawn_stream(self, target, *args):
             return None
 
@@ -174,10 +178,11 @@ def test_nam_load_builds_new_handle_and_retires_old_off_audio_path():
     node.on_nrt_complete("load_model", True, result)
     assert node.dsp_handle == new_handle
     # Old handle retirement is DEFERRED to the NRT pool: it must not be
-    # destroyed synchronously on the calling (engine/audio) thread...
+    # destroyed synchronously on the calling (engine/audio) thread, and the
+    # teardown submit carries no epoch/tag (B-014/B-015)...
     assert old not in node.lib.destroyed
-    deferred = [s for s in node._submitted_nrt if s[2] == "cleanup_old_handle"]
-    assert deferred and deferred[0][1] == (old,)
+    deferred = [s for s in node._submitted_nrt if s[1] == (old,)]
+    assert deferred and deferred[0][2] is None
     # ...and executing the deferred job on the NRT thread retires it.
     deferred[0][0](*deferred[0][1])
     assert old in node.lib.destroyed
@@ -201,6 +206,12 @@ def test_nam_stale_result_is_rejected_and_destroyed():
     node._load_epoch = 2  # a newer load superseded this one
     node.on_nrt_complete("load_model", True, result)
     assert node.dsp_handle == old  # live state unchanged
+    # Superseded handle is retired in the background, never synchronously
+    # on the engine thread (B-014)...
+    assert result[0] not in node.lib.destroyed
+    deferred = [s for s in node._submitted_nrt if s[1] == (result[0],)]
+    assert deferred
+    deferred[0][0](*deferred[0][1])
     assert result[0] in node.lib.destroyed
 
 
@@ -213,6 +224,11 @@ def test_nam_two_overlapping_loads_install_latest():
     node.on_nrt_complete("load_model", True, r1)  # stale arrives first
     node.on_nrt_complete("load_model", True, r2)
     assert node.dsp_handle == r2[0]
+    # Stale r1 is retired in the background, never synchronously (B-014).
+    assert r1[0] not in node.lib.destroyed
+    deferred = [s for s in node._submitted_nrt if s[1] == (r1[0],)]
+    assert deferred
+    deferred[0][0](*deferred[0][1])
     assert r1[0] in node.lib.destroyed
 
 

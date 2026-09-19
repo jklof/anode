@@ -31,6 +31,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Decode-ahead queue bound: 96 blocks x 512 frames @48 kHz ~= 1.0 s (~0.4 MB
+# stereo float32). The old 500-block queue held ~5 s / ~2 MB and let a fast
+# decoder run far ahead of playback; the worker still throttles on a full
+# queue, and the audio side keeps its silence-on-underrun fallback.
+DECODE_QUEUE_MAXSIZE = 96
+
 # ==============================================================================
 # Worker Thread
 # ==============================================================================
@@ -379,7 +385,7 @@ class MediaPlayerNode(Node):
         self.add_output("out", help="Decoded stereo audio (silence while paused or buffering).")
 
         # Increase Queue size to prevent buffer underruns
-        self.queue = queue.Queue(maxsize=500)
+        self.queue = queue.Queue(maxsize=DECODE_QUEUE_MAXSIZE)
         self._event_queue = queue.SimpleQueue()
         self.worker = None
 
@@ -516,7 +522,7 @@ class MediaPlayerNode(Node):
                 "deps_missing": False,
             }
             if MEDIA_DEPS_AVAILABLE:
-                q = queue.Queue(maxsize=500)
+                q = queue.Queue(maxsize=DECODE_QUEUE_MAXSIZE)
                 ev = queue.SimpleQueue()
                 w = MediaStreamWorker(
                     path,
@@ -541,7 +547,7 @@ class MediaPlayerNode(Node):
         # Install the prepared bundle atomically on the engine thread.
         with self._restart_lock:
             self._pending_bundle = None
-        self.queue = result["queue"] if result["queue"] is not None else queue.Queue(maxsize=500)
+        self.queue = result["queue"] if result["queue"] is not None else queue.Queue(maxsize=DECODE_QUEUE_MAXSIZE)
         self._event_queue = result["event_queue"] if result["event_queue"] is not None else queue.SimpleQueue()
         self.worker = result["worker"]
         self.playback_frames = result["start_frames"]
@@ -556,10 +562,23 @@ class MediaPlayerNode(Node):
             # Superseded restart: the bundle was never installed, so its
             # worker thread must be retired here (the next restart's NRT job
             # only knows about _pending_bundle / installed workers).
+            # Never block the engine thread (AGENTS.md §6): same
+            # detach + stop_stream path as remove().
             w = result.get("worker")
             if w is not None:
-                w.stop()
-                w.join(timeout=2.0)
+                engine = getattr(getattr(self, "graph", None), "engine", None)
+                nrt = getattr(engine, "nrt", None) if engine is not None else None
+                if nrt is not None:
+                    nrt.stop_stream(self, w.stop, w)
+                else:
+                    # Detached (node deleted): stop now, join off-thread.
+                    try:
+                        w.stop()
+                    finally:
+                        threading.Thread(
+                            target=w.join, kwargs={"timeout": 2.0},
+                            daemon=True,
+                        ).start()
 
     def _handle_worker_event(self, type, data):
         if type == "meta":

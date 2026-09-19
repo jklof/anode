@@ -193,11 +193,23 @@ class FFINode(Node):
         # Check output tensor contiguity
         if not out_tensor.is_contiguous():
             raise RuntimeError(f"Output tensor is not contiguous. Node: {self.name}")
+        # Native process() takes float* (AGENTS.md §7): the output buffer
+        # must be CPU float32 before data_ptr() is reinterpreted.
+        if out_tensor.device.type != "cpu":
+            raise RuntimeError(f"Output tensor must be CPU. Node: {self.name}")
+        if out_tensor.dtype != torch.float32:
+            raise RuntimeError(f"Output tensor must be float32. Node: {self.name}")
 
         # 4. Ensure Contiguity & Safety (Critical for C pointers)
         # Verify device is CPU
         if processed_tensor.device.type != "cpu":
             processed_tensor = processed_tensor.cpu()
+
+        # Native input is also float*: convert non-float32 inputs through
+        # the pre-allocated float32 scratch (copy_ casts, no allocation).
+        if processed_tensor.dtype != torch.float32:
+            self._ffi_in_buffer.copy_(processed_tensor)
+            processed_tensor = self._ffi_in_buffer
 
         # Use zero-allocation strategy: pre-allocated scratch buffer for copying non-contiguous tensors
         if processed_tensor.is_contiguous():
@@ -226,8 +238,10 @@ class FFINode(Node):
         in_ptr = ctypes.cast(processing_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
         out_ptr = ctypes.cast(out_tensor.data_ptr(), ctypes.POINTER(ctypes.c_float))
 
-        # 8. Call C++ with ACTUAL channel count
-        self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, BLOCK_SIZE)
+        # 8. Call C++ with ACTUAL channel count and frame count (never a
+        # hardcoded BLOCK_SIZE: the output buffer size is authoritative).
+        frames = int(out_tensor.shape[1])
+        self.lib.process(self.dsp_handle, in_ptr, out_ptr, process_channels, frames)
 
     def start(self):
         # Reset native DSP state and force parameter re-push on next block

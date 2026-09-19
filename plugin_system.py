@@ -19,7 +19,7 @@ _loaded_modules = {}
 # would shadow the real module on sys.path.
 _PROJECT_MODULES = frozenset(
     {"base", "core", "commands", "controller", "main", "plugin_system", "theme", "ui_icons", "ui_system", "ffi_base",
-     "abc_score", "audio_io", "audiocpp_backend", "download_util", "offline_job_widget"}
+     "abc_score", "audio_io", "audiocpp_backend", "download_util", "offline_job_widget", "lyric_fit"}
 )
 
 
