@@ -1351,3 +1351,206 @@ def test_relink_with_plan_sets_uri_without_pulse(node_cls):
     assert node.outputs["song"].uri == "r.wav"
     node.process()
     assert torch.all(node.ready.buffer == 0.0)
+
+
+# ----------------------------------------------------------------------
+# v0.8.1: LoRA adapters, guidance/steps, attention, out-format
+# ----------------------------------------------------------------------
+def test_argv_lora_options_omitted_by_default(tmp_path):
+    argv = _build_yue2_argv("cli", "m", out_wav=str(tmp_path / "o.wav"),
+                            **_spec())
+    # NB: match the full option key — the tmp dir itself contains the test
+    # name ("...lora..."), so a bare "lora" substring hits the out_wav path.
+    assert not any("yue2.ar_lora" in a or "yue2.nar_lora" in a for a in argv)
+
+
+def test_argv_lora_options_emitted(tmp_path):
+    argv = _build_yue2_argv("cli", "m", out_wav=str(tmp_path / "o.wav"),
+                            **_spec(), ar_lora="a.safetensors",
+                            ar_lora_scale=0.5, nar_lora="n.safetensors",
+                            nar_lora_scale=2.0)
+    assert "yue2.ar_lora=a.safetensors" in argv
+    assert "yue2.ar_lora_scale=0.5" in argv
+    assert "yue2.nar_lora=n.safetensors" in argv
+    assert "yue2.nar_lora_scale=2.0" in argv
+
+
+def test_argv_lora_scale_rejected(tmp_path):
+    out = str(tmp_path / "o.wav")
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         ar_lora="a.safetensors", ar_lora_scale=float("nan"))
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         nar_lora="n.safetensors", nar_lora_scale=float("inf"))
+
+
+def test_argv_lora_scale_without_adapter_ignored(tmp_path):
+    argv = _build_yue2_argv("cli", "m", out_wav=str(tmp_path / "o.wav"),
+                            **_spec(), ar_lora_scale=0.0)
+    assert not any("yue2.ar_lora" in a or "yue2.nar_lora" in a for a in argv)
+
+
+def test_argv_guidance_steps_omitted_by_default(tmp_path):
+    argv = _build_yue2_argv("cli", "m", out_wav=str(tmp_path / "o.wav"),
+                            **_spec())
+    assert not any("guidance_scale" in a for a in argv)
+    assert not any("num_inference_steps" in a for a in argv)
+
+
+def test_argv_guidance_steps_emitted(tmp_path):
+    argv = _build_yue2_argv("cli", "m", out_wav=str(tmp_path / "o.wav"),
+                            **_spec(), guidance_scale=1.2,
+                            num_inference_steps=12)
+    assert "guidance_scale=1.2" in argv
+    assert "num_inference_steps=12" in argv
+
+
+def test_argv_guidance_steps_rejected(tmp_path):
+    out = str(tmp_path / "o.wav")
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         guidance_scale=99.0)
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         guidance_scale=float("nan"))
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         num_inference_steps=0)
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         num_inference_steps=True)
+
+
+def test_argv_attention_out_format(tmp_path):
+    out = str(tmp_path / "o.wav")
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec())
+    assert "yue2.attention=auto" in argv
+    assert "--out-format" in argv
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                            attention="eager", out_format="float32")
+    assert "yue2.attention=eager" in argv
+    assert "float32" in argv
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         attention="bogus")
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         out_format="mp3")
+
+
+def test_run_gen_missing_lora_rejected(tmp_path):
+    cli = tmp_path / "cli"
+    cli.write_text("x")
+    model = tmp_path / "models"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "m.gguf").write_text("x")
+    (model / "v.gguf").write_text("x")
+    import threading
+    with pytest.raises(FileNotFoundError, match="AR LoRA"):
+        run_yue2_gen(str(cli), str(model), lyrics="la", style="pop",
+                     main_gguf="m.gguf", vae_gguf="v.gguf",
+                     out_wav=str(tmp_path / "o.wav"),
+                     cancel_event=threading.Event(),
+                     ar_lora=str(tmp_path / "gone.safetensors"))
+    with pytest.raises(FileNotFoundError, match="NAR LoRA"):
+        run_yue2_gen(str(cli), str(model), lyrics="la", style="pop",
+                     main_gguf="m.gguf", vae_gguf="v.gguf",
+                     out_wav=str(tmp_path / "o.wav"),
+                     cancel_event=threading.Event(),
+                     nar_lora=str(tmp_path / "gone.safetensors"))
+
+
+def _spec_node(node_cls, tmp_path, monkeypatch):
+    """Node with stub runtime + model/lyrics present, for _build_spec."""
+    mod = _live()
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
+
+        def check_ready(self):
+            return True, ""
+
+    monkeypatch.setattr(mod, "AudioCppRuntime", StubRuntime)
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "yue2-3b-q4_k_m.gguf").write_text("x")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("[Verse]\nla\n", encoding="utf-8")
+    node = make_node(node_cls)
+    node.params["model_dir"].set(str(model_dir))
+    node.params["model_dir"].sync()
+    node.params["lyrics_file"].set(str(lyrics))
+    node.params["lyrics_file"].sync()
+    return node
+
+
+def test_build_spec_new_options_default(node_cls, tmp_path, monkeypatch):
+    node = _spec_node(node_cls, tmp_path, monkeypatch)
+    spec = node._build_spec()
+    assert spec["ar_lora"] is None
+    assert spec["nar_lora"] is None
+    # Defaults defer to the CLI's own cot-dependent values.
+    assert spec["guidance_scale"] is None
+    assert spec["num_inference_steps"] is None
+    assert spec["attention"] == "auto"
+    assert spec["out_format"] == "float32"  # fixed, not user-settable
+
+
+def test_build_spec_new_options_carried(node_cls, tmp_path, monkeypatch):
+    node = _spec_node(node_cls, tmp_path, monkeypatch)
+    ar = tmp_path / "ar.safetensors"
+    ar.write_text("x")
+    nar = tmp_path / "nar.safetensors"
+    nar.write_text("x")
+    node.params["ar_lora"].set(str(ar))
+    node.params["ar_lora"].sync()
+    node.params["ar_lora_scale"].set(0.5)
+    node.params["ar_lora_scale"].sync()
+    node.params["nar_lora"].set(str(nar))
+    node.params["nar_lora"].sync()
+    node.params["guidance_scale"].set(1.2)
+    node.params["guidance_scale"].sync()
+    node.params["num_inference_steps"].set(12)
+    node.params["num_inference_steps"].sync()
+    node.params["attention"].set(2)  # eager
+    node.params["attention"].sync()
+    spec = node._build_spec()
+    assert spec["ar_lora"] == str(ar)
+    assert spec["ar_lora_scale"] == pytest.approx(0.5)
+    assert spec["nar_lora"] == str(nar)
+    assert spec["guidance_scale"] == pytest.approx(1.2)
+    assert spec["num_inference_steps"] == 12
+    assert spec["attention"] == "eager"
+    assert spec["out_format"] == "float32"  # fixed, not user-settable
+
+
+def test_build_spec_rejects_missing_lora(node_cls, tmp_path, monkeypatch):
+    node = _spec_node(node_cls, tmp_path, monkeypatch)
+    node.params["ar_lora"].set(str(tmp_path / "gone.safetensors"))
+    node.params["ar_lora"].sync()
+    with pytest.raises(ValueError, match="AR LoRA"):
+        node._build_spec()
+
+
+def test_request_json_records_new_options(node_cls, tmp_path):
+    node = make_node(node_cls)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "song.wav").write_bytes(b"cli-bytes")
+    keep = tmp_path / "keep"
+    spec = _keep_spec(tmp_path, "wav")
+    spec.update({"ar_lora": "a.safetensors", "ar_lora_scale": 0.5,
+                 "nar_lora": None, "nar_lora_scale": 1.0,
+                 "guidance_scale": 1.2, "num_inference_steps": 12,
+                 "attention": "eager", "out_format": "float32"})
+    node._keep_song(run_dir, keep, _keep_audio(), spec, {"rtf": 1.0})
+    import json
+    req = json.loads((keep / "request.json").read_text())
+    assert req["ar_lora"] == "a.safetensors"
+    assert req["ar_lora_scale"] == pytest.approx(0.5)
+    assert req["guidance_scale"] == pytest.approx(1.2)
+    assert req["num_inference_steps"] == 12
+    assert req["attention"] == "eager"
+    assert req["out_format"] == "float32"

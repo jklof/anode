@@ -34,6 +34,7 @@ Sidecar policy (see also AGENTS.md section 6):
 
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -397,9 +398,25 @@ def _no_window_kwargs():
     return {}
 
 
+YUE2_ATTENTION_MODES = ("auto", "flash", "eager")
+YUE2_OUT_FORMATS = ("pcm16", "pcm24", "float32")
+
+
+def _check_yue2_scale(name, value):
+    """Validate a LoRA delta scale: finite number, 0 disables the adapter."""
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value)):
+        raise ValueError(f"{name} must be a finite number, got {value!r}")
+    return value
+
+
 def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
                      main_gguf, vae_gguf, abc_file, out_wav, backend="cuda",
-                     weight_type="native", out_dir=None):
+                     weight_type="native", out_dir=None,
+                     ar_lora=None, ar_lora_scale=1.0,
+                     nar_lora=None, nar_lora_scale=1.0,
+                     guidance_scale=None, num_inference_steps=None,
+                     attention="auto", out_format="pcm16"):
     """Pure argv builder (no process). Tested without a GPU."""
     if cot not in ("off", "melody", "full"):
         raise ValueError(f"cot must be off/melody/full, got {cot!r}")
@@ -409,6 +426,25 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
         raise ValueError("lyrics must be nonempty text")
     if not style or not style.strip():
         raise ValueError("style must be nonempty text")
+    if attention not in YUE2_ATTENTION_MODES:
+        raise ValueError(f"attention must be one of {YUE2_ATTENTION_MODES}")
+    if out_format not in YUE2_OUT_FORMATS:
+        raise ValueError(f"out_format must be one of {YUE2_OUT_FORMATS}")
+    if guidance_scale is not None:
+        if (isinstance(guidance_scale, bool)
+                or not isinstance(guidance_scale, (int, float))
+                or not math.isfinite(guidance_scale)
+                or not 0 <= guidance_scale <= 20):
+            raise ValueError(
+                f"guidance_scale must be a finite number in [0, 20], "
+                f"got {guidance_scale!r}")
+    if num_inference_steps is not None:
+        if (not isinstance(num_inference_steps, int)
+                or isinstance(num_inference_steps, bool)
+                or num_inference_steps < 1):
+            raise ValueError(
+                "num_inference_steps must be a positive integer, "
+                f"got {num_inference_steps!r}")
     argv = [
         str(cli), "--task", "gen", "--family", "yue2",
         "--model", str(model_dir), "--backend", backend, "--threads", "8",
@@ -418,8 +454,9 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
         "--session-option", f"yue2.model_gguf={main_gguf}",
         "--session-option", f"yue2.vae_gguf={vae_gguf}",
         "--session-option", f"yue2.model_weight_type={weight_type}",
+        "--session-option", f"yue2.attention={attention}",
         "--seed", str(seed),
-        "--out", str(out_wav), "--metrics",
+        "--out", str(out_wav), "--out-format", out_format, "--metrics",
     ]
     if abc_file:
         if cot == "off":
@@ -429,6 +466,19 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
         # v0.8.1+: the CLI writes the model-generated ABC plan as
         # score.abc under --out-dir (cot=melody/full without input abc).
         argv += ["--out-dir", str(out_dir)]
+    if guidance_scale is not None:
+        argv += ["--request-option", f"guidance_scale={guidance_scale}"]
+    if num_inference_steps is not None:
+        argv += ["--request-option",
+                 f"num_inference_steps={num_inference_steps}"]
+    if ar_lora:
+        _check_yue2_scale("ar_lora_scale", ar_lora_scale)
+        argv += ["--session-option", f"yue2.ar_lora={ar_lora}",
+                 "--session-option", f"yue2.ar_lora_scale={ar_lora_scale}"]
+    if nar_lora:
+        _check_yue2_scale("nar_lora_scale", nar_lora_scale)
+        argv += ["--session-option", f"yue2.nar_lora={nar_lora}",
+                 "--session-option", f"yue2.nar_lora_scale={nar_lora_scale}"]
     return argv
 
 
@@ -450,7 +500,11 @@ def _parse_metrics(text):
 def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
                  main_gguf="yue2-3b-q4_k_m.gguf", vae_gguf="yue2-vae-f16.gguf",
                  abc_file=None, out_wav, cancel_event=None, timeout_s=1800,
-                 backend=None, weight_type="native", out_dir=None):
+                 backend=None, weight_type="native", out_dir=None,
+                 ar_lora=None, ar_lora_scale=1.0,
+                 nar_lora=None, nar_lora_scale=1.0,
+                 guidance_scale=None, num_inference_steps=None,
+                 attention="auto", out_format="pcm16"):
     """Run one YuE2 generation. Blocking; call only from an NRT worker.
 
     Returns ``{"wav": str, "metrics": dict, "score": str | None}`` where
@@ -473,13 +527,22 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
         raise FileNotFoundError(f"VAE GGUF not found: {vae_path}")
     if abc_file and not Path(abc_file).exists():
         raise FileNotFoundError(f"ABC score file not found: {abc_file}")
+    if ar_lora and not Path(ar_lora).exists():
+        raise FileNotFoundError(f"AR LoRA file not found: {ar_lora}")
+    if nar_lora and not Path(nar_lora).exists():
+        raise FileNotFoundError(f"NAR LoRA file not found: {nar_lora}")
     out_dir_path = Path(out_dir) if out_dir is not None else None
     argv = _build_yue2_argv(cli, model_dir, lyrics=lyrics, style=style,
                             cot=cot, seed=seed, main_gguf=main_gguf,
                             vae_gguf=vae_gguf, abc_file=abc_file, out_wav=out_wav,
                             backend=backend or default_backend(),
                             weight_type=weight_type,
-                            out_dir=out_dir_path)
+                            out_dir=out_dir_path,
+                            ar_lora=ar_lora, ar_lora_scale=ar_lora_scale,
+                            nar_lora=nar_lora, nar_lora_scale=nar_lora_scale,
+                            guidance_scale=guidance_scale,
+                            num_inference_steps=num_inference_steps,
+                            attention=attention, out_format=out_format)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     if out_dir_path is not None:
         out_dir_path.mkdir(parents=True, exist_ok=True)

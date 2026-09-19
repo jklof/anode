@@ -23,6 +23,7 @@ widget score viewer, closing the plan -> edit -> re-render loop (wire plan
 to `abc_uri`, edit a copy, re-render with cot=melody/full).
 """
 
+import math
 import random
 import shutil
 import time
@@ -35,6 +36,7 @@ from offline_job_widget import OfflineJobWidget
 
 from audiocpp_backend import (
     AUDIOCPP_PIN_VERSION,
+    YUE2_ATTENTION_MODES,
     AudioCppRuntime,
     AudioCppJob,
     GenerationCancelled,
@@ -49,6 +51,15 @@ from base import SAMPLE_RATE, CHANNELS
 
 COT_MODES = ("off", "melody", "full")
 FORMATS = ("mp3", "wav")
+LORA_FILTER = "SafeTensors (*.safetensors);;All Files (*.*)"
+# Fixed CLI WAV sample format: float32 is lossless (best kept WAV and best
+# source for the MP3 re-encode); it costs ~2x the bytes of pcm16 with no
+# VRAM or speed effect, so no user-facing choice is needed.
+CLI_OUT_FORMAT = "float32"
+# CLI defaults, kept in one place: the spec omits guidance/steps when they
+# equal these so the CLI's own (cot-dependent) defaults apply.
+DEFAULT_GUIDANCE = 1.0
+DEFAULT_STEPS = 8
 PROFILES = (
     ("Q4_K_M (8 GB VRAM)", "yue2-3b-q4_k_m.gguf"),
     ("Q8_0 (16 GB VRAM)", "yue2-3b-q8_0.gguf"),
@@ -89,7 +100,10 @@ class YuE2Widget(OfflineJobWidget):
     NODE_CLASS_NAME = "YuE2SongGenerator"
 
     PARAM_KEYS = ("style", "lyrics_file", "abc_file", "profile", "weight_type",
-                  "format", "cot", "seed", "auto_seed")
+                  "format", "cot", "ar_lora", "ar_lora_scale",
+                  "nar_lora", "nar_lora_scale", "guidance_scale",
+                  "num_inference_steps", "attention",
+                  "seed", "auto_seed")
     ACTION_LABEL = "Generate song"
     ACTION_PARAM = "generate"
     DOWNLOAD_LABEL = "Download runtime + model (~3.8 GB)"
@@ -188,6 +202,25 @@ class YuE2SongGenerator(AudioCppJob):
                                  "WAV keeps full quality for further processing.")
         self.add_menu_param("cot", list(COT_MODES), initial_idx=2,
                             help="Symbolic planning: off = direct, melody = melody plan, full = melody+chords.")
+        self.add_file_param("ar_lora", "", filter=LORA_FILTER,
+                            help="Optional unfused AR (planning) LoRA safetensors; empty = none. "
+                                 "Changing adapters starts a fresh session per generation.")
+        self.add_float_param("ar_lora_scale", 1.0, 0.0, 10.0,
+                             help="AR LoRA delta scale; 0 disables the adapter.")
+        self.add_file_param("nar_lora", "", filter=LORA_FILTER,
+                            help="Optional unfused NAR (acoustic) LoRA safetensors; empty = none. "
+                                 "Can be used alone or with an AR adapter.")
+        self.add_float_param("nar_lora_scale", 1.0, 0.0, 10.0,
+                             help="NAR LoRA delta scale (projection replacements stay full strength); "
+                                  "0 disables the entire adapter.")
+        self.add_float_param("guidance_scale", DEFAULT_GUIDANCE, 0.0, 20.0,
+                             help="Semantic classifier-free guidance scale; at the 1.0 default the "
+                                  "CLI's own cot-dependent default applies.")
+        self.add_int_param("num_inference_steps", DEFAULT_STEPS, 1, 64,
+                           help="NAR midpoint ODE steps; at the default 8 the CLI default applies.")
+        self.add_menu_param("attention", list(YUE2_ATTENTION_MODES), initial_idx=0,
+                            help="NAR acoustic-flow attention kernel; auto picks flash except where "
+                                 "eager is faster (Turing CUDA, Intel Vulkan).")
         # Capped at 2**31 - 1: IntParamWidget is a 32-bit QSpinBox
         # (ui_system.py); the backend accepts the full [0, 2**63) range.
         self.add_int_param("seed", 831001, 0, 2 ** 31 - 1,
@@ -278,6 +311,24 @@ class YuE2SongGenerator(AudioCppJob):
         style = self.params["style"].value
         if not style or not style.strip():
             raise ValueError("Style prompt is empty.")
+        ar_lora = self.params["ar_lora"].value or None
+        if ar_lora and not Path(ar_lora).exists():
+            raise ValueError(f"AR LoRA file not found: {ar_lora}")
+        nar_lora = self.params["nar_lora"].value or None
+        if nar_lora and not Path(nar_lora).exists():
+            raise ValueError(f"NAR LoRA file not found: {nar_lora}")
+        ar_scale = float(self.params["ar_lora_scale"].value)
+        nar_scale = float(self.params["nar_lora_scale"].value)
+        if ar_lora and not math.isfinite(ar_scale):
+            raise ValueError(f"AR LoRA scale must be finite, got {ar_scale!r}.")
+        if nar_lora and not math.isfinite(nar_scale):
+            raise ValueError(f"NAR LoRA scale must be finite, got {nar_scale!r}.")
+        guidance = float(self.params["guidance_scale"].value)
+        if not math.isfinite(guidance) or not 0 <= guidance <= 20:
+            raise ValueError(f"Guidance scale must be in [0, 20], got {guidance!r}.")
+        steps = int(self.params["num_inference_steps"].value)
+        if steps < 1:
+            raise ValueError(f"Inference steps must be >= 1, got {steps!r}.")
         return {
             "cli": str(runtime.cli),
             "model_dir": str(model_dir),
@@ -290,6 +341,15 @@ class YuE2SongGenerator(AudioCppJob):
             "weight_type": WTYPES[int(self.params["weight_type"].value)][1],
             "format": FORMATS[int(self.params["format"].value)],
             "backend": default_backend(),
+            "ar_lora": ar_lora,
+            "ar_lora_scale": ar_scale,
+            "nar_lora": nar_lora,
+            "nar_lora_scale": nar_scale,
+            # None keeps the CLI's own (cot-dependent) default.
+            "guidance_scale": None if guidance == DEFAULT_GUIDANCE else guidance,
+            "num_inference_steps": None if steps == DEFAULT_STEPS else steps,
+            "attention": YUE2_ATTENTION_MODES[int(self.params["attention"].value)],
+            "out_format": CLI_OUT_FORMAT,
         }
 
     def _pick_seed(self):
@@ -309,9 +369,12 @@ class YuE2SongGenerator(AudioCppJob):
         return yue2_fetch_specs(model_dir)
 
     def _running_status(self, spec):
+        lora = (" +LoRA" if spec.get("ar_lora") or spec.get("nar_lora")
+                else "")
         return ("Generating",
                 f"seed {spec['seed']}, {spec['cot']}, "
-                f"{spec['main_gguf']}, {spec.get('weight_type', 'native')}…")
+                f"{spec['main_gguf']}, {spec.get('weight_type', 'native')}"
+                f"{lora}…")
 
     def _spec_warnings(self, spec):
         """Warn when the cover score and lyrics are shaped too differently
@@ -362,6 +425,14 @@ class YuE2SongGenerator(AudioCppJob):
                 cancel_event=cancel_event, backend=spec.get("backend"),
                 weight_type=spec.get("weight_type", "native"),
                 out_dir=run_dir,
+                ar_lora=spec.get("ar_lora"),
+                ar_lora_scale=spec.get("ar_lora_scale", 1.0),
+                nar_lora=spec.get("nar_lora"),
+                nar_lora_scale=spec.get("nar_lora_scale", 1.0),
+                guidance_scale=spec.get("guidance_scale"),
+                num_inference_steps=spec.get("num_inference_steps"),
+                attention=spec.get("attention", "auto"),
+                out_format=spec.get("out_format", "pcm16"),
             )
             audio = load_song_file(gen["wav"])
             plan_text = None
@@ -424,6 +495,14 @@ class YuE2SongGenerator(AudioCppJob):
             "runtime": {"audio_cpp": AUDIOCPP_PIN_VERSION},
             "generated_plan": plan_text is not None,
             "plan_text": plan_text,
+            "ar_lora": spec.get("ar_lora"),
+            "ar_lora_scale": spec.get("ar_lora_scale", 1.0),
+            "nar_lora": spec.get("nar_lora"),
+            "nar_lora_scale": spec.get("nar_lora_scale", 1.0),
+            "guidance_scale": spec.get("guidance_scale"),
+            "num_inference_steps": spec.get("num_inference_steps"),
+            "attention": spec.get("attention", "auto"),
+            "out_format": spec.get("out_format", "pcm16"),
         })
         self.write_json(keep / "metrics.json", metrics)
         return kept_song
