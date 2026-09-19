@@ -388,6 +388,20 @@ def test_file_source_publish_and_pulse(registry, tmp_path):
     assert torch.all(node.done.buffer == 0.0)
 
 
+def test_file_source_is_generic(registry, tmp_path):
+    """The File node publishes any file kind, not just text: audio files
+    pass straight through for wiring into audio_uri consumer inputs."""
+    node = registry["TextFileSource"]()
+    assert node.label == "File"
+    f = tmp_path / "song.wav"
+    f.write_bytes(b"RIFF" + bytes(100))
+    node.params["file"].set(str(f))
+    node.params["file"].sync()
+    node.on_ui_param_change("file")
+    assert node.outputs["text"].uri == str(f)
+    assert node._status == "Ready"
+
+
 def test_file_source_empty_clears_and_missing_warns(registry):
     node = registry["ABCFileSource"]()
     node.on_ui_param_change("file")

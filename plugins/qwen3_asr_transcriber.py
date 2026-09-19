@@ -120,6 +120,9 @@ class Qwen3ASRTranscriber(AudioCppJob):
         self.add_input("trigger_in",
                        help="Gate/trigger signal; a rising edge stages a background transcription "
                             "(same as the Transcribe button), e.g. wired from a done pulse.")
+        self.add_uri_input("audio_uri",
+                           help="Wired recording path (e.g. from a File node). While connected "
+                                "and non-empty it overrides audio_file; snapshots at Transcribe time.")
         self.add_uri_output("lyrics",
                             help="Kept lyrics text path; published on completion and on patch-load relink.")
         self.add_uri_output("words",
@@ -128,7 +131,8 @@ class Qwen3ASRTranscriber(AudioCppJob):
         self.done = self.add_output("done", channels=1,
                                     help="One-block 1.0 pulse when new lyrics are ready (wire to a trigger input).")
         self.add_file_param("audio_file", "", filter=AUDIO_FILTER,
-                            help="Vocal recording to transcribe (WAV/FLAC/OGG/MP3); converted on the background worker.")
+                            help="Vocal recording to transcribe (WAV/FLAC/OGG/MP3); converted on the background worker. "
+                                 "A connected audio_uri input overrides this.")
         self.add_menu_param("profile", [label for label, _ in PROFILES], initial_idx=0,
                             help="GGUF precision profile; the 1.7B file is not auto-fetched, place it manually.")
         self.add_string_param("language", "",
@@ -200,6 +204,23 @@ class Qwen3ASRTranscriber(AudioCppJob):
             return
         engine.push_command(("param", self.id, "transcribe", True))
 
+    def _resolve_audio(self):
+        """Wired audio_uri wins over the audio_file param (both snapshot at
+        Transcribe time). Raises ValueError with a clear message."""
+        audio_in = self.inputs.get("audio_uri")
+        if audio_in is not None and audio_in.connected_outputs:
+            wired = audio_in.get_uri()
+            if not wired:
+                raise ValueError(
+                    "Wired recording is empty — publish a file first, then transcribe.")
+            if not Path(wired).exists():
+                raise ValueError(f"Wired recording file not found: {wired}")
+            return wired
+        audio_file = self.params["audio_file"].value
+        if not audio_file or not Path(audio_file).exists():
+            raise ValueError("Pick a recording first (audio_file is empty or missing).")
+        return audio_file
+
     def _model_fetch_specs(self, model_dir):
         specs = qwen3_asr_fetch_specs(model_dir)
         if self.params["word_timestamps"].value:
@@ -227,9 +248,7 @@ class Qwen3ASRTranscriber(AudioCppJob):
                 "Run: python tools/audiocpp/fetch_qwen3_asr_gguf.py "
                 "(or press Download)"
             )
-        audio_file = self.params["audio_file"].value
-        if not audio_file or not Path(audio_file).exists():
-            raise ValueError("Pick a recording first (audio_file is empty or missing).")
+        audio_file = self._resolve_audio()
         language = self.params["language"].value.strip()
         word_timestamps = bool(self.params["word_timestamps"].value)
         aligner_gguf = None

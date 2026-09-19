@@ -148,6 +148,9 @@ class Qwen3ForcedAligner(AudioCppJob):
         self.add_input("trigger_in",
                        help="Gate/trigger signal; a rising edge stages a background alignment "
                             "(same as the Align button), e.g. wired from a done pulse.")
+        self.add_uri_input("audio_uri",
+                           help="Wired recording path (e.g. from a File node). While connected "
+                                "and non-empty it overrides audio_file; snapshots at Align time.")
         self.add_uri_input("lyrics_uri",
                            help="Wired transcript path (e.g. from Qwen3ASRTranscriber). While connected "
                                 "and non-empty it overrides transcript_file; snapshots at Align time.")
@@ -156,7 +159,8 @@ class Qwen3ForcedAligner(AudioCppJob):
         self.done = self.add_output("done", channels=1,
                                     help="One-block 1.0 pulse when new words are ready (wire to a trigger input).")
         self.add_file_param("audio_file", "", filter=AUDIO_FILTER,
-                            help="Speech recording to align (WAV/FLAC/OGG/MP3); converted on the background worker.")
+                            help="Speech recording to align (WAV/FLAC/OGG/MP3); converted on the background worker. "
+                                 "A connected audio_uri input overrides this.")
         self.add_file_param("transcript_file", "", filter=TEXT_FILTER,
                             help="Exact transcript to align; read by the background worker. "
                                  "A connected lyrics_uri input overrides this.")
@@ -226,6 +230,23 @@ class Qwen3ForcedAligner(AudioCppJob):
         return ("Aligning",
                 f"{Path(spec['audio_file']).name} ({spec['gguf']})…")
 
+    def _resolve_audio(self):
+        """Wired audio_uri wins over the audio_file param (both snapshot at
+        Align time). Raises ValueError with a clear message."""
+        audio_in = self.inputs.get("audio_uri")
+        if audio_in is not None and audio_in.connected_outputs:
+            wired = audio_in.get_uri()
+            if not wired:
+                raise ValueError(
+                    "Wired recording is empty — publish a file first, then align.")
+            if not Path(wired).exists():
+                raise ValueError(f"Wired recording file not found: {wired}")
+            return wired
+        audio_file = self.params["audio_file"].value
+        if not audio_file or not Path(audio_file).exists():
+            raise ValueError("Pick a recording first (audio_file is empty or missing).")
+        return audio_file
+
     def _resolve_transcript(self):
         """Wired lyrics_uri wins over the transcript_file param (both snapshot
         at Align time). Raises ValueError with a clear message."""
@@ -257,9 +278,7 @@ class Qwen3ForcedAligner(AudioCppJob):
                 "Run: python tools/audiocpp/fetch_qwen3_align_gguf.py "
                 "(or press Download)"
             )
-        audio_file = self.params["audio_file"].value
-        if not audio_file or not Path(audio_file).exists():
-            raise ValueError("Pick a recording first (audio_file is empty or missing).")
+        audio_file = self._resolve_audio()
         secs = audio_seconds(audio_file)
         if secs is not None and secs > ALIGN_MAX_SECONDS:
             raise ValueError(long_audio_message(secs))

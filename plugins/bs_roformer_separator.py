@@ -95,6 +95,9 @@ class BSRoFormerSeparator(AudioCppJob):
         self.add_input("trigger_in",
                        help="Gate/trigger signal; a rising edge stages a background separation "
                             "(same as the Separate button), e.g. wired from a done pulse.")
+        self.add_uri_input("audio_uri",
+                           help="Wired mixture path (e.g. from a File node). While connected "
+                                "and non-empty it overrides audio_file; snapshots at Separate time.")
         self.add_uri_output("vocals",
                             help="Kept vocals stem path; published on completion and on patch-load relink.")
         self.add_uri_output("instrumental",
@@ -102,7 +105,8 @@ class BSRoFormerSeparator(AudioCppJob):
         self.done = self.add_output("done", channels=1,
                                     help="One-block 1.0 pulse when new stems are ready (wire to a trigger input).")
         self.add_file_param("audio_file", "", filter=AUDIO_FILTER,
-                            help="Music mixture to separate (WAV/FLAC/OGG/MP3); converted to 44.1 kHz stereo on the background worker.")
+                            help="Music mixture to separate (WAV/FLAC/OGG/MP3); converted to 44.1 kHz stereo on the background worker. "
+                                 "A connected audio_uri input overrides this.")
         self.add_menu_param("weight_type", list(BS_ROFORMER_WEIGHT_TYPES), initial_idx=0,
                             help="RoFormer weight storage dtype; native = best quality.")
         self.add_int_param("num_overlap", BS_ROFORMER_DEFAULT_NUM_OVERLAP, 1, 16,
@@ -166,6 +170,23 @@ class BSRoFormerSeparator(AudioCppJob):
             return
         engine.push_command(("param", self.id, "separate", True))
 
+    def _resolve_audio(self):
+        """Wired audio_uri wins over the audio_file param (both snapshot at
+        Separate time). Raises ValueError with a clear message."""
+        audio_in = self.inputs.get("audio_uri")
+        if audio_in is not None and audio_in.connected_outputs:
+            wired = audio_in.get_uri()
+            if not wired:
+                raise ValueError(
+                    "Wired mixture is empty — publish a file first, then separate.")
+            if not Path(wired).exists():
+                raise ValueError(f"Wired mixture file not found: {wired}")
+            return wired
+        audio_file = self.params["audio_file"].value
+        if not audio_file or not Path(audio_file).exists():
+            raise ValueError("Pick a mixture first (audio_file is empty or missing).")
+        return audio_file
+
     def _model_fetch_specs(self, model_dir):
         return bs_roformer_fetch_specs(model_dir)
 
@@ -187,9 +208,7 @@ class BSRoFormerSeparator(AudioCppJob):
                 "Run: python tools/audiocpp/fetch_bs_roformer_gguf.py "
                 "(or press Download)"
             )
-        audio_file = self.params["audio_file"].value
-        if not audio_file or not Path(audio_file).exists():
-            raise ValueError("Pick a mixture first (audio_file is empty or missing).")
+        audio_file = self._resolve_audio()
         return {
             "cli": str(runtime.cli),
             "model_dir": str(model_dir),

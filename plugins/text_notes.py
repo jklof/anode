@@ -29,8 +29,11 @@ note/section/beat summary and any error).
 
 TextFileSource / ABCFileSource — minimal URI sources: a file picker whose
 selected path is published directly on the URI output (no reading, no worker,
-no kept copy). For handing an existing lyrics/ABC file to a consumer without
-an editable note in the middle.
+no kept copy). TextFileSource is the generic file node (any file kind —
+lyrics, audio, …) for handing an existing file to a consumer without an
+editable note in the middle; ABCFileSource is its ABC-filtered sibling.
+The TextFileSource type name and its "text" output are kept for saved-patch
+compatibility (patches wire that output into any uri input).
 """
 
 import hashlib
@@ -499,18 +502,21 @@ class _FileSourceBase(Node):
 
 
 class TextFileSource(_FileSourceBase):
+    # Generic file node. The class name and "text" output stay as-is so saved
+    # patches keep loading; the label/filter are generic since any file kind
+    # (lyrics, audio, …) can be published and wired into any uri input.
     category = "Offline"
-    label = "Text File"
+    label = "File"
     is_abstract = False
     description = (
-        "Publishes a picked text/lyrics file directly on the text URI output "
+        "Publishes any picked file directly on the file URI output "
         "(no editing, no copy — the path itself is the payload). Picking, the "
         "Publish button, or a trigger_in pulse re-publishes with a done pulse "
-        "for chaining into lyric/song nodes."
+        "for chaining into lyric/song/score/audio nodes."
     )
 
     URI_OUT = "text"
-    FILE_FILTER = "Text Files (*.txt *.md);;All Files (*.*)"
+    FILE_FILTER = "All Files (*.*)"
 
 
 class ABCFileSource(_FileSourceBase):

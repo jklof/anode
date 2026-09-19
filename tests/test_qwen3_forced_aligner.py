@@ -414,6 +414,54 @@ def _wire_lyrics_uri(node, uri):
     return helper
 
 
+def _wire_audio_uri(node, uri):
+    """Connect the node's audio_uri input to a scratch URI output."""
+    from base import OutputSlot
+    helper = OutputSlot("helper", node, slot_type="uri")
+    helper.uri = uri
+    node.inputs["audio_uri"].connect(helper)
+    return helper
+
+
+def test_audio_uri_overrides_param(node_cls, tmp_path):
+    wired = tmp_path / "wired.wav"
+    wired.write_bytes(b"RIFF" + bytes(100))
+    param_audio = tmp_path / "param.wav"
+    param_audio.write_bytes(b"RIFF" + bytes(100))
+    node = make_node(node_cls)
+    node.params["audio_file"].set(str(param_audio))
+    node.params["audio_file"].sync()
+    _wire_audio_uri(node, str(wired))
+    assert node._resolve_audio() == str(wired)
+
+
+def test_audio_uri_empty_means_not_ready(node_cls, tmp_path):
+    param_audio = tmp_path / "param.wav"
+    param_audio.write_bytes(b"RIFF" + bytes(100))
+    node = make_node(node_cls)
+    node.params["audio_file"].set(str(param_audio))
+    node.params["audio_file"].sync()
+    _wire_audio_uri(node, "")
+    with pytest.raises(ValueError, match="publish a file"):
+        node._resolve_audio()
+
+
+def test_audio_uri_missing_file_rejected(node_cls):
+    node = make_node(node_cls)
+    _wire_audio_uri(node, "/nonexistent/gone.wav")
+    with pytest.raises(ValueError, match="not found"):
+        node._resolve_audio()
+
+
+def test_audio_param_used_when_unwired(node_cls, tmp_path):
+    param_audio = tmp_path / "param.wav"
+    param_audio.write_bytes(b"RIFF" + bytes(100))
+    node = make_node(node_cls)
+    node.params["audio_file"].set(str(param_audio))
+    node.params["audio_file"].sync()
+    assert node._resolve_audio() == str(param_audio)
+
+
 def test_lyrics_uri_overrides_param(node_cls, tmp_path):
     wired = tmp_path / "wired.txt"
     wired.write_text("hello world\n", encoding="utf-8")
