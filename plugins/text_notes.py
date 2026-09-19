@@ -402,14 +402,14 @@ class _FileSourceBase(Node):
     engine/control thread (atomic under the GIL), so even the trigger path
     needs no NRT round trip beyond the command queue hop. Subclasses set:
 
-    URI_OUT     — uri output name ("text" / "abc")
+    URI_OUT     — uri output name ("file" / "abc")
     FILE_FILTER — file dialog filter
     """
 
     is_abstract = True
     is_offline = True
 
-    URI_OUT = "text"
+    URI_OUT = "file"
     FILE_FILTER = "All Files (*.*)"
 
     def __init__(self, name=""):
@@ -516,22 +516,8 @@ class TextFileSource(_FileSourceBase):
         "for chaining into lyric/song/score/audio nodes."
     )
 
-    URI_OUT = "text"
+    URI_OUT = "file"
     FILE_FILTER = "All Files (*.*)"
-
-
-class ABCFileSource(_FileSourceBase):
-    category = "Offline"
-    label = "ABC File"
-    is_abstract = False
-    description = (
-        "Publishes a picked ABC score file directly on the abc URI output "
-        "(no editing, no copy). Picking, the Publish button, or a trigger_in "
-        "pulse re-publishes with a done pulse for chaining into score consumers."
-    )
-
-    URI_OUT = "abc"
-    FILE_FILTER = "ABC Files (*.abc);;All Files (*.*)"
 
 
 if GUI_AVAILABLE:
@@ -732,8 +718,3 @@ if GUI_AVAILABLE:
     class TextFileSourceWidget(_FileSourceWidgetBase):
         IS_NODE_UI = True
         NODE_CLASS_NAME = "TextFileSource"
-
-
-    class ABCFileSourceWidget(_FileSourceWidgetBase):
-        IS_NODE_UI = True
-        NODE_CLASS_NAME = "ABCFileSource"

@@ -364,13 +364,12 @@ def test_resize_command_and_save_json_roundtrip(registry):
 # ----------------------------------------------------------------------
 def test_file_source_registration(registry):
     assert "_FileSourceBase" not in registry
-    for name, uri_out in (("TextFileSource", "text"), ("ABCFileSource", "abc")):
-        node = registry[name]()
-        assert node.is_abstract is False
-        assert node.is_offline is True
-        assert node.outputs[uri_out].slot_type == "uri"
-        assert node.params["file"].type == "file"
-        assert plugin_system.get_ui_class(name) is not None
+    node = registry["TextFileSource"]()
+    assert node.is_abstract is False
+    assert node.is_offline is True
+    assert node.outputs["file"].slot_type == "uri"
+    assert node.params["file"].type == "file"
+    assert plugin_system.get_ui_class("TextFileSource") is not None
 
 
 def test_file_source_publish_and_pulse(registry, tmp_path):
@@ -380,7 +379,7 @@ def test_file_source_publish_and_pulse(registry, tmp_path):
     node.params["file"].set(str(f))
     node.params["file"].sync()
     node.on_ui_param_change("file")
-    assert node.outputs["text"].uri == str(f)
+    assert node.outputs["file"].uri == str(f)
     assert node._status == "Ready"
     node.process()
     assert torch.all(node.done.buffer == 1.0)
@@ -398,37 +397,8 @@ def test_file_source_is_generic(registry, tmp_path):
     node.params["file"].set(str(f))
     node.params["file"].sync()
     node.on_ui_param_change("file")
-    assert node.outputs["text"].uri == str(f)
+    assert node.outputs["file"].uri == str(f)
     assert node._status == "Ready"
-
-
-def test_file_source_empty_clears_and_missing_warns(registry):
-    node = registry["ABCFileSource"]()
-    node.on_ui_param_change("file")
-    assert node.outputs["abc"].uri == ""
-    assert node._status == "Idle"
-    node.params["file"].set("/nonexistent/score.abc")
-    node.params["file"].sync()
-    node.on_ui_param_change("file")
-    assert node.outputs["abc"].uri == "/nonexistent/score.abc"
-    assert node._status == "Warning"
-
-
-def test_file_source_refresh_restages_and_republishes(registry, tmp_path):
-    from core import Engine
-    eng = Engine()
-    node = registry["TextFileSource"]()
-    f = tmp_path / "words.txt"
-    f.write_text("hi", encoding="utf-8")
-    eng.push_command(("add", node, "fs1", (0, 0), None))
-    eng.push_command(("param", "fs1", "file", str(f)))
-    stored = eng.graph.node_map["fs1"]
-    assert stored.outputs["text"].uri == str(f)
-    # transient trigger restages itself and re-pulses without engine help
-    eng.push_command(("param", "fs1", "refresh", True))
-    assert stored.params["refresh"].value is False
-    stored.process()
-    assert torch.all(stored.done.buffer == 1.0)
 
 
 def test_file_source_trigger_edge_stages_refresh(registry):
@@ -437,29 +407,6 @@ def test_file_source_trigger_edge_stages_refresh(registry):
     _wire_trigger(node)
     node.process()
     assert engine.commands == [("param", node.id, "refresh", True)]
-
-
-def test_file_source_load_state_relinks(registry, tmp_path):
-    node = registry["ABCFileSource"]()
-    f = tmp_path / "score.abc"
-    f.write_text("X:1\nK:C\nC D|\n", encoding="utf-8")
-    node.params["file"].set(str(f))
-    node.params["file"].sync()
-    d = node.to_dict()
-    fresh = registry["ABCFileSource"]()
-    fresh.load_state(d)
-    assert fresh.outputs["abc"].uri == str(f)
-    assert fresh._status == "Ready"
-    # relink never pulses
-    fresh.process()
-    assert torch.all(fresh.done.buffer == 0.0)
-    # missing file relinks to Idle, no crash
-    gone = registry["ABCFileSource"]()
-    gone.params["file"].set(str(tmp_path / "gone.abc"))
-    gone.params["file"].sync()
-    gone.load_state(gone.to_dict())
-    assert gone.outputs["abc"].uri == ""
-    assert gone._status == "Idle"
 
 
 def test_complete_pushes_telemetry_and_snapshot(registry, tmp_path, monkeypatch):

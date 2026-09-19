@@ -439,7 +439,7 @@ def test_file_node_feeds_audio_uri(node_cls, tmp_path):
     file_cls = plugin_system.NODE_REGISTRY.get("TextFileSource")
     assert file_cls is not None
     src, node = file_cls(), make_node(node_cls)
-    node.inputs["audio_uri"].connect(src.outputs["text"])
+    node.inputs["audio_uri"].connect(src.outputs["file"])
     assert node.inputs["audio_uri"].get_uri() == ""
 
 
