@@ -395,19 +395,18 @@ class ABCNote(_NoteNodeBase):
         return f"{len(score.notes)} notes, {score.total_beats:.0f} beats @ {score.bpm:g} BPM{sec}"
 
 
-class _FileSourceBase(Node):
-    """Shared logic for TextFileSource / ABCFileSource: a file picker that
-    publishes the selected path directly on its URI output. No reading, no
-    worker, no kept copy — publishing is a plain string assignment on the
-    engine/control thread (atomic under the GIL), so even the trigger path
-    needs no NRT round trip beyond the command queue hop. Subclasses set:
-
-    URI_OUT     — uri output name ("file" / "abc")
-    FILE_FILTER — file dialog filter
-    """
-
-    is_abstract = True
-    is_offline = True
+class FileSource(Node):
+    # Generic file node.
+    # (lyrics, audio, …) can be published and wired into any uri input.
+    category = "Offline"
+    label = "File"
+    is_abstract = False
+    description = (
+        "Publishes any picked file directly on the file URI output "
+        "(no editing, no copy — the path itself is the payload). Picking, the "
+        "Publish button, or a trigger_in pulse re-publishes with a done pulse "
+        "for chaining into lyric/song/score/audio nodes."
+    )
 
     URI_OUT = "file"
     FILE_FILTER = "All Files (*.*)"
@@ -501,23 +500,6 @@ class _FileSourceBase(Node):
     def get_telemetry(self) -> dict:
         return {"status": self._status, "audio": self._status_detail}
 
-
-class TextFileSource(_FileSourceBase):
-    # Generic file node. The class name and "text" output stay as-is so saved
-    # patches keep loading; the label/filter are generic since any file kind
-    # (lyrics, audio, …) can be published and wired into any uri input.
-    category = "Offline"
-    label = "File"
-    is_abstract = False
-    description = (
-        "Publishes any picked file directly on the file URI output "
-        "(no editing, no copy — the path itself is the payload). Picking, the "
-        "Publish button, or a trigger_in pulse re-publishes with a done pulse "
-        "for chaining into lyric/song/score/audio nodes."
-    )
-
-    URI_OUT = "file"
-    FILE_FILTER = "All Files (*.*)"
 
 
 if GUI_AVAILABLE:
@@ -670,11 +652,12 @@ if GUI_AVAILABLE:
         USE_ABC_HIGHLIGHT = True
 
 
-    class _FileSourceWidgetBase(QWidget):
+    class FileSourceWidget(QWidget):
         """File picker + Publish button + status for the file source nodes.
         Small fixed widget (not resizable): the file row is the whole UI."""
 
-        NODE_CLASS_NAME = ""
+        IS_NODE_UI = True
+        NODE_CLASS_NAME = "FileSource"
 
         def __init__(self, node_proxy):
             super().__init__()
@@ -714,7 +697,3 @@ if GUI_AVAILABLE:
             if "file" in params:
                 self.file_widget.update_from_backend(params["file"])
 
-
-    class TextFileSourceWidget(_FileSourceWidgetBase):
-        IS_NODE_UI = True
-        NODE_CLASS_NAME = "TextFileSource"
