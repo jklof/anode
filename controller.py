@@ -62,6 +62,7 @@ class AppController(QObject):
     telemetryUpdated = Signal(dict)
     parameterUpdated = Signal(dict)
     nodeMoved = Signal(str, tuple)
+    nodeResized = Signal(str, tuple)
 
     def __init__(self):
         super().__init__()
@@ -200,6 +201,16 @@ class AppController(QObject):
                                 ws["nodes"][i] = n_new
                                 break
                     self.nodeMoved.emit(msg["node_id"], msg["pos"])
+                elif m_type == "node_resized":
+                    if "nodes" in ws:
+                        ws["nodes"] = ws["nodes"].copy()
+                        for i, n in enumerate(ws["nodes"]):
+                            if n["id"] == msg["node_id"]:
+                                n_new = n.copy()
+                                n_new["ui_size"] = msg["ui_size"]
+                                ws["nodes"][i] = n_new
+                                break
+                    self.nodeResized.emit(msg["node_id"], tuple(msg["ui_size"]))
                 elif m_type == "clock_changed":
                     ws["clock_id"] = msg["node_id"]
                     if "nodes" in ws:
@@ -278,8 +289,8 @@ class AppController(QObject):
     # Topology Methods (Undoable)
     # -------------------------------------------------------------------------
 
-    def add_node(self, node_type, pos, node_id=None, params=None):
-        cmd = AddNodeCommand(self, node_type, pos, node_id=node_id, params=params)
+    def add_node(self, node_type, pos, node_id=None, params=None, ui_size=None):
+        cmd = AddNodeCommand(self, node_type, pos, node_id=node_id, params=params, ui_size=ui_size)
         cmd.execute()
         self.history.push(cmd)
 
@@ -339,6 +350,30 @@ class AppController(QObject):
                     ws["nodes"][i] = n_new
             self._latest_snapshot = ws
 
+    def set_node_size(self, node_id, width, height):
+        """Persist a resizable node's UI frame size (non-undoable, like params).
+
+        Called once per resize drag (on release), not per mouse-move: pushes
+        ("resize", ...) to the engine for authoritative state (saved on the
+        next save) and updates the local snapshot optimistically. No history
+        entry by design.
+        """
+        try:
+            w, h = int(width), int(height)
+        except (TypeError, ValueError):
+            return
+        self.engine.push_command(("resize", node_id, w, h))
+        if "nodes" in self._latest_snapshot:
+            ws = self._latest_snapshot.copy()
+            ws["nodes"] = ws["nodes"].copy()
+            for i, n in enumerate(ws["nodes"]):
+                if n["id"] == node_id:
+                    n_new = n.copy()
+                    n_new["ui_size"] = [w, h]
+                    ws["nodes"][i] = n_new
+                    break
+            self._latest_snapshot = ws
+
     def delete_selection(self, node_ids, connection_tuples):
         """
         Deletes a list of nodes and specific connections atomically.
@@ -391,7 +426,8 @@ class AppController(QObject):
 
         # 1. Add Nodes
         for n in nodes_data:
-            macro.add(AddNodeCommand(self, n["type"], n["pos"], node_id=n["id"], params=n["params"]))
+            macro.add(AddNodeCommand(self, n["type"], n["pos"], node_id=n["id"], params=n["params"],
+                                     ui_size=n.get("ui_size")))
 
         # 2. Add Connections
         for c in connections_data:

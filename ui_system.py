@@ -814,6 +814,7 @@ class NodeItem(QGraphicsObject):
         self.setFlag(QGraphicsItem.ItemIsSelectable)
         self.setFlag(QGraphicsItem.ItemSendsGeometryChanges)
         self.setCursor(QCursor(Qt.SizeAllCursor))
+        self.setAcceptHoverEvents(True)
         # ComfyUI-style running highlight for in-flight NRT jobs, driven by
         # the generic "busy" telemetry flag (see propagate_telemetry).
         self._job_busy = False
@@ -821,6 +822,19 @@ class NodeItem(QGraphicsObject):
         # True between mousePress and mouseRelease while the user may be
         # dragging; snapshot updates must not fight the pointer meanwhile.
         self._drag_active = False
+        # Resize-drag state for IS_RESIZABLE custom UIs (see build_ui).
+        # Size persists via controller.set_node_size on release (no undo).
+        self._resize_active = False
+        self._resize_start_pos = QPointF()
+        self._resize_start_size = (0, 0)
+        self._grip_size = 16
+        # Saved UI frame size from the snapshot (authoritative engine state);
+        # applied to resizable widgets in build_ui().
+        raw_size = node_data.get("ui_size")
+        try:
+            self.ui_size = (int(raw_size[0]), int(raw_size[1])) if raw_size else None
+        except (TypeError, ValueError, IndexError):
+            self.ui_size = None
 
         # Initialize position cache
         self._last_committed_pos = self.pos()
@@ -888,6 +902,48 @@ class NodeItem(QGraphicsObject):
             self.proxy.deleteLater()
             self.proxy = None
 
+    def _is_resizable(self):
+        """True when the embedded custom widget opts into user resizing."""
+        return bool(self.widget is not None and getattr(self.widget, "IS_RESIZABLE", False))
+
+    def _socket_area_height(self):
+        """Vertical space occupied by header + socket rows (widget sits below)."""
+        y = Theme.DIMENSIONS["header_height"] + 10 + 20 * len(self.input_items)
+        y_out = Theme.DIMENSIONS["header_height"] + 10 + 20 * len(self.output_items)
+        return max(y, y_out) + 10
+
+    def _apply_frame_size(self, total_w, total_h):
+        """Set the node frame to total_w x total_h, clamping to the widget
+        minimum. Repositions output sockets and the embedded proxy. Live
+        during resize drags (no controller traffic); the release handler
+        persists via controller.set_node_size()."""
+        min_w, min_h = (200, 150)
+        if self.widget is not None:
+            declared = getattr(self.widget, "MIN_SIZE", None)
+            if declared:
+                try:
+                    min_w, min_h = int(declared[0]), int(declared[1])
+                except (TypeError, ValueError, IndexError):
+                    pass
+        socket_area = self._socket_area_height()
+        total_w = max(int(total_w), min_w + 20, Theme.DIMENSIONS["node_width"])
+        total_h = max(int(total_h), socket_area + min_h + 10)
+        total_w = min(total_w, 1200)
+        total_h = min(total_h, 1000)
+        self.prepareGeometryChange()
+        self.width = total_w
+        self.height = total_h
+        for item in self.output_items.values():
+            item.setX(self.width)
+        if self.proxy is not None:
+            self.proxy.setPos(10, socket_area)
+            self.proxy.resize(self.width - 20, self.height - socket_area - 10)
+        self.update()
+
+    def _grip_rect(self):
+        g = self._grip_size
+        return QRectF(self.width - g, self.height - g, g, g)
+
     def build_ui(self):
         """
         Called by GraphScene AFTER adding this item to the scene.
@@ -948,6 +1004,23 @@ class NodeItem(QGraphicsObject):
             # 2. Relayout Output Sockets if width changed
             for item in self.output_items.values():
                 item.setX(self.width)
+
+            # Resizable custom UIs (IS_RESIZABLE): the saved frame size wins,
+            # else the widget's DEFAULT_SIZE, else the measured size above.
+            # The editor inside must use Expanding size policy to fill it.
+            if custom_ui_ok and getattr(self.widget, "IS_RESIZABLE", False):
+                target = None
+                if self.ui_size:
+                    target = self.ui_size
+                else:
+                    default = getattr(self.widget, "DEFAULT_SIZE", None)
+                    if default:
+                        try:
+                            target = (int(default[0]), int(default[1]))
+                        except (TypeError, ValueError, IndexError):
+                            target = None
+                if target:
+                    self._apply_frame_size(target[0], target[1])
 
     def reconcile_sockets(self, inputs_list, outputs_list, input_types=None, output_types=None):
         input_types = input_types or {}
@@ -1084,6 +1157,19 @@ class NodeItem(QGraphicsObject):
         self.error_msg = node_data.get("error")
         self.setToolTip(self.error_msg if self.error_msg else self.node_name)
 
+        # Resizable frame: apply the authoritative size unless the user is
+        # actively dragging or resizing (same no-fight rule as positions).
+        if not self._drag_active and not self._resize_active and self._is_resizable():
+            raw_size = node_data.get("ui_size")
+            if raw_size:
+                try:
+                    target = (int(raw_size[0]), int(raw_size[1]))
+                except (TypeError, ValueError, IndexError):
+                    target = None
+                if target and (self.width, self.height) != target:
+                    self.ui_size = target
+                    self._apply_frame_size(target[0], target[1])
+
         self.update()
 
         # Update position cache after setting position (never mid-drag)
@@ -1200,6 +1286,18 @@ class NodeItem(QGraphicsObject):
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(self.boundingRect(), 5, 5)
 
+        # Resize grip for IS_RESIZABLE custom UIs: three diagonal strokes in
+        # the bottom-right corner. Always drawn (subtle when unselected) so
+        # the affordance is discoverable.
+        if self._is_resizable():
+            grip = self._grip_rect()
+            color = Theme.COLORS["selection_outline"] if self.isSelected() else Theme.COLORS["help_button"]
+            painter.setPen(QPen(color, 1.5))
+            for i in range(3):
+                off = 4 + i * 4
+                painter.drawLine(QPointF(grip.right() - off, grip.bottom() - 2),
+                                 QPointF(grip.right() - 2, grip.bottom() - off))
+
         # Bypassed nodes render dimmed with an explicit badge; the switch
         # itself lives in the context menu.
         if not bool(self.params.get("enabled", {}).get("value", True)):
@@ -1264,6 +1362,16 @@ class NodeItem(QGraphicsObject):
         self._drag_active = event.button() == Qt.LeftButton
 
         local_pos = event.pos()
+        # Resize grip takes precedence over move/header handling.
+        if event.button() == Qt.LeftButton and self._is_resizable() and self._grip_rect().contains(local_pos):
+            self._resize_active = True
+            self._drag_active = False
+            self._resize_start_pos = QPointF(local_pos)
+            self._resize_start_size = (self.width, self.height)
+            self.setSelected(True)
+            event.accept()
+            return
+
         if local_pos.y() <= Theme.DIMENSIONS["header_height"] and event.button() == Qt.LeftButton:
             # Check Clock hit
             if self.can_be_master and local_pos.x() >= (self.width - 28):
@@ -1285,7 +1393,38 @@ class NodeItem(QGraphicsObject):
 
         super().mousePressEvent(event)
 
+    def mouseMoveEvent(self, event):
+        if self._resize_active:
+            dx = event.pos().x() - self._resize_start_pos.x()
+            dy = event.pos().y() - self._resize_start_pos.y()
+            self._apply_frame_size(self._resize_start_size[0] + dx,
+                                   self._resize_start_size[1] + dy)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def hoverMoveEvent(self, event):
+        if self._is_resizable() and self._grip_rect().contains(event.pos()):
+            self.setCursor(QCursor(Qt.SizeFDiagCursor))
+        else:
+            self.setCursor(QCursor(Qt.SizeAllCursor))
+        super().hoverMoveEvent(event)
+
+    def hoverLeaveEvent(self, event):
+        self.setCursor(QCursor(Qt.SizeAllCursor))
+        super().hoverLeaveEvent(event)
+
     def mouseReleaseEvent(self, event):
+        if self._resize_active:
+            self._resize_active = False
+            self._drag_active = False
+            super().mouseReleaseEvent(event)
+            # Persist once per drag (non-undoable, saved on next save).
+            if (self.width, self.height) != (self._resize_start_size[0], self._resize_start_size[1]):
+                self.ui_size = (self.width, self.height)
+                self.controller.set_node_size(self.nid, self.width, self.height)
+            return
+
         self._drag_active = False
 
         # Send move command only once when mouse is released
@@ -1498,6 +1637,7 @@ class GraphScene(QGraphicsScene):
         self.controller.telemetryUpdated.connect(self.on_telemetry_updated)
         self.controller.parameterUpdated.connect(self.on_parameter_update)
         self.controller.nodeMoved.connect(self.on_node_moved)
+        self.controller.nodeResized.connect(self.on_node_resized)
 
     def delete_selection(self):
         """
@@ -1633,6 +1773,23 @@ class GraphScene(QGraphicsScene):
                 item._last_committed_pos = new_pos
                 item.update()
 
+    def on_node_resized(self, node_id, ui_size):
+        """
+        Handle authoritative frame-size updates (own resize echo or undo
+        restore / load). Never fights an active resize drag.
+        """
+        if node_id in self.node_items:
+            item = self.node_items[node_id]
+            if item._resize_active or item._drag_active or not item._is_resizable():
+                return
+            try:
+                target = (int(ui_size[0]), int(ui_size[1]))
+            except (TypeError, ValueError, IndexError):
+                return
+            if (item.width, item.height) != target:
+                item.ui_size = target
+                item._apply_frame_size(target[0], target[1])
+
     def toggle_load_view(self, show):
         self._show_load = show
         for item in self.node_items.values():
@@ -1669,6 +1826,7 @@ class GraphScene(QGraphicsScene):
                         "name": item.node_name,
                         "type": item.node_type,
                         "pos": (item.pos().x(), item.pos().y()),
+                        "ui_size": [item.width, item.height] if item._is_resizable() else None,
                         "params": params_data,
                         "inputs": list(item.input_items.keys()),
                         "outputs": list(item.output_items.keys()),

@@ -332,6 +332,7 @@ class Graph:
             "name": n.name,
             "type": n.__class__.__name__,
             "pos": n.pos,
+            "ui_size": list(n.ui_size) if getattr(n, "ui_size", None) else None,
             "error": n.error_msg,
             "inputs": list(n.inputs.keys()),
             "outputs": list(n.outputs.keys()),
@@ -758,8 +759,12 @@ class Engine:
             op = cmd[0]
             if op == "add":
                 # Support atomic node creation with initial parameters
-                # cmd format: ("add", type_name, nid, pos, initial_params) where initial_params can be None
-                _, type_name_or_node, nid, pos, initial_params = cmd
+                # cmd format: ("add", node, nid, pos, initial_params[, ui_size])
+                # where initial_params can be None. The optional 6th element
+                # carries the UI frame size for resizable nodes (persisted on
+                # save, non-undoable); older 5-tuple producers still work.
+                _, type_name_or_node, nid, pos, initial_params, *rest = cmd
+                ui_size = rest[0] if rest else None
                 if isinstance(type_name_or_node, str):
                     # String-type adds are rejected: cls() may load native
                     # libraries / design filters and must never run on the
@@ -778,6 +783,11 @@ class Engine:
                     if node is not None:
                         node.id = nid
                         node.pos = pos
+                        if ui_size:
+                            try:
+                                node.ui_size = (int(ui_size[0]), int(ui_size[1]))
+                            except (TypeError, ValueError, IndexError):
+                                pass
 
                 if node:
                     # Fix: Add node to graph first so node.graph is valid for parameter change callbacks
@@ -914,6 +924,24 @@ class Engine:
                         self.output_queue.put_nowait({"type": "node_moved", "node_id": nid, "pos": (x, y)})
                     except Exception:
                         pass
+            elif op == "resize":
+                # UI frame size for resizable nodes. Non-undoable by design
+                # (persisted on save only): no history entry, just authoritative
+                # state + a side-channel message like node_moved.
+                _, nid, w, h = cmd
+                node = self.graph.node_map.get(nid)
+                if node:
+                    try:
+                        size = (int(w), int(h))
+                    except (TypeError, ValueError):
+                        size = None
+                    if size is not None:
+                        node.ui_size = size
+                        try:
+                            self.output_queue.put_nowait(
+                                {"type": "node_resized", "node_id": nid, "ui_size": [size[0], size[1]]})
+                        except Exception:
+                            pass
 
             # --- Restore Command for robust Undo ---
             elif op == "restore":

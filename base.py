@@ -466,6 +466,10 @@ class Node:
                                            help="When off, the node is bypassed: audio passes through (sources go silent) and no DSP runs.")
         self._nrt_epoch = 0
         self._nrt_inbox = None
+        # UI-only node frame size (width, height in scene units) for resizable
+        # custom-UIs. Set via the non-undoable ("resize", ...) engine command
+        # (persisted on save, no undo history). None means "widget default".
+        self.ui_size = None
 
     def is_enabled(self) -> bool:
         """Committed bypass state. True when the node should process normally.
@@ -596,10 +600,19 @@ class Node:
             "name": self.name,
             "params": {k: v.get_staging_safe() for k, v in self.params.items()},
             "pos": self.pos,
+            "ui_size": list(self.ui_size) if self.ui_size else None,
         }
 
     def load_state(self, data: dict):
         self.pos = tuple(data.get("pos", (0, 0)))
+        raw_size = data.get("ui_size")
+        if raw_size:
+            try:
+                self.ui_size = (int(raw_size[0]), int(raw_size[1]))
+            except (TypeError, ValueError, IndexError):
+                self.ui_size = None
+        else:
+            self.ui_size = None
         if "params" in data:
             for k, v in data["params"].items():
                 if k in self.params:

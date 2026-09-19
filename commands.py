@@ -48,12 +48,13 @@ class AddNodeCommand(ICommand):
     {"param_name": {"value": val, "type": ptype, "meta": pmeta}}
     """
 
-    def __init__(self, controller, node_type, pos, node_id=None, params=None):
+    def __init__(self, controller, node_type, pos, node_id=None, params=None, ui_size=None):
         self.controller = controller
         self.node_type = node_type
         self.pos = pos
         self.node_id = node_id if node_id is not None else str(uuid.uuid4())
         self.params = params
+        self.ui_size = tuple(ui_size) if ui_size else None
 
     def execute(self):
         # Instantiate the node OFF the real-time thread. When the engine is
@@ -65,7 +66,7 @@ class AddNodeCommand(ICommand):
 
         cls = plugin_system.NODE_REGISTRY.get(self.node_type)
         node = cls() if cls else None
-        self.cmd_id = self.controller.engine.push_command(("add", node, self.node_id, self.pos, self.params))
+        self.cmd_id = self.controller.engine.push_command(("add", node, self.node_id, self.pos, self.params, self.ui_size))
 
     def undo(self):
         self.controller.engine.push_command(("del", self.node_id))

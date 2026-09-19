@@ -10,7 +10,7 @@ from base import Node, InputSlot, OutputSlot, BLOCK_SIZE, CHANNELS, DTYPE
 import plugin_system
 
 try:
-    from PySide6.QtWidgets import QWidget, QVBoxLayout, QPlainTextEdit, QPushButton, QLabel, QTextEdit
+    from PySide6.QtWidgets import QWidget, QVBoxLayout, QPlainTextEdit, QPushButton, QLabel, QTextEdit, QSizePolicy
     from PySide6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QTextCursor, QFont
     from PySide6.QtCore import Qt, QTimer, QSignalBlocker
 
@@ -305,11 +305,17 @@ if GUI_AVAILABLE:
     class ScriptNodeWidget(QWidget):
         IS_NODE_UI = True
         NODE_CLASS_NAME = "ScriptNode"
+        # Resizable frame contract (see NodeItem._apply_frame_size): the node
+        # adopts DEFAULT_SIZE on first build, clamps drags to MIN_SIZE, and
+        # persists the frame via controller.set_node_size (no undo).
+        IS_RESIZABLE = True
+        MIN_SIZE = (320, 200)
+        DEFAULT_SIZE = (400, 300)
 
         def __init__(self, node_proxy):
             super().__init__()
             self.proxy = node_proxy
-            self.setMinimumSize(400, 300)
+            self.setMinimumSize(*self.MIN_SIZE)
 
             layout = QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
@@ -319,6 +325,7 @@ if GUI_AVAILABLE:
             self.editor = QPlainTextEdit()
             self.editor.setFont(QFont("Courier New", 10))
             self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+            self.editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.highlighter = PythonSyntaxHighlighter(self.editor.document())
 
             # Populate Initial Code
