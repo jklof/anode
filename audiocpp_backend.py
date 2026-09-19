@@ -785,6 +785,36 @@ class AudioCppRuntime:
             )
         return True, ""
 
+    def check_installed(self):
+        """Filesystem health check for an extracted runtime (B-024 repair).
+
+        Cheap ``bin_dir`` scan only, never spawns a process: the CLI plus
+        the backend shared libraries it needs at load time. An install
+        with a deleted/corrupt DLL reports missing so the Download button
+        can repair it instead of saying "Everything already downloaded".
+        Returns ``(ok, missing_names)``.
+        """
+        missing = []
+        if not self.cli.exists():
+            missing.append(self.cli.name)
+        try:
+            present = {p.name.lower() for p in self.bin_dir.iterdir()
+                       if p.is_file()}
+        except OSError:
+            present = set()
+        # Backend DLLs shipped alongside audiocpp_cli in the pinned
+        # archives (cudart + ggml backends). Prefix/suffix match so
+        # versioned filenames (cudart64_12.dll, ggml-cuda.dll, ...) count.
+        required = ("cudart", "ggml", "audio")
+        if present:
+            for needle in required:
+                if not any(needle in name for name in present):
+                    missing.append(f"*{needle}*")
+        elif not missing:
+            # bin/ itself unreadable but CLI exists (odd): treat as missing.
+            missing.append("bin/*")
+        return (len(missing) == 0), missing
+
     def health(self, timeout_s=60):
         """Run `--list-devices`. Returns (ok, output). Only called off the
         audio thread (NRT worker or control thread)."""
@@ -1213,10 +1243,11 @@ class AudioCppJob(Node):
             runtime_specs, staging = runtime_fetch_specs(runtime.root)
         except RuntimeError as e:
             raise ValueError(str(e))
+        ok, _missing = runtime.check_installed() if hasattr(runtime, "check_installed") else (runtime.cli.exists(), [])
         return {
             "runtime": [self._spec_to_dict(s)
                         for s in missing_specs(runtime_specs)
-                        if not runtime.cli.exists()],
+                        if not ok],
             "staging": str(staging),
             "bin_dir": str(runtime.bin_dir),
             "models": [self._spec_to_dict(s)

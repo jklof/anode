@@ -395,15 +395,16 @@ class ABCNote(_NoteNodeBase):
         return f"{len(score.notes)} notes, {score.total_beats:.0f} beats @ {score.bpm:g} BPM{sec}"
 
 
-class FileSource(Node):
+class _FileSourceBase(Node):
     # Generic file node.
-    # (lyrics, audio, …) can be published and wired into any uri input.
+    # (lyrics, audio, ...) can be published and wired into any uri input.
     category = "Offline"
     label = "File"
-    is_abstract = False
+    is_abstract = True
+    is_offline = True
     description = (
         "Publishes any picked file directly on the file URI output "
-        "(no editing, no copy — the path itself is the payload). Picking, the "
+        "(no editing, no copy - the path itself is the payload). Picking, the "
         "Publish button, or a trigger_in pulse re-publishes with a done pulse "
         "for chaining into lyric/song/score/audio nodes."
     )
@@ -420,6 +421,9 @@ class FileSource(Node):
                             help="Selected file path (labeled 'file' for wiring); "
                                  "published on pick, on trigger, "
                                  "and on patch-load relink.")
+        # Saved-patch compat: historic patches wire the "text" output.
+        # Alias to the same slot object so either name publishes identically.
+        self.outputs["text"] = self.outputs[self.URI_OUT]
         self.done = self.add_output("done", channels=1,
                                     help="One-block 1.0 pulse when the file is (re-)published.")
         self.add_file_param("file", "", filter=self.FILE_FILTER,
@@ -499,6 +503,20 @@ class FileSource(Node):
 
     def get_telemetry(self) -> dict:
         return {"status": self._status, "audio": self._status_detail}
+
+
+class TextFileSource(_FileSourceBase):
+    """Generic file -> URI publisher (kept name for saved-patch compat).
+
+    Historical patches reference type "TextFileSource" with a "text"
+    output; the base publishes URI_OUT="file" plus an identical "text"
+    alias slot, so both old and new patches load.
+    """
+    is_abstract = False
+
+
+# Back-compat alias: some code/widgets import FileSource directly.
+FileSource = TextFileSource
 
 
 
@@ -652,12 +670,12 @@ if GUI_AVAILABLE:
         USE_ABC_HIGHLIGHT = True
 
 
-    class FileSourceWidget(QWidget):
+    class TextFileSourceWidget(QWidget):
         """File picker + Publish button + status for the file source nodes.
         Small fixed widget (not resizable): the file row is the whole UI."""
 
         IS_NODE_UI = True
-        NODE_CLASS_NAME = "FileSource"
+        NODE_CLASS_NAME = "TextFileSource"
 
         def __init__(self, node_proxy):
             super().__init__()
@@ -696,4 +714,12 @@ if GUI_AVAILABLE:
         def update_from_params(self, params):
             if "file" in params:
                 self.file_widget.update_from_backend(params["file"])
+
+    FileSourceWidget = TextFileSourceWidget
+
+
+# Registry aliases for saved-patch compat: old patches reference type
+# "FileSource" (and its widget). The loader maps these to TextFileSource.
+NODE_ALIASES = {"FileSource": "TextFileSource"}
+UI_ALIASES = {"FileSource": "TextFileSource"}
 

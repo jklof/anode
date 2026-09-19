@@ -53,7 +53,7 @@ PROFILES = (
 )
 # Forced-aligner model for the word_timestamps path (fixed repo-relative
 # location, shared with Qwen3ForcedAligner via fetch_qwen3_align_gguf.py).
-ALIGNER_DIR = REPO_ROOT / "models" / "Qwen3-ForcedAligner-0.6B-GGUF"
+ALIGNER_DIR = REPO_ROOT / "models" / "Qwen3-ForcedAligner-GGUF"
 # Silero VAD asset for timestamp chunking (fixed repo-relative location).
 # The CLI default (assets/framework/models/silero_vad, relative to the
 # audio.cpp checkout) is not shipped with the runtime archives, so the node

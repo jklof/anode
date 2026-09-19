@@ -52,12 +52,37 @@ ALIGN_MAX_SECONDS = 30.0
 
 def audio_seconds(path):
     """Clip duration in seconds from the file header, or None when the
-    header is unreadable (e.g. MP3 via soundfile). Pure metadata read."""
+    header is unreadable. Pure metadata read (never decodes audio).
+
+    WAV/FLAC/OGG go through soundfile; MP3 (and anything soundfile
+    rejects) falls back to PyAV container metadata so long MP3s still hit
+    the ALIGN_MAX_SECONDS pre-flight guard instead of overflowing the
+    encoder deep inside the sidecar.
+    """
     try:
         import soundfile as sf
         info = sf.info(str(path))
         if info.samplerate > 0:
             return info.frames / float(info.samplerate)
+    except Exception:
+        pass
+    try:
+        import av
+        container = av.open(str(path))
+        try:
+            if container.duration is not None and container.duration > 0:
+                # PyAV duration is in microseconds (AV_TIME_BASE).
+                return float(container.duration) / 1_000_000.0
+            for stream in container.streams.audio:
+                if stream.duration is not None and stream.time_base is not None:
+                    return float(stream.duration * stream.time_base)
+        finally:
+            close = getattr(container, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
     except Exception:
         pass
     return None

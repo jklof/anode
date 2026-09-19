@@ -87,6 +87,15 @@ def load_plugins(folder="plugins"):
                             target = getattr(obj, "NODE_CLASS_NAME", None)
                             if target:
                                 UI_REGISTRY[target] = obj
+                    # Register type aliases for saved-patch compat
+                    # (e.g. FileSource -> TextFileSource in text_notes).
+                    for alias_map, registry in (
+                        (getattr(mod, "NODE_ALIASES", {}), NODE_REGISTRY),
+                        (getattr(mod, "UI_ALIASES", {}), UI_REGISTRY),
+                    ):
+                        for alias, target in alias_map.items():
+                            if target in registry and alias not in registry:
+                                registry[alias] = registry[target]
 
                 except Exception as e:
                     logging.exception(f"Failed to load plugin {name}: {e}")

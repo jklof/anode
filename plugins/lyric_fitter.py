@@ -294,4 +294,5 @@ class LyricFitter(Node):
 
     def get_telemetry(self) -> dict:
         return {"status": self._status, "audio": self._status_detail,
-                "report": self._report}
+                "report": self._report,
+                "busy": self._status == "Fitting"}
