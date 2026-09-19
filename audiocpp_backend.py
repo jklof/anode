@@ -49,7 +49,7 @@ from download_util import DownloadCancelled, DownloadSpec, fetch_all, format_byt
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent
-AUDIOCPP_PIN_VERSION = "v0.8.0"
+AUDIOCPP_PIN_VERSION = "v0.8.1"
 
 AUDIOCPP_RELEASE_BASE = (
     f"https://github.com/0xShug0/audio.cpp/releases/download/{AUDIOCPP_PIN_VERSION}"
@@ -57,10 +57,10 @@ AUDIOCPP_RELEASE_BASE = (
 # Pinned runtime archives (Windows x64 + CUDA 13.3 track: the
 # Blackwell/sm_120-capable build). (filename, size bytes, sha256).
 RUNTIME_ARCHIVES = [
-    ("audio-v0.8.0-bin-windows-x64-cuda13.3.zip", 269563691,
-     "98ccbc3f5e6c73a6ffffa7ae32e1e204f4d12b15cac8a7901fb6be24d943fde6"),
-    ("audio-v0.8.0-cudart-windows-x64-cuda13.3.zip", 575457454,
-     "17fc9b2098d8167b6207be838e15187412f070429b6174b7353404e7131897fc"),
+    ("audio-v0.8.1-bin-windows-x64-cuda13.3.zip", 269917950,
+     "aad5dffe4398b325018cf38e58e6555998ef97948a72ac7582de46e91155ca24"),
+    ("audio-v0.8.1-cudart-windows-x64-cuda13.3.zip", 575457454,
+     "5c0a8b1022500b2df2062b7215584408ad07d43358f38a1a3ace0ac6daa441a9"),
 ]
 
 YUE2_HF_BASE = "https://huggingface.co/ngquocvinh/YuE2-3B-GGUF/resolve/main"
@@ -173,7 +173,7 @@ SHEETSAGE_FILES = [
 SHEETSAGE_GGUF = "sheetsage2-orig.gguf"
 SHEETSAGE_DEFAULT_MAX_TOKENS = 5120
 # Weight dtypes the CLI actually accepts (its --help also names q8_0, but
-# v0.8.0 rejects it at runtime).
+# v0.8.1 rejects it at runtime).
 SHEETSAGE_WEIGHT_TYPES = ("native", "f32", "f16", "bf16", "q4_0", "q4_k")
 
 
@@ -399,7 +399,7 @@ def _no_window_kwargs():
 
 def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
                      main_gguf, vae_gguf, abc_file, out_wav, backend="cuda",
-                     weight_type="native"):
+                     weight_type="native", out_dir=None):
     """Pure argv builder (no process). Tested without a GPU."""
     if cot not in ("off", "melody", "full"):
         raise ValueError(f"cot must be off/melody/full, got {cot!r}")
@@ -425,6 +425,10 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
         if cot == "off":
             raise ValueError("an ABC score requires cot=melody or cot=full")
         argv += ["--request-option", f"abc_file={abc_file}"]
+    if out_dir is not None:
+        # v0.8.1+: the CLI writes the model-generated ABC plan as
+        # score.abc under --out-dir (cot=melody/full without input abc).
+        argv += ["--out-dir", str(out_dir)]
     return argv
 
 
@@ -446,12 +450,15 @@ def _parse_metrics(text):
 def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
                  main_gguf="yue2-3b-q4_k_m.gguf", vae_gguf="yue2-vae-f16.gguf",
                  abc_file=None, out_wav, cancel_event=None, timeout_s=1800,
-                 backend=None, weight_type="native"):
+                 backend=None, weight_type="native", out_dir=None):
     """Run one YuE2 generation. Blocking; call only from an NRT worker.
 
-    Returns ``{"wav": str, "metrics": dict}``. Raises
-    :class:`GenerationCancelled` on cancellation, ``RuntimeError`` /
-    ``ValueError`` / ``FileNotFoundError`` on failure.
+    Returns ``{"wav": str, "metrics": dict, "score": str | None}`` where
+    ``score`` is the model-generated ABC plan (``score.abc`` under
+    ``out_dir``, v0.8.1+) or None when the CLI wrote none (``cot=off`` or
+    external-abc runs). Raises :class:`GenerationCancelled` on
+    cancellation, ``RuntimeError`` / ``ValueError`` / ``FileNotFoundError``
+    on failure.
     """
     cli, model_dir, out_wav = Path(cli), Path(model_dir), Path(out_wav)
     if not cli.exists():
@@ -466,12 +473,16 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
         raise FileNotFoundError(f"VAE GGUF not found: {vae_path}")
     if abc_file and not Path(abc_file).exists():
         raise FileNotFoundError(f"ABC score file not found: {abc_file}")
+    out_dir_path = Path(out_dir) if out_dir is not None else None
     argv = _build_yue2_argv(cli, model_dir, lyrics=lyrics, style=style,
                             cot=cot, seed=seed, main_gguf=main_gguf,
                             vae_gguf=vae_gguf, abc_file=abc_file, out_wav=out_wav,
                             backend=backend or default_backend(),
-                            weight_type=weight_type)
+                            weight_type=weight_type,
+                            out_dir=out_dir_path)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
+    if out_dir_path is not None:
+        out_dir_path.mkdir(parents=True, exist_ok=True)
     try:
         proc = subprocess.Popen(
             argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -509,7 +520,13 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
         )
     if not out_wav.exists():
         raise RuntimeError("audio.cpp reported success but wrote no WAV file")
-    return {"wav": str(out_wav), "metrics": _parse_metrics(output_tail)}
+    score = None
+    if out_dir_path is not None:
+        candidate = out_dir_path / "score.abc"
+        if candidate.exists():
+            score = str(candidate)
+    return {"wav": str(out_wav), "metrics": _parse_metrics(output_tail),
+            "score": score}
 
 
 # Fetch-progress throttle: _fetch_nrt reports at most every 5% or 64 MB per

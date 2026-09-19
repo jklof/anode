@@ -12,7 +12,7 @@ come out; words stay a manual lyrics file on the YuE2 side (a future ASR
 family can fill that slot without touching this node).
 
 Requirements (fetched once, never auto-downloaded by the node):
-  python tools/audiocpp/fetch_audiocpp.py       # native runtime (v0.8.0)
+  python tools/audiocpp/fetch_audiocpp.py       # native runtime (v0.8.1)
   python tools/audiocpp/fetch_sheetsage2_gguf.py # weights (orig dtype)
 
 Measured on an RTX 5070 Laptop (8 GB): a 240 s song transcribes in

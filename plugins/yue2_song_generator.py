@@ -9,19 +9,18 @@ the real-time audio thread only ever does cached-tensor playback, exactly
 like SamplePlayer.
 
 Requirements (fetched once, never auto-downloaded by the node):
-  python tools/audiocpp/fetch_audiocpp.py    # native runtime (v0.8.0)
+  python tools/audiocpp/fetch_audiocpp.py    # native runtime (v0.8.1)
   python tools/audiocpp/fetch_yue2_gguf.py   # Q4_K_M weights + VAE + sidecars
 
 Measured on an RTX 5070 Laptop (8 GB): Q4_K_M peaks at ~4.3 GB VRAM for a
 77 s song at 2.1x realtime. Model weights are CC BY-NC 4.0
 (non-commercial).
 
-Known audio.cpp v0.8.0 gap: model-generated ABC plans cannot be exported
-yet, so the plan -> edit -> re-render loop is limited to user-supplied
-scores via `abc_file` until a newer runtime is pinned. (Fixed upstream on
-main after v0.8.0 — `score.abc` via `--out-dir` — but unreleased, and main
-also renames `yue2.lora` to `yue2.ar_lora`, so wait for the next release
-rather than tracking main.)
+With cot=melody/full and no input score, the v0.8.1 runtime exports the
+model-generated ABC plan as `score.abc` (via `--out-dir`); the node keeps
+it as `plan.abc`, publishes it on the plan URI output, and shows it in the
+widget score viewer, closing the plan -> edit -> re-render loop (wire plan
+to `abc_uri`, edit a copy, re-render with cot=melody/full).
 """
 
 import random
@@ -94,6 +93,7 @@ class YuE2Widget(OfflineJobWidget):
     ACTION_LABEL = "Generate song"
     ACTION_PARAM = "generate"
     DOWNLOAD_LABEL = "Download runtime + model (~3.8 GB)"
+    SHOW_SCORE = True
 
     def _build_after_param(self, layout, key):
         if key == "seed":
@@ -134,6 +134,9 @@ class YuE2SongGenerator(AudioCppJob):
         "causes slowdowns) and "
         "publishes the kept song on the song URI output with a one-block "
         "pulse on ready for auto-chaining (e.g. into SamplePlayer). "
+        "With cot=melody/full and no input score the model-generated plan "
+        "is kept as plan.abc on the plan URI output for review and "
+        "cover re-rendering. "
         "Generation starts from the Generate button or a rising edge on "
         "trigger_in (e.g. wired from a done pulse); a new edge restarts "
         "generation, cancelling the previous run. "
@@ -158,6 +161,9 @@ class YuE2SongGenerator(AudioCppJob):
                                 "and non-empty it overrides lyrics_file; snapshots at Generate time.")
         self.add_uri_output("song",
                             help="Kept song path (MP3 or WAV per format); published on completion and on patch-load relink.")
+        self.add_uri_output("plan",
+                            help="Kept model-generated ABC plan (plan.abc) for cot=melody/full without an input score; "
+                                 "empty for cot=off or external-score runs. Wire to abc_uri (after editing a copy) to re-render.")
         self.ready = self.add_output("ready", channels=1,
                                      help="One-block 1.0 pulse when a new song is ready (wire to a trigger input).")
 
@@ -201,10 +207,14 @@ class YuE2SongGenerator(AudioCppJob):
         # is whatever format was kept (song.mp3 or song.wav).
         self.add_string_param("last_wav", "",
                               help="Path of the last generated song (MP3 or WAV); re-linked on patch load.")
+        self.add_string_param("last_plan", "",
+                              help="Path of the last generated ABC plan (plan.abc); re-linked on patch load.")
 
         self._ready_pulse = False  # emitted as a one-block pulse on ready
         self._last_trig = 0.0
         self._gen_t0 = None  # monotonic start of the in-flight job (elapsed display)
+        self._plan_text = None  # generated plan text for the score viewer
+        self._plan_path = ""
         self._status = "Idle"
         self._status_detail = "No song generated"
 
@@ -351,25 +361,39 @@ class YuE2SongGenerator(AudioCppJob):
                 vae_gguf=VAE_GGUF, abc_file=spec["abc_file"], out_wav=out_wav,
                 cancel_event=cancel_event, backend=spec.get("backend"),
                 weight_type=spec.get("weight_type", "native"),
+                out_dir=run_dir,
             )
             audio = load_song_file(gen["wav"])
+            plan_text = None
+            if gen.get("score"):
+                try:
+                    plan_text = Path(gen["score"]).read_text(encoding="utf-8")
+                    if not plan_text.strip():
+                        plan_text = None
+                except OSError:
+                    plan_text = None
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             keep = Path(spec["model_dir"]) / "outputs" / f"{stamp}_seed{spec['seed']}_{spec['cot']}"
             kept_song = self._keep_song(run_dir, keep, audio, spec, gen["metrics"],
-                                        lyrics_text=lyrics, abc_text=abc_text)
+                                        lyrics_text=lyrics, abc_text=abc_text,
+                                        plan_text=plan_text)
+            kept_plan = str(keep / "plan.abc") if plan_text is not None else None
             return {"audio": audio, "wav": str(kept_song),
-                    "metrics": gen["metrics"], "seed": spec["seed"], "cot": spec["cot"]}
+                    "metrics": gen["metrics"], "seed": spec["seed"], "cot": spec["cot"],
+                    "plan": kept_plan, "plan_text": plan_text}
         except BaseException:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
 
     def _keep_song(self, run_dir, keep, audio, spec, metrics,
-                   lyrics_text=None, abc_text=None):
+                   lyrics_text=None, abc_text=None, plan_text=None):
         """Keep exactly one song file plus provenance records. Returns kept path.
 
         request.json carries everything needed to recreate the song: the
         full lyrics/score texts alongside their source paths (paths rot;
         text doesn't), the resolved seed/profile/VAE, and the sidecar pin.
+        The model-generated plan (v0.8.1+ score.abc) is kept as plan.abc
+        when present; input-score runs and cot=off keep no plan.
         """
         if spec["format"] == "mp3":
             # Encode MP3 from the validated tensor straight into the keep
@@ -383,6 +407,8 @@ class YuE2SongGenerator(AudioCppJob):
         else:
             kept_song = keep / "song.wav"
             self.keep_artifacts(run_dir, keep, ["song.wav"])
+        if plan_text is not None:
+            (keep / "plan.abc").write_text(plan_text, encoding="utf-8")
         self.write_json(keep / "request.json", {
             "style": spec["style"],
             "lyrics_file": spec["lyrics_file"],
@@ -396,13 +422,24 @@ class YuE2SongGenerator(AudioCppJob):
             "format": spec["format"],
             "backend": spec.get("backend", "cuda"),
             "runtime": {"audio_cpp": AUDIOCPP_PIN_VERSION},
+            "generated_plan": plan_text is not None,
+            "plan_text": plan_text,
         })
         self.write_json(keep / "metrics.json", metrics)
         return kept_song
 
-    def _relink_nrt(self, cancel_event, wav_path):
+    def _relink_nrt(self, cancel_event, wav_path, plan_path=None):
+        plan_text = None
+        if plan_path:
+            try:
+                plan_text = Path(plan_path).read_text(encoding="utf-8")
+                if not plan_text.strip():
+                    plan_text = None
+            except OSError:
+                plan_text = None
         return {"audio": load_song_file(wav_path), "wav": wav_path,
-                "metrics": {}, "seed": None, "cot": None}
+                "metrics": {}, "seed": None, "cot": None,
+                "plan": plan_path, "plan_text": plan_text}
 
     def on_nrt_complete(self, tag, ok, result):
         if tag == "gen":
@@ -424,6 +461,18 @@ class YuE2SongGenerator(AudioCppJob):
             # downstream discovers the song through the song URI output and
             # the one-block pulse on ready.
             self.outputs["song"].uri = result["wav"]
+            plan = result.get("plan")
+            plan_text = result.get("plan_text")
+            if plan and plan_text:
+                self.outputs["plan"].uri = plan
+                self._plan_text = plan_text
+                self._plan_path = plan
+            else:
+                # Anti-ghost: a plan-less run must not leave a stale plan URI.
+                self.outputs["plan"].uri = ""
+                self._plan_text = None
+                self._plan_path = ""
+                plan = None
             self._ready_pulse = True
             self.error_msg = None
             secs = audio.shape[1] / SAMPLE_RATE
@@ -431,13 +480,26 @@ class YuE2SongGenerator(AudioCppJob):
             self._status = "Ready"
             self._status_detail = (
                 f"{secs:.1f} s song (seed {result['seed']}, {result['cot']}"
-                + (f", RTF {rtf:.2f}" if rtf else "") + ")"
+                + (f", RTF {rtf:.2f}" if rtf else "")
+                + (" + plan" if plan else "") + ")"
             )
             self.params["last_wav"].set(result["wav"])
             self.params["last_wav"].sync()
+            self.params["last_plan"].set(plan or "")
+            self.params["last_plan"].sync()
         elif tag == "relink":
             if ok and isinstance(result.get("audio"), torch.Tensor):
                 self.outputs["song"].uri = result["wav"]
+                plan = result.get("plan")
+                plan_text = result.get("plan_text")
+                if plan and plan_text and Path(plan).exists():
+                    self.outputs["plan"].uri = plan
+                    self._plan_text = plan_text
+                    self._plan_path = plan
+                else:
+                    self.outputs["plan"].uri = ""
+                    self._plan_text = None
+                    self._plan_path = ""
                 # No pulse: a re-linked song is not newly ready, so a wired
                 # SamplePlayer must not autoplay on patch load.
                 self.error_msg = None
@@ -446,6 +508,9 @@ class YuE2SongGenerator(AudioCppJob):
                 self._status_detail = f"Re-linked {secs:.1f} s song"
             else:
                 self.outputs["song"].uri = ""
+                self.outputs["plan"].uri = ""
+                self._plan_text = None
+                self._plan_path = ""
                 self._status = "Idle"
                 self._status_detail = "Previous song file is missing; generate again"
                 self.error_msg = None
@@ -456,14 +521,28 @@ class YuE2SongGenerator(AudioCppJob):
 
     def load_state(self, data: dict):
         super().load_state(data)
-        # Re-link the kept WAV without regenerating. Decoding runs on NRT.
+        # Re-link the kept WAV (+ plan when still present) without
+        # regenerating. Decoding runs on NRT. Old patches have no last_plan
+        # key: the param keeps its "" default and only the song re-links.
         wav = self.params["last_wav"].value if "last_wav" in self.params else ""
+        plan = self.params["last_plan"].value if "last_plan" in self.params else ""
+        if plan and not Path(plan).exists():
+            plan = ""
         if wav and Path(wav).exists():
             self._status = "Loading"
             self._status_detail = "Re-linking previous song…"
             if getattr(self, "graph", None) is not None and self.graph.engine is not None:
-                self.submit_job("relink", self._relink_nrt, wav)
+                self.submit_job("relink", self._relink_nrt, wav, plan or None)
             # Headless (tests): caller drives _relink_nrt directly.
+        elif plan and Path(plan).exists():
+            # Song gone but plan survives: surface the plan without a pulse.
+            try:
+                self._plan_text = Path(plan).read_text(encoding="utf-8")
+                self._plan_path = plan
+                self.outputs["plan"].uri = plan
+            except OSError:
+                self._plan_text = None
+                self._plan_path = ""
 
     def get_telemetry(self) -> dict:
         detail = self._status_detail
@@ -474,7 +553,8 @@ class YuE2SongGenerator(AudioCppJob):
             elapsed = time.monotonic() - self._gen_t0
             detail = f"{detail} ({elapsed:.0f} s elapsed)"
         return {"status": self._status, "audio": detail,
-                "busy": self._busy_flag()}
+                "busy": self._busy_flag(),
+                "score_text": self._plan_text or ""}
 
     # ------------------------------------------------------------------
     # audio thread: one-block ready pulse + trigger edge detect (both

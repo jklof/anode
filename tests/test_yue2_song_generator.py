@@ -1205,3 +1205,149 @@ def test_request_json_records_backend(node_cls, tmp_path):
     req = json.loads((keep / "request.json").read_text())
     assert req["backend"] == "cpu"
     assert req["weight_type"] == "q4_0"
+
+
+# ----------------------------------------------------------------------
+# v0.8.1: --out-dir / score.abc plan export
+# ----------------------------------------------------------------------
+def test_pin_version_is_v081():
+    assert backend.AUDIOCPP_PIN_VERSION == "v0.8.1"
+    assert len(backend.RUNTIME_ARCHIVES) == 2
+    assert all(name.startswith("audio-v0.8.1-") for name, _, _ in backend.RUNTIME_ARCHIVES)
+
+
+def test_argv_out_dir_flag(tmp_path):
+    out = str(tmp_path / "o.wav")
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec())
+    assert "--out-dir" not in argv
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                            out_dir=str(tmp_path / "run"))
+    assert "--out-dir" in argv
+    i = argv.index("--out-dir")
+    assert argv[i + 1] == str(tmp_path / "run")
+
+
+def test_run_gen_returns_score_when_present(tmp_path, monkeypatch):
+    out = tmp_path / "run" / "song.wav"
+    cli = tmp_path / "cli"
+    cli.write_text("x")
+    model = tmp_path / "models"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "m.gguf").write_text("x")
+    (model / "v.gguf").write_text("x")
+    seen = _patch_popen(monkeypatch)
+    seen["out"] = str(out)
+
+    orig_stub = seen.get("proc")
+    # Stub writes score.abc alongside the wav when out_dir is used.
+    def fake_popen_score(argv, **kwargs):
+        proc = _StubProc(argv, seen.get("out"), code=seen.get("code", 0),
+                         metrics_text=seen.get("text", ""))
+        if "--out-dir" in argv:
+            d = Path(argv[argv.index("--out-dir") + 1])
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "score.abc").write_text("X:1\n% plan\nCDEF\n", encoding="utf-8")
+        seen["proc"] = proc
+        return proc
+    monkeypatch.setattr(backend.subprocess, "Popen", fake_popen_score)
+    import threading
+    result = run_yue2_gen(str(cli), str(model), lyrics="la", style="pop",
+                          main_gguf="m.gguf", vae_gguf="v.gguf",
+                          out_wav=str(out), cancel_event=threading.Event(),
+                          out_dir=str(tmp_path / "run"))
+    assert result["score"] is not None
+    assert Path(result["score"]).name == "score.abc"
+
+
+def test_run_gen_score_none_without_out_dir(tmp_path, monkeypatch):
+    out = tmp_path / "run" / "song.wav"
+    cli = tmp_path / "cli"
+    cli.write_text("x")
+    model = tmp_path / "models"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "m.gguf").write_text("x")
+    (model / "v.gguf").write_text("x")
+    seen = _patch_popen(monkeypatch)
+    seen["out"] = str(out)
+    import threading
+    result = run_yue2_gen(str(cli), str(model), lyrics="la", style="pop",
+                          main_gguf="m.gguf", vae_gguf="v.gguf",
+                          out_wav=str(out), cancel_event=threading.Event())
+    assert result["score"] is None
+
+
+def test_keep_song_with_plan_writes_plan_abc(node_cls, tmp_path):
+    node = make_node(node_cls)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "song.wav").write_bytes(b"cli-bytes")
+    keep = tmp_path / "keep"
+    kept = node._keep_song(run_dir, keep, _keep_audio(), _keep_spec(tmp_path, "wav"),
+                           {"rtf": 1.0}, plan_text="X:1\n% plan\nCDEF\n")
+    assert kept == keep / "song.wav"
+    assert (keep / "plan.abc").read_text(encoding="utf-8").startswith("X:1")
+    import json
+    req = json.loads((keep / "request.json").read_text())
+    assert req["generated_plan"] is True
+    assert req["plan_text"].startswith("X:1")
+
+
+def test_keep_song_without_plan_marks_absent(node_cls, tmp_path):
+    node = make_node(node_cls)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "song.wav").write_bytes(b"cli-bytes")
+    keep = tmp_path / "keep"
+    node._keep_song(run_dir, keep, _keep_audio(), _keep_spec(tmp_path, "wav"),
+                    {"rtf": 1.0})
+    assert not (keep / "plan.abc").exists()
+    import json
+    req = json.loads((keep / "request.json").read_text())
+    assert req["generated_plan"] is False
+    assert req["plan_text"] is None
+
+
+def _complete_song_with_plan(node, wav="x.wav", plan="p.abc",
+                             plan_text="X:1\n% plan\nCDEF\n", seconds=1.0):
+    data = torch.linspace(0, 1, int(seconds * SAMPLE_RATE),
+                          dtype=torch.float32).unsqueeze(0).repeat(CHANNELS, 1).contiguous()
+    node.on_nrt_complete("gen", True, {"audio": data, "wav": wav,
+                                       "metrics": {"rtf": 2.0},
+                                       "seed": 1, "cot": "full",
+                                       "plan": plan, "plan_text": plan_text})
+    return data
+
+
+def test_complete_with_plan_publishes_plan_uri(node_cls):
+    node = make_node(node_cls)
+    _complete_song_with_plan(node, wav="x.wav", plan="p.abc")
+    assert node.outputs["song"].uri == "x.wav"
+    assert node.outputs["plan"].uri == "p.abc"
+    assert node.params["last_plan"].value == "p.abc"
+    assert "+ plan" in node._status_detail
+    assert node.get_telemetry()["score_text"].startswith("X:1")
+
+
+def test_complete_without_plan_clears_stale_plan(node_cls):
+    node = make_node(node_cls)
+    _complete_song_with_plan(node, wav="a.wav", plan="p.abc")
+    assert node.outputs["plan"].uri == "p.abc"
+    _complete_song(node, wav="b.wav")  # legacy result without plan keys
+    assert node.outputs["song"].uri == "b.wav"
+    assert node.outputs["plan"].uri == ""
+    assert node.params["last_plan"].value == ""
+    assert "+ plan" not in node._status_detail
+    assert node.get_telemetry()["score_text"] == ""
+
+
+def test_relink_with_plan_sets_uri_without_pulse(node_cls):
+    node = make_node(node_cls)
+    data = torch.zeros((CHANNELS, 100), dtype=torch.float32)
+    node.on_nrt_complete("relink", True, {"audio": data, "wav": "r.wav",
+                                          "metrics": {}, "seed": None, "cot": None,
+                                          "plan": "r-plan.abc",
+                                          "plan_text": "X:1\n"})
+    # plan path does not exist on disk here, so relink clears it safely.
+    assert node.outputs["song"].uri == "r.wav"
+    node.process()
+    assert torch.all(node.ready.buffer == 0.0)
