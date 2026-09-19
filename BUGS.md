@@ -17,16 +17,16 @@ Legend: `[ ]` pending, `[~]` in progress, `[x]` done. Severity: H/M/L.
 
 ## Session 1 — Engine thread-safety (do first)
 
-- [ ] **B-001 (H)** Unguarded `on_nrt_complete` kills engine thread — `core.py:445`
-  Fix: try/except + `error_msg` like `:440-443`. Test: raising `on_nrt_complete` does not kill worker.
-- [ ] **B-002 (H)** Blocking `output_queue.put()` on engine thread — `core.py:623`
-  Fix: `put_nowait`, drop on `Full`. Test: fill queue to 200, process block does not block.
-- [ ] **B-003 (H)** `logging.exception` per failing block + per telemetry tick — `core.py:1069-1072,1092-1093`
-  Fix: log on transition only (newly enters `_process_error_ids`). Test: failing node logs once per episode.
-- [ ] **B-004 (H)** `load` while running constructs nodes on audio thread — `core.py:879-891`, `controller.py:431-441`
-  Fix: stop engine / pre-instantiate off-thread like `reload` (`controller.py:457`). Test: load-while-running path.
-- [ ] **B-005 (M)** `add` string-type fallback runs `cls()` on engine thread — `core.py:632-639`
-  Fix: delete branch, require pre-instantiated node. Test: string add rejected with warning.
+- [x] **B-001 (H)** Unguarded `on_nrt_complete` kills engine thread — `core.py:445`
+  Fixed: try/except + `error_msg`. Verified 2026-09-19 via subagent, 50 passed.
+- [x] **B-002 (H)** Blocking `output_queue.put()` on engine thread — `core.py:623`
+  Fixed: `put_nowait`, drop on `Full`. Verified 2026-09-19, 50 passed.
+- [x] **B-003 (H)** `logging.exception` per failing block + per telemetry tick — `core.py:1069-1072,1092-1093`
+  Fixed: transition-only logging (+ `_telemetry_error_ids`). Verified 2026-09-19, 50 passed.
+- [x] **B-004 (H)** `load` while running constructs nodes on audio thread — `core.py:879-891`, `controller.py:431-441`
+  Fixed: `stop_audio()` before load (same as reload). Verified 2026-09-19, 50 passed.
+- [x] **B-005 (M)** `add` string-type fallback runs `cls()` on engine thread — `core.py:632-639`
+  Fixed: reject string adds with warning. Verified 2026-09-19, 50 passed.
 
 ## Session 2 — Silent audio / stale state
 
@@ -34,8 +34,8 @@ Legend: `[ ]` pending, `[~]` in progress, `[x]` done. Severity: H/M/L.
   Fix: `zero_()` all audio outputs before return. Test: missing lib/handle → silent block.
 - [ ] **B-007 (H)** `SamplePlayer`/`ABCPlayer` lose file on reload (no `load_state`) — `plugins/sample_player.py:88-98`, `plugins/abc_player.py`
   Fix: add `load_state()` mirroring `convolution_reverb.py:156-161`. Test: save/load round-trip restores audio.
-- [ ] **B-008 (M)** Engine-replacement ops leak stale stats/error — `core.py:842-851,866-914,916-962`
-  Fix: reset `_stats_buffer/_process_error_ids/_last_error_sent` on graph swap. Test: stats clean after clear/load.
+- [x] **B-008 (M)** Engine-replacement ops leak stale stats/error — `core.py:842-851,866-914,916-962`
+  Fixed 2026-09-19: full reset of `_stats_buffer/_process_error_ids/_telemetry_error_ids/_last_error_sent` on clear/load/reload + `del` prune discards telemetry id. Tests: core/save/arch/error-visibility 56 passed.
 - [ ] **B-009 (M)** Load/restore silently drops bad wires + unknown types — `core.py:892-898,826-827,935-945,884-885`
   Fix: collect rejected wires, one warning + snapshot event. Test: bad wire reported, not silent.
 - [x] **B-010 (L)** MIDI merge unsorted — `base.py:321-328`

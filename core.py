@@ -442,7 +442,11 @@ class NRTExecutor:
                 except Exception as e:
                     logging.error(f"NRT discard handler failed for {node.name}: {e}")
                 continue
-            node.on_nrt_complete(tag, ok, payload)
+            try:
+                node.on_nrt_complete(tag, ok, payload)
+            except Exception as e:
+                node.error_msg = str(e)
+                logging.error(f"NRT complete handler failed for {node.name}: {e}")
 
     def discard(self, node):
         """Invalidate any in-flight results for this node. O(1), never blocks.
@@ -520,6 +524,10 @@ class Engine:
         # those are auto-cleared on recovery: async (NRT/UI) errors are owned
         # by their context and must survive successful blocks.
         self._process_error_ids = set()
+        # Ids whose last get_telemetry() raised. Telemetry failures are
+        # stored on node.error_msg and logged on transition only, so a
+        # chronically failing get_telemetry() cannot spam the log at 10 Hz.
+        self._telemetry_error_ids = set()
         # Last error state broadcast to the UI; a change triggers a snapshot
         # so async failures/recoveries surface without a structural change.
         self._last_error_sent = {}
@@ -619,8 +627,11 @@ class Engine:
             pass
 
     def _emit_telemetry(self, cpu_load, node_data):
-        if not self.output_queue.full():
-            self.output_queue.put({"type": "telemetry", "cpu_load": cpu_load, "node_data": node_data})
+        try:
+            self.output_queue.put_nowait({"type": "telemetry", "cpu_load": cpu_load, "node_data": node_data})
+        except queue.Full:
+            # Non-blocking: drop telemetry rather than stall the engine thread.
+            pass
 
     def _apply_command(self, cmd, cmd_id=None):
         try:
@@ -630,13 +641,15 @@ class Engine:
                 # cmd format: ("add", type_name, nid, pos, initial_params) where initial_params can be None
                 _, type_name_or_node, nid, pos, initial_params = cmd
                 if isinstance(type_name_or_node, str):
-                    cls = plugin_system.NODE_REGISTRY.get(type_name_or_node)
-                    if cls:
-                        node = cls()
-                        node.id = nid
-                        node.pos = pos
-                    else:
-                        node = None
+                    # String-type adds are rejected: cls() may load native
+                    # libraries / design filters and must never run on the
+                    # engine thread (AGENTS.md §3). Callers must pass a
+                    # pre-instantiated node.
+                    logging.warning(
+                        f"Ignoring 'add' with string type '{type_name_or_node}': "
+                        "pre-instantiated node required."
+                    )
+                    node = None
                 else:
                     node = type_name_or_node
                     # Critical Fix: Set ID and POS for pre-instantiated nodes
@@ -699,6 +712,7 @@ class Engine:
                 # skew the global CPU average.
                 self._stats_buffer.pop(nid, None)
                 self._process_error_ids.discard(nid)
+                self._telemetry_error_ids.discard(nid)
                 self._last_error_sent.pop(nid, None)
                 try:
                     self.output_queue.put_nowait({"type": "node_removed", "node_id": nid})
@@ -847,6 +861,11 @@ class Engine:
                     n.remove()
                 self.graph = Graph()
                 self.graph.engine = self
+                # Full reset so dead ids don't linger/skew CPU avg (B-008).
+                self._stats_buffer.clear()
+                self._process_error_ids.clear()
+                self._telemetry_error_ids.clear()
+                self._last_error_sent.clear()
                 self._gc_deferred()
                 self._emit_snapshot()
 
@@ -865,12 +884,19 @@ class Engine:
 
             elif op == "load":
                 _, json_str = cmd
+                # Note: Controller.load() stops the engine first, so node
+                # construction below runs on the control thread, never audio.
                 # Invalidate NRT epochs for all current nodes before replacing graph
                 for n in self.graph.nodes:
                     self.nrt.discard(n)
                     n.stop()
                     n.remove()
                 self.graph = Graph()
+                # Full reset so dead ids don't linger/skew CPU avg (B-008).
+                self._stats_buffer.clear()
+                self._process_error_ids.clear()
+                self._telemetry_error_ids.clear()
+                self._last_error_sent.clear()
                 try:
                     data = json.loads(json_str)
                     if not isinstance(data, dict):
@@ -922,6 +948,11 @@ class Engine:
                     n.stop()
                     n.remove()
                 self.graph = Graph()
+                # Full reset so dead ids don't linger/skew CPU avg (B-008).
+                self._stats_buffer.clear()
+                self._process_error_ids.clear()
+                self._telemetry_error_ids.clear()
+                self._last_error_sent.clear()
                 self.reload_version += 1
                 try:
                     plugin_system.load_plugins()
@@ -1067,8 +1098,9 @@ class Engine:
                         dt = time.perf_counter() - t0
                         self._stats_buffer[node.id] = (dt / block_duration_sec) * 100.0
                     except Exception as e:
-                        logging.exception(f"Error processing node {node.name} (id: {node.id}): {e}")
                         node.error_msg = str(e)
+                        if node.id not in self._process_error_ids:
+                            logging.exception(f"Error processing node {node.name} (id: {node.id}): {e}")
                         self._process_error_ids.add(node.id)
 
                 # Check if any node marked structure as dirty during the current block processing
@@ -1089,8 +1121,15 @@ class Engine:
                             telemetry = node.get_telemetry()
                             if telemetry:
                                 node_data[node.id] = telemetry
+                            if node.id in self._telemetry_error_ids:
+                                self._telemetry_error_ids.discard(node.id)
+                                if node.id not in self._process_error_ids:
+                                    node.error_msg = None
                         except Exception as e:
-                            logging.exception(f"Telemetry fetch failed for node {node.name} ({node.id}): {e}")
+                            node.error_msg = str(e)
+                            if node.id not in self._telemetry_error_ids:
+                                logging.exception(f"Telemetry fetch failed for node {node.name} ({node.id}): {e}")
+                            self._telemetry_error_ids.add(node.id)
                     self._emit_telemetry(global_cpu, node_data)
                     next_telemetry_time = now + telemetry_interval
 

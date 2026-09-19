@@ -432,6 +432,10 @@ class AppController(QObject):
         """Load a graph from a file."""
         if not filename:
             return
+        # Load reconstructs nodes (cls() may load native libraries / design
+        # filters) — stop the engine first so construction runs synchronously
+        # on this thread, never on the audio thread (same as reload_plugins).
+        self.stop_audio()
         try:
             with open(filename, "r") as f:
                 json_str = f.read()
