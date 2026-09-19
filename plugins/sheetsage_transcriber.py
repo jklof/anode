@@ -89,7 +89,10 @@ class SheetSage2Transcriber(AudioCppJob):
         "review and for cover rendering: wire the melody URI output to "
         "YuE2SongGenerator's abc_uri input (or pick a kept score file) with "
         "cot=melody. Publishes score/melody URI outputs with a one-block "
-        "pulse on done. Runs on a background NRT worker (~0.8x realtime, "
+        "pulse on done. Transcription starts from the Transcribe button or "
+        "a rising edge on trigger_in (e.g. wired from a done pulse); a new "
+        "edge restarts transcription, cancelling the previous run. "
+        "Runs on a background NRT worker (~0.8x realtime, "
         "~7.6 GB peak VRAM for a 4 min song — close other GPU apps). "
         "Lyrics are NOT transcribed; words stay manual. Needs "
         "tools/audiocpp/fetch_audiocpp.py and "
@@ -104,6 +107,9 @@ class SheetSage2Transcriber(AudioCppJob):
 
     def __init__(self, name=""):
         super().__init__(name)
+        self.add_input("trigger_in",
+                       help="Gate/trigger signal; a rising edge stages a background transcription "
+                            "(same as the Transcribe button), e.g. wired from a done pulse.")
         self.add_uri_output("score",
                             help="Kept full score path (melody + chords); published on completion and on patch-load relink.")
         self.add_uri_output("melody",
@@ -135,6 +141,7 @@ class SheetSage2Transcriber(AudioCppJob):
         self._abc_text = None
         self._abc_path = ""
         self._done_pulse = False  # emitted as a one-block pulse on done
+        self._last_trig = 0.0
         self._status = "Idle"
         self._status_detail = "No transcription yet"
 
@@ -143,14 +150,36 @@ class SheetSage2Transcriber(AudioCppJob):
     # ------------------------------------------------------------------
     def start(self):
         self._done_pulse = False
+        self._last_trig = 0.0
 
     def process(self):
-        """Emit the one-block done pulse; otherwise nothing per block."""
+        """Emit the one-block done pulse plus trigger edge detect (both
+        allocation-free; no file I/O, no param writes here)."""
         buf = self.done.buffer
         buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
         if self._done_pulse:
             self._done_pulse = False
             buf.fill_(1.0)
+        trig = self.inputs["trigger_in"].get_tensor()[0]
+        t_max = float(trig.max().item())
+        if self._last_trig <= 0.0 and t_max > 0.0:
+            self._request_transcribe()
+        self._last_trig = float(trig[-1].item())
+
+    def _request_transcribe(self):
+        """Ask the engine thread to stage a transcription (one-shot per edge).
+
+        The audio thread must never build the job spec (file existence
+        checks) or touch params directly (AGENTS.md section 5); instead it
+        queues a ("param", ...) command — the unbounded command queue never
+        blocks — and the engine thread runs the normal Transcribe path,
+        including validation, cancel-previous, and instant telemetry.
+        """
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        if engine is None:
+            return
+        engine.push_command(("param", self.id, "transcribe", True))
 
     def _model_fetch_specs(self, model_dir):
         return sheetsage_fetch_specs(model_dir)

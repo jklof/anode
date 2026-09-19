@@ -20,7 +20,7 @@ from audiocpp_backend import (
     run_sheetsage_transcribe,
     strip_abc_chords,
 )
-from base import CHANNELS, SAMPLE_RATE
+from base import BLOCK_SIZE, CHANNELS, SAMPLE_RATE
 
 
 @pytest.fixture(scope="module")
@@ -531,3 +531,68 @@ def test_gpu_smoke_transcribe(node_cls, tmp_path):
     text = Path(result["abc"]).read_text(encoding="utf-8")
     assert text.startswith("X:")
     assert len(text.strip().splitlines()) > 5
+
+
+# ----------------------------------------------------------------------
+# trigger_in (rising edge stages a transcription, like YuE2's Generate)
+# ----------------------------------------------------------------------
+class _StubEngine:
+    """Minimal engine double: command capture."""
+
+    def __init__(self):
+        self.commands = []
+
+    def push_command(self, cmd):
+        self.commands.append(cmd)
+        return len(self.commands)
+
+
+def _attach_engine(node):
+    from types import SimpleNamespace
+    engine = _StubEngine()
+    node.graph = SimpleNamespace(engine=engine)
+    return engine
+
+
+def _feed_trigger(node, level):
+    trig = torch.full((CHANNELS, BLOCK_SIZE), level, dtype=torch.float32)
+    node.inputs["trigger_in"].get_tensor = lambda t=trig: t
+    node.process()
+
+
+def test_trigger_input_is_audio(node_cls):
+    node = make_node(node_cls)
+    assert node.inputs["trigger_in"].slot_type == "audio"
+
+
+def test_trigger_edge_queues_single_transcribe(node_cls):
+    node = make_node(node_cls)
+    engine = _attach_engine(node)
+    _feed_trigger(node, 0.0)
+    assert engine.commands == []
+    _feed_trigger(node, 1.0)  # rising edge
+    assert engine.commands == [("param", node.id, "transcribe", True)]
+    _feed_trigger(node, 1.0)  # sustained high: no repeat
+    _feed_trigger(node, 1.0)
+    assert len(engine.commands) == 1
+    _feed_trigger(node, 0.0)
+    _feed_trigger(node, 1.0)  # new edge after release
+    assert len(engine.commands) == 2
+
+
+def test_trigger_without_engine_is_noop(node_cls):
+    node = make_node(node_cls)
+    _feed_trigger(node, 0.0)
+    _feed_trigger(node, 1.0)  # must not raise headless
+    assert node._status == "Idle"
+
+
+def test_start_resets_trigger_edge(node_cls):
+    """A sustained high after start() re-fires (stale level forgotten)."""
+    node = make_node(node_cls)
+    engine = _attach_engine(node)
+    _feed_trigger(node, 1.0)
+    assert len(engine.commands) == 1
+    node.start()
+    _feed_trigger(node, 1.0)
+    assert len(engine.commands) == 2

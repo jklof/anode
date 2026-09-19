@@ -186,6 +186,26 @@ def sheetsage_fetch_specs(model_dir):
             for rel, size, sha in SHEETSAGE_FILES]
 
 
+QWEN3_ASR_HF_BASE = "https://huggingface.co/audio-cpp/audio.cpp-gguf/resolve/main"
+# (repo-relative path, size bytes, sha256). Single-file GGUFs with embedded
+# sidecars. Only the default 0.6B profile is fetched; the 1.7B profile is
+# selectable once placed manually (same pattern as YuE2's Q8/BF16).
+QWEN3_ASR_FILES = [
+    ("Qwen3-ASR-0.6B-GGUF/qwen3-asr-0.6b-q8_0.gguf", 1151272416,
+     "6c44ec2fb4cee513892d7863c1fcc3ea6b699ffa4d899b0ef4ab19956d9544f7"),
+]
+QWEN3_ASR_DEFAULT_GGUF = "qwen3-asr-0.6b-q8_0.gguf"
+QWEN3_ASR_DEFAULT_MAX_TOKENS = 4096
+
+
+def qwen3_asr_fetch_specs(model_dir):
+    """DownloadSpecs for the Qwen3-ASR GGUF model (self-contained)."""
+    model_dir = Path(model_dir)
+    return [DownloadSpec(f"{QWEN3_ASR_HF_BASE}/{rel}", model_dir / Path(rel).name,
+                         size, sha, label=f"Qwen3-ASR model: {Path(rel).name}")
+            for rel, size, sha in QWEN3_ASR_FILES]
+
+
 _HEADER_LINE_RE = re.compile(r"^[A-Za-z]:")
 _CHORD_RE = re.compile(r'"[^"\n]*"')
 _LYRIC_SECTION_RE = re.compile(r"^\s*\[[^\[\]\n]{1,40}\]\s*$")
@@ -350,6 +370,93 @@ def run_sheetsage_transcribe(cli, model_dir, *, audio_wav, weight_type="native",
     if not out_abc.exists():
         raise RuntimeError("audio.cpp reported success but wrote no ABC file")
     return {"abc": str(out_abc), "metrics": _parse_metrics(output_tail)}
+
+
+def _build_qwen3_asr_argv(cli, gguf, *, audio_wav, language, max_tokens,
+                          out_txt, backend="cuda"):
+    """Pure argv builder (no process). Tested without a GPU."""
+    if (not isinstance(max_tokens, int) or isinstance(max_tokens, bool)
+            or max_tokens < 1):
+        raise ValueError("max_tokens must be a positive integer")
+    if language is not None and (not isinstance(language, str)
+                                 or not language.strip()):
+        raise ValueError("language must be a non-empty string or None")
+    argv = [
+        str(cli), "--task", "asr", "--family", "qwen3_asr",
+        "--model", str(gguf), "--backend", backend, "--threads", "8",
+        "--audio", str(audio_wav), "--text", "",
+        "--max-tokens", str(max_tokens),
+        "--text-out", str(out_txt), "--metrics",
+    ]
+    if language:
+        argv += ["--language", language]
+    return argv
+
+
+def run_qwen3_asr(cli, gguf, *, audio_wav, language=None,
+                  max_tokens=QWEN3_ASR_DEFAULT_MAX_TOKENS,
+                  out_txt, cancel_event=None, timeout_s=3600,
+                  backend=None):
+    """Transcribe speech to a transcript text file. Blocking; NRT only.
+
+    Returns ``{"txt": str, "metrics": dict}``. Raises
+    :class:`GenerationCancelled` on cancellation, ``RuntimeError`` /
+    ``ValueError`` / ``FileNotFoundError`` on failure.
+    """
+    cli, gguf = Path(cli), Path(gguf)
+    audio_wav, out_txt = Path(audio_wav), Path(out_txt)
+    if not cli.exists():
+        raise FileNotFoundError(f"audiocpp_cli not found: {cli}")
+    if not gguf.exists():
+        raise FileNotFoundError(
+            f"Qwen3-ASR weights not downloaded: {gguf} "
+            "(run tools/audiocpp/fetch_qwen3_asr_gguf.py)"
+        )
+    if not audio_wav.exists():
+        raise FileNotFoundError(f"input audio not found: {audio_wav}")
+    argv = _build_qwen3_asr_argv(cli, gguf, audio_wav=audio_wav,
+                                 language=language, max_tokens=max_tokens,
+                                 out_txt=out_txt,
+                                 backend=backend or default_backend())
+    out_txt.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, **_no_window_kwargs(),
+        )
+    except OSError as e:
+        raise RuntimeError(f"failed to launch audio.cpp: {e}")
+    try:
+        elapsed = 0.0
+        step = 0.5
+        output_tail = ""
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelled("transcription cancelled")
+            try:
+                # May be retried after TimeoutExpired; returns full output.
+                output_tail, _ = proc.communicate(timeout=step)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed += step
+                if elapsed >= timeout_s:
+                    raise TimeoutError(
+                        f"Qwen3-ASR transcription exceeded {timeout_s}s; terminating"
+                    )
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"audio.cpp exited with code {proc.returncode}: "
+            f"{output_tail[-2000:].strip()}"
+        )
+    if not out_txt.exists():
+        raise RuntimeError("audio.cpp reported success but wrote no transcript file")
+    return {"txt": str(out_txt), "metrics": _parse_metrics(output_tail)}
 
 
 class GenerationCancelled(RuntimeError):
