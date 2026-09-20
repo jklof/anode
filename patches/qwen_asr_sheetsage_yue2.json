@@ -1,0 +1,429 @@
+{
+  "clock_id": "9cd6e540-a1b1-4f1e-a11e-ee8a7c05c646",
+  "nodes": [
+    {
+      "id": "2bc8dd76-e6da-4af0-a2a8-597b28fd2014",
+      "type": "TextNote",
+      "name": "Text Note",
+      "params": {
+        "enabled": true,
+        "text": "The I'm used to warming on the face of the earth teaching so many people who will try to be free and what I'm drowning by is so many words That barrier is broken now We found peace and if you want the window to change you blow about you And you're the only other person to know Don't tell me I'm yet the savior in a in a rock and roll band A thousand creatures can be drawn from one world For me who's the artist we gotta agree A thousand miles can lead so many ways Just know you're driving wanna help you fucking throw If you want me for the pure of the heart you and you can see exactly what to do Please tell me can you see a little of the moonlight I've found we understand by by the people for the people who are all with you smiling themselves And when you see a bright and beautiful light in darkness people who are guarding touching this earth I'm touching this earth I've set the warning warning on the face of this earth we can solve it People can reclaim it We've seen Come on traveling at an astonishing burst Let the carriage go We'll be found deep at the view The wind of change will blow about you and you're the only on on earth that knows Tell me I'm just a singer little like a dog finger in the world rock 'n' roll band I can't understand why a lot of people fall to people who are only destroying themselves And when you see a button pushed the requirement by the people who are stalking the sun Stalking the sun told many people We did it Let's be I'll give the finger in the rock and roll band I'll give the finger in the rock and roll band The traveling party exploring our world or a unicorn with magic ears I'm just a little bit more than my fair They never want to go bad oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh Ah ah ah ah Um\n",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\text_notes\\4499e663ab1e0a0492509dc9da299243f7008fcfd4c0b9aa84b26b35da09c656.txt"
+      },
+      "pos": [
+        -959.9750543714836,
+        -1152.599383666054
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "type": "Qwen3ASRTranscriber",
+      "name": "Qwen3 ASR Transcriber",
+      "params": {
+        "enabled": true,
+        "audio_file": "C:/Users/janne/Downloads/Brillig - Windward Bound.mp3",
+        "profile": 0,
+        "language": "english",
+        "max_tokens": 4096,
+        "word_timestamps": true,
+        "model_dir": "models/Qwen3-ASR-GGUF",
+        "transcribe": false,
+        "download": false,
+        "cancel": false,
+        "last_txt": "C:\\Users\\janne\\src\\anode\\models\\Qwen3-ASR-GGUF\\outputs\\20260920-004354_vocals\\lyrics.txt",
+        "last_words": "C:\\Users\\janne\\src\\anode\\models\\Qwen3-ASR-GGUF\\outputs\\20260920-004354_vocals\\words.json"
+      },
+      "pos": [
+        -1385.0829903050776,
+        -846.764165703437
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "80408415-78c4-4071-baad-ef64b400a463",
+      "type": "TextNote",
+      "name": "Text Note",
+      "params": {
+        "enabled": true,
+        "text": "[{\"start_sample\":0,\"end_sample\":10240,\"word\":\"The\",\"confidence\":0},{\"start_sample\":390400,\"end_sample\":394240,\"word\":\"I'm\",\"confidence\":0},{\"start_sample\":394240,\"end_sample\":395520,\"word\":\"used\",\"confidence\":0},{\"start_sample\":395520,\"end_sample\":396800,\"word\":\"to\",\"confidence\":0},{\"start_sample\":398080,\"end_sample\":407040,\"word\":\"warming\",\"confidence\":0},{\"start_sample\":407040,\"end_sample\":409600,\"word\":\"on\",\"confidence\":0},{\"start_sample\":409600,\"end_sample\":410880,\"word\":\"the\",\"confidence\":0},{\"start_sample\":412160,\"end_sample\":416000,\"word\":\"face\",\"confidence\":0},{\"start_sample\":417280,\"end_sample\":418560,\"word\":\"of\",\"confidence\":0},{\"start_sample\":418560,\"end_sample\":421120,\"word\":\"the\",\"confidence\":0},{\"start_sample\":421120,\"end_sample\":422400,\"word\":\"earth\",\"confidence\":0},{\"start_sample\":439040,\"end_sample\":440320,\"word\":\"teaching\",\"confidence\":0},{\"start_sample\":440320,\"end_sample\":441600,\"word\":\"so\",\"confidence\":0},{\"start_sample\":441600,\"end_sample\":448000,\"word\":\"many\",\"confidence\":0},{\"start_sample\":448000,\"end_sample\":449280,\"word\":\"people\",\"confidence\":0},{\"start_sample\":455680,\"end_sample\":456960,\"word\":\"who\",\"confidence\":0},{\"start_sample\":458240,\"end_sample\":462080,\"word\":\"will\",\"confidence\":0},{\"start_sample\":463360,\"end_sample\":464640,\"word\":\"try\",\"confidence\":0},{\"start_sample\":464640,\"end_sample\":465920,\"word\":\"to\",\"confidence\":0},{\"start_sample\":465920,\"end_sample\":467200,\"word\":\"be\",\"confidence\":0},{\"start_sample\":473600,\"end_sample\":481280,\"word\":\"free\",\"confidence\":0},{\"start_sample\":480640,\"end_sample\":481920,\"word\":\"and\",\"confidence\":0},{\"start_sample\":485248,\"end_sample\":489856,\"word\":\"what\",\"confidence\":0},{\"start_sample\":494464,\"end_sample\":499072,\"word\":\"I'm\",\"confidence\":0},{\"start_sample\":503680,\"end_sample\":506016,\"word\":\"drowning\",\"confidence\":0},{\"start_sample\":508368,\"end_sample\":510720,\"word\":\"by\",\"confidence\":0},{\"start_sample\":513056,\"end_sample\":515408,\"word\":\"is\",\"confidence\":0},{\"start_sample\":517760,\"end_sample\":520320,\"word\":\"so\",\"confidence\":0},{\"start_sample\":520320,\"end_sample\":525440,\"word\":\"many\",\"confidence\":0},{\"start_sample\":525440,\"end_sample\":533120,\"word\":\"words\",\"confidence\":0},{\"start_sample\":536960,\"end_sample\":543360,\"word\":\"That\",\"confidence\":0},{\"start_sample\":543360,\"end_sample\":551040,\"word\":\"barrier\",\"confidence\":0},{\"start_sample\":551040,\"end_sample\":552320,\"word\":\"is\",\"confidence\":0},{\"start_sample\":552320,\"end_sample\":562560,\"word\":\"broken\",\"confidence\":0},{\"start_sample\":562560,\"end_sample\":566400,\"word\":\"now\",\"confidence\":0},{\"start_sample\":566400,\"end_sample\":567680,\"word\":\"We\",\"confidence\":0},{\"start_sample\":568960,\"end_sample\":576640,\"word\":\"found\",\"confidence\":0},{\"start_sample\":579200,\"end_sample\":580480,\"word\":\"peace\",\"confidence\":0},{\"start_sample\":583040,\"end_sample\":584320,\"word\":\"and\",\"confidence\":0},{\"start_sample\":585344,\"end_sample\":587648,\"word\":\"if\",\"confidence\":0},{\"start_sample\":589952,\"end_sample\":592256,\"word\":\"you\",\"confidence\":0},{\"start_sample\":594560,\"end_sample\":598400,\"word\":\"want\",\"confidence\":0},{\"start_sample\":598400,\"end_sample\":602240,\"word\":\"the\",\"confidence\":0},{\"start_sample\":602240,\"end_sample\":607360,\"word\":\"window\",\"confidence\":0},{\"start_sample\":607360,\"end_sample\":608640,\"word\":\"to\",\"confidence\":0},{\"start_sample\":608640,\"end_sample\":617600,\"word\":\"change\",\"confidence\":0},{\"start_sample\":617600,\"end_sample\":618880,\"word\":\"you\",\"confidence\":0},{\"start_sample\":618880,\"end_sample\":620160,\"word\":\"blow\",\"confidence\":0},{\"start_sample\":626560,\"end_sample\":631680,\"word\":\"about\",\"confidence\":0},{\"start_sample\":632960,\"end_sample\":638080,\"word\":\"you\",\"confidence\":0},{\"start_sample\":639360,\"end_sample\":640640,\"word\":\"And\",\"confidence\":0},{\"start_sample\":641920,\"end_sample\":643200,\"word\":\"you're\",\"confidence\":0},{\"start_sample\":643200,\"end_sample\":644480,\"word\":\"the\",\"confidence\":0},{\"start_sample\":644480,\"end_sample\":656000,\"word\":\"only\",\"confidence\":0},{\"start_sample\":656000,\"end_sample\":661120,\"word\":\"other\",\"confidence\":0},{\"start_sample\":661120,\"end_sample\":662400,\"word\":\"person\",\"confidence\":0},{\"start_sample\":670080,\"end_sample\":671360,\"word\":\"to\",\"confidence\":0},{\"start_sample\":671360,\"end_sample\":672640,\"word\":\"know\",\"confidence\":0},{\"start_sample\":679040,\"end_sample\":680320,\"word\":\"Don't\",\"confidence\":0},{\"start_sample\":680320,\"end_sample\":681600,\"word\":\"tell\",\"confidence\":0},{\"start_sample\":694400,\"end_sample\":703360,\"word\":\"me\",\"confidence\":0},{\"start_sample\":704640,\"end_sample\":707200,\"word\":\"I'm\",\"confidence\":0},{\"start_sample\":707200,\"end_sample\":708480,\"word\":\"yet\",\"confidence\":0},{\"start_sample\":708480,\"end_sample\":709760,\"word\":\"the\",\"confidence\":0},{\"start_sample\":709760,\"end_sample\":711040,\"word\":\"savior\",\"confidence\":0},{\"start_sample\":711040,\"end_sample\":712320,\"word\":\"in\",\"confidence\":0},{\"start_sample\":712320,\"end_sample\":713600,\"word\":\"a\",\"confidence\":0},{\"start_sample\":721920,\"end_sample\":723200,\"word\":\"in\",\"confidence\":0},{\"start_sample\":723200,\"end_sample\":724480,\"word\":\"a\",\"confidence\":0},{\"start_sample\":724480,\"end_sample\":729600,\"word\":\"rock\",\"confidence\":0},{\"start_sample\":729600,\"end_sample\":732160,\"word\":\"and\",\"confidence\":0},{\"start_sample\":732160,\"end_sample\":736000,\"word\":\"roll\",\"confidence\":0},{\"start_sample\":736000,\"end_sample\":737280,\"word\":\"band\",\"confidence\":0},{\"start_sample\":737280,\"end_sample\":821760,\"word\":\"A\",\"confidence\":0},{\"start_sample\":821760,\"end_sample\":823040,\"word\":\"thousand\",\"confidence\":0},{\"start_sample\":823040,\"end_sample\":825600,\"word\":\"creatures\",\"confidence\":0},{\"start_sample\":825600,\"end_sample\":828160,\"word\":\"can\",\"confidence\":0},{\"start_sample\":828160,\"end_sample\":830720,\"word\":\"be\",\"confidence\":0},{\"start_sample\":830720,\"end_sample\":832000,\"word\":\"drawn\",\"confidence\":0},{\"start_sample\":835840,\"end_sample\":838400,\"word\":\"from\",\"confidence\":0},{\"start_sample\":838400,\"end_sample\":842240,\"word\":\"one\",\"confidence\":0},{\"start_sample\":842240,\"end_sample\":843520,\"word\":\"world\",\"confidence\":0},{\"start_sample\":843520,\"end_sample\":855040,\"word\":\"For\",\"confidence\":0},{\"start_sample\":855040,\"end_sample\":857600,\"word\":\"me\",\"confidence\":0},{\"start_sample\":857600,\"end_sample\":864000,\"word\":\"who's\",\"confidence\":0},{\"start_sample\":865280,\"end_sample\":867840,\"word\":\"the\",\"confidence\":0},{\"start_sample\":867840,\"end_sample\":878080,\"word\":\"artist\",\"confidence\":0},{\"start_sample\":881920,\"end_sample\":883200,\"word\":\"we\",\"confidence\":0},{\"start_sample\":883200,\"end_sample\":892160,\"word\":\"gotta\",\"confidence\":0},{\"start_sample\":892160,\"end_sample\":897280,\"word\":\"agree\",\"confidence\":0},{\"start_sample\":898560,\"end_sample\":899840,\"word\":\"A\",\"confidence\":0},{\"start_sample\":913920,\"end_sample\":915200,\"word\":\"thousand\",\"confidence\":0},{\"start_sample\":922880,\"end_sample\":924160,\"word\":\"miles\",\"confidence\":0},{\"start_sample\":929280,\"end_sample\":931840,\"word\":\"can\",\"confidence\":0},{\"start_sample\":933120,\"end_sample\":934400,\"word\":\"lead\",\"confidence\":0},{\"start_sample\":935680,\"end_sample\":939520,\"word\":\"so\",\"confidence\":0},{\"start_sample\":939520,\"end_sample\":944640,\"word\":\"many\",\"confidence\":0},{\"start_sample\":944640,\"end_sample\":945920,\"word\":\"ways\",\"confidence\":0},{\"start_sample\":956160,\"end_sample\":958720,\"word\":\"Just\",\"confidence\":0},{\"start_sample\":960640,\"end_sample\":961920,\"word\":\"know\",\"confidence\":0},{\"start_sample\":969600,\"end_sample\":970880,\"word\":\"you're\",\"confidence\":0},{\"start_sample\":972160,\"end_sample\":973440,\"word\":\"driving\",\"confidence\":0},{\"start_sample\":973440,\"end_sample\":974720,\"word\":\"wanna\",\"confidence\":0},{\"start_sample\":988800,\"end_sample\":992640,\"word\":\"help\",\"confidence\":0},{\"start_sample\":992640,\"end_sample\":993920,\"word\":\"you\",\"confidence\":0},{\"start_sample\":995200,\"end_sample\":998176,\"word\":\"fucking\",\"confidence\":0},{\"start_sample\":1001168,\"end_sample\":1004160,\"word\":\"throw\",\"confidence\":0},{\"start_sample\":1007136,\"end_sample\":1010128,\"word\":\"If\",\"confidence\":0},{\"start_sample\":1013120,\"end_sample\":1014400,\"word\":\"you\",\"confidence\":0},{\"start_sample\":1014400,\"end_sample\":1018240,\"word\":\"want\",\"confidence\":0},{\"start_sample\":1018240,\"end_sample\":1019520,\"word\":\"me\",\"confidence\":0},{\"start_sample\":1019520,\"end_sample\":1022080,\"word\":\"for\",\"confidence\":0},{\"start_sample\":1022080,\"end_sample\":1023360,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1027200,\"end_sample\":1028480,\"word\":\"pure\",\"confidence\":0},{\"start_sample\":1028480,\"end_sample\":1033600,\"word\":\"of\",\"confidence\":0},{\"start_sample\":1036160,\"end_sample\":1037440,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1037440,\"end_sample\":1050240,\"word\":\"heart\",\"confidence\":0},{\"start_sample\":1051520,\"end_sample\":1052800,\"word\":\"you\",\"confidence\":0},{\"start_sample\":1057920,\"end_sample\":1060480,\"word\":\"and\",\"confidence\":0},{\"start_sample\":1060480,\"end_sample\":1063040,\"word\":\"you\",\"confidence\":0},{\"start_sample\":1063040,\"end_sample\":1065600,\"word\":\"can\",\"confidence\":0},{\"start_sample\":1065600,\"end_sample\":1069440,\"word\":\"see\",\"confidence\":0},{\"start_sample\":1070720,\"end_sample\":1078400,\"word\":\"exactly\",\"confidence\":0},{\"start_sample\":1078400,\"end_sample\":1086080,\"word\":\"what\",\"confidence\":0},{\"start_sample\":1086080,\"end_sample\":1087360,\"word\":\"to\",\"confidence\":0},{\"start_sample\":1087360,\"end_sample\":1088640,\"word\":\"do\",\"confidence\":0},{\"start_sample\":1098880,\"end_sample\":1104000,\"word\":\"Please\",\"confidence\":0},{\"start_sample\":1105280,\"end_sample\":1107840,\"word\":\"tell\",\"confidence\":0},{\"start_sample\":1111680,\"end_sample\":1123200,\"word\":\"me\",\"confidence\":0},{\"start_sample\":1127040,\"end_sample\":1128320,\"word\":\"can\",\"confidence\":0},{\"start_sample\":1128320,\"end_sample\":1129600,\"word\":\"you\",\"confidence\":0},{\"start_sample\":1129600,\"end_sample\":1134720,\"word\":\"see\",\"confidence\":0},{\"start_sample\":1134720,\"end_sample\":1136000,\"word\":\"a\",\"confidence\":0},{\"start_sample\":1136000,\"end_sample\":1138560,\"word\":\"little\",\"confidence\":0},{\"start_sample\":1138560,\"end_sample\":1139840,\"word\":\"of\",\"confidence\":0},{\"start_sample\":1139840,\"end_sample\":1141120,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1141120,\"end_sample\":1142400,\"word\":\"moonlight\",\"confidence\":0},{\"start_sample\":1250560,\"end_sample\":1253120,\"word\":\"I've\",\"confidence\":0},{\"start_sample\":1253120,\"end_sample\":1254400,\"word\":\"found\",\"confidence\":0},{\"start_sample\":1258240,\"end_sample\":1259520,\"word\":\"we\",\"confidence\":0},{\"start_sample\":1259520,\"end_sample\":1260800,\"word\":\"understand\",\"confidence\":0},{\"start_sample\":1273600,\"end_sample\":1274880,\"word\":\"by\",\"confidence\":0},{\"start_sample\":1274880,\"end_sample\":1276160,\"word\":\"by\",\"confidence\":0},{\"start_sample\":1283840,\"end_sample\":1286400,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1286400,\"end_sample\":1291520,\"word\":\"people\",\"confidence\":0},{\"start_sample\":1292800,\"end_sample\":1299200,\"word\":\"for\",\"confidence\":0},{\"start_sample\":1299200,\"end_sample\":1300480,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1300480,\"end_sample\":1305600,\"word\":\"people\",\"confidence\":0},{\"start_sample\":1305600,\"end_sample\":1306880,\"word\":\"who\",\"confidence\":0},{\"start_sample\":1309440,\"end_sample\":1315840,\"word\":\"are\",\"confidence\":0},{\"start_sample\":1315840,\"end_sample\":1317120,\"word\":\"all\",\"confidence\":0},{\"start_sample\":1317120,\"end_sample\":1318400,\"word\":\"with\",\"confidence\":0},{\"start_sample\":1319680,\"end_sample\":1320960,\"word\":\"you\",\"confidence\":0},{\"start_sample\":1320960,\"end_sample\":1337600,\"word\":\"smiling\",\"confidence\":0},{\"start_sample\":1344000,\"end_sample\":1359360,\"word\":\"themselves\",\"confidence\":0},{\"start_sample\":1368320,\"end_sample\":1369600,\"word\":\"And\",\"confidence\":0},{\"start_sample\":1370880,\"end_sample\":1376000,\"word\":\"when\",\"confidence\":0},{\"start_sample\":1376000,\"end_sample\":1377280,\"word\":\"you\",\"confidence\":0},{\"start_sample\":1377280,\"end_sample\":1381120,\"word\":\"see\",\"confidence\":0},{\"start_sample\":1381120,\"end_sample\":1383680,\"word\":\"a\",\"confidence\":0},{\"start_sample\":1383680,\"end_sample\":1391360,\"word\":\"bright\",\"confidence\":0},{\"start_sample\":1391360,\"end_sample\":1392640,\"word\":\"and\",\"confidence\":0},{\"start_sample\":1396480,\"end_sample\":1399584,\"word\":\"beautiful\",\"confidence\":0},{\"start_sample\":1402688,\"end_sample\":1405792,\"word\":\"light\",\"confidence\":0},{\"start_sample\":1408912,\"end_sample\":1412016,\"word\":\"in\",\"confidence\":0},{\"start_sample\":1415120,\"end_sample\":1418240,\"word\":\"darkness\",\"confidence\":0},{\"start_sample\":1419520,\"end_sample\":1423360,\"word\":\"people\",\"confidence\":0},{\"start_sample\":1427200,\"end_sample\":1428480,\"word\":\"who\",\"confidence\":0},{\"start_sample\":1428480,\"end_sample\":1429760,\"word\":\"are\",\"confidence\":0},{\"start_sample\":1429760,\"end_sample\":1431040,\"word\":\"guarding\",\"confidence\":0},{\"start_sample\":1441920,\"end_sample\":1443200,\"word\":\"touching\",\"confidence\":0},{\"start_sample\":1443200,\"end_sample\":1632640,\"word\":\"this\",\"confidence\":0},{\"start_sample\":1667200,\"end_sample\":1669760,\"word\":\"earth\",\"confidence\":0},{\"start_sample\":1669760,\"end_sample\":1671040,\"word\":\"I'm\",\"confidence\":0},{\"start_sample\":1671040,\"end_sample\":1672320,\"word\":\"touching\",\"confidence\":0},{\"start_sample\":1672320,\"end_sample\":1673600,\"word\":\"this\",\"confidence\":0},{\"start_sample\":1673600,\"end_sample\":1674880,\"word\":\"earth\",\"confidence\":0},{\"start_sample\":1674880,\"end_sample\":1676160,\"word\":\"I've\",\"confidence\":0},{\"start_sample\":1676160,\"end_sample\":1677440,\"word\":\"set\",\"confidence\":0},{\"start_sample\":1677440,\"end_sample\":1678720,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1678720,\"end_sample\":1680000,\"word\":\"warning\",\"confidence\":0},{\"start_sample\":1681920,\"end_sample\":1683200,\"word\":\"warning\",\"confidence\":0},{\"start_sample\":1683200,\"end_sample\":1685760,\"word\":\"on\",\"confidence\":0},{\"start_sample\":1685760,\"end_sample\":1688320,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1689600,\"end_sample\":1692160,\"word\":\"face\",\"confidence\":0},{\"start_sample\":1693440,\"end_sample\":1694720,\"word\":\"of\",\"confidence\":0},{\"start_sample\":1696000,\"end_sample\":1698560,\"word\":\"this\",\"confidence\":0},{\"start_sample\":1699840,\"end_sample\":1701120,\"word\":\"earth\",\"confidence\":0},{\"start_sample\":1707520,\"end_sample\":1710080,\"word\":\"we\",\"confidence\":0},{\"start_sample\":1710080,\"end_sample\":1712640,\"word\":\"can\",\"confidence\":0},{\"start_sample\":1712640,\"end_sample\":1717760,\"word\":\"solve\",\"confidence\":0},{\"start_sample\":1717760,\"end_sample\":1722880,\"word\":\"it\",\"confidence\":0},{\"start_sample\":1724160,\"end_sample\":1727040,\"word\":\"People\",\"confidence\":0},{\"start_sample\":1729920,\"end_sample\":1732800,\"word\":\"can\",\"confidence\":0},{\"start_sample\":1735680,\"end_sample\":1739520,\"word\":\"reclaim\",\"confidence\":0},{\"start_sample\":1744640,\"end_sample\":1745920,\"word\":\"it\",\"confidence\":0},{\"start_sample\":1745920,\"end_sample\":1747200,\"word\":\"We've\",\"confidence\":0},{\"start_sample\":1752320,\"end_sample\":1756160,\"word\":\"seen\",\"confidence\":0},{\"start_sample\":1766400,\"end_sample\":1767680,\"word\":\"Come\",\"confidence\":0},{\"start_sample\":1770240,\"end_sample\":1771520,\"word\":\"on\",\"confidence\":0},{\"start_sample\":1775360,\"end_sample\":1783040,\"word\":\"traveling\",\"confidence\":0},{\"start_sample\":1783040,\"end_sample\":1788160,\"word\":\"at\",\"confidence\":0},{\"start_sample\":1788160,\"end_sample\":1789440,\"word\":\"an\",\"confidence\":0},{\"start_sample\":1789440,\"end_sample\":1790720,\"word\":\"astonishing\",\"confidence\":0},{\"start_sample\":1798400,\"end_sample\":1804800,\"word\":\"burst\",\"confidence\":0},{\"start_sample\":1813760,\"end_sample\":1824000,\"word\":\"Let\",\"confidence\":0},{\"start_sample\":1824000,\"end_sample\":1825280,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1825280,\"end_sample\":1826560,\"word\":\"carriage\",\"confidence\":0},{\"start_sample\":1826560,\"end_sample\":1829120,\"word\":\"go\",\"confidence\":0},{\"start_sample\":1839360,\"end_sample\":1840640,\"word\":\"We'll\",\"confidence\":0},{\"start_sample\":1842560,\"end_sample\":1844480,\"word\":\"be\",\"confidence\":0},{\"start_sample\":1846400,\"end_sample\":1848320,\"word\":\"found\",\"confidence\":0},{\"start_sample\":1849600,\"end_sample\":1853440,\"word\":\"deep\",\"confidence\":0},{\"start_sample\":1853440,\"end_sample\":1854720,\"word\":\"at\",\"confidence\":0},{\"start_sample\":1861120,\"end_sample\":1862400,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1862400,\"end_sample\":1871360,\"word\":\"view\",\"confidence\":0},{\"start_sample\":1871360,\"end_sample\":1872640,\"word\":\"The\",\"confidence\":0},{\"start_sample\":1872640,\"end_sample\":1873920,\"word\":\"wind\",\"confidence\":0},{\"start_sample\":1873920,\"end_sample\":1876480,\"word\":\"of\",\"confidence\":0},{\"start_sample\":1876480,\"end_sample\":1884160,\"word\":\"change\",\"confidence\":0},{\"start_sample\":1886720,\"end_sample\":1888000,\"word\":\"will\",\"confidence\":0},{\"start_sample\":1888000,\"end_sample\":1889280,\"word\":\"blow\",\"confidence\":0},{\"start_sample\":1894400,\"end_sample\":1899520,\"word\":\"about\",\"confidence\":0},{\"start_sample\":1900800,\"end_sample\":1902080,\"word\":\"you\",\"confidence\":0},{\"start_sample\":1902080,\"end_sample\":1907200,\"word\":\"and\",\"confidence\":0},{\"start_sample\":1909760,\"end_sample\":1911040,\"word\":\"you're\",\"confidence\":0},{\"start_sample\":1911040,\"end_sample\":1912320,\"word\":\"the\",\"confidence\":0},{\"start_sample\":1912320,\"end_sample\":1914368,\"word\":\"only\",\"confidence\":0},{\"start_sample\":1917696,\"end_sample\":1921024,\"word\":\"on\",\"confidence\":0},{\"start_sample\":1925760,\"end_sample\":1927040,\"word\":\"on\",\"confidence\":0},{\"start_sample\":1927040,\"end_sample\":1934720,\"word\":\"earth\",\"confidence\":0},{\"start_sample\":1934720,\"end_sample\":1936000,\"word\":\"that\",\"confidence\":0},{\"start_sample\":1937280,\"end_sample\":1938560,\"word\":\"knows\",\"confidence\":0},{\"start_sample\":1938560,\"end_sample\":1939840,\"word\":\"Tell\",\"confidence\":0},{\"start_sample\":1939840,\"end_sample\":1941120,\"word\":\"me\",\"confidence\":0},{\"start_sample\":1941120,\"end_sample\":1973120,\"word\":\"I'm\",\"confidence\":0},{\"start_sample\":1973120,\"end_sample\":1974400,\"word\":\"just\",\"confidence\":0},{\"start_sample\":1975680,\"end_sample\":1976960,\"word\":\"a\",\"confidence\":0},{\"start_sample\":1979520,\"end_sample\":1985920,\"word\":\"singer\",\"confidence\":0},{\"start_sample\":1985920,\"end_sample\":1991040,\"word\":\"little\",\"confidence\":0},{\"start_sample\":1991040,\"end_sample\":1996160,\"word\":\"like\",\"confidence\":0},{\"start_sample\":1996160,\"end_sample\":1997440,\"word\":\"a\",\"confidence\":0},{\"start_sample\":1997440,\"end_sample\":2001280,\"word\":\"dog\",\"confidence\":0},{\"start_sample\":2383360,\"end_sample\":2389760,\"word\":\"finger\",\"confidence\":0},{\"start_sample\":2391040,\"end_sample\":2393600,\"word\":\"in\",\"confidence\":0},{\"start_sample\":2393600,\"end_sample\":2394880,\"word\":\"the\",\"confidence\":0},{\"start_sample\":2394880,\"end_sample\":2405120,\"word\":\"world\",\"confidence\":0},{\"start_sample\":2401920,\"end_sample\":2403200,\"word\":\"rock\",\"confidence\":0},{\"start_sample\":2403200,\"end_sample\":2404480,\"word\":\"'n'\",\"confidence\":0},{\"start_sample\":2404480,\"end_sample\":2405760,\"word\":\"roll\",\"confidence\":0},{\"start_sample\":2405760,\"end_sample\":2407040,\"word\":\"band\",\"confidence\":0},{\"start_sample\":2407040,\"end_sample\":2419840,\"word\":\"I\",\"confidence\":0},{\"start_sample\":2445440,\"end_sample\":2471040,\"word\":\"can't\",\"confidence\":0},{\"start_sample\":2496640,\"end_sample\":2522240,\"word\":\"understand\",\"confidence\":0},{\"start_sample\":2522240,\"end_sample\":2528640,\"word\":\"why\",\"confidence\":0},{\"start_sample\":2529664,\"end_sample\":2530688,\"word\":\"a\",\"confidence\":0},{\"start_sample\":2531712,\"end_sample\":2532736,\"word\":\"lot\",\"confidence\":0},{\"start_sample\":2533760,\"end_sample\":2535040,\"word\":\"of\",\"confidence\":0},{\"start_sample\":2536320,\"end_sample\":2540160,\"word\":\"people\",\"confidence\":0},{\"start_sample\":2541440,\"end_sample\":2547840,\"word\":\"fall\",\"confidence\":0},{\"start_sample\":2547840,\"end_sample\":2549120,\"word\":\"to\",\"confidence\":0},{\"start_sample\":2549120,\"end_sample\":2558080,\"word\":\"people\",\"confidence\":0},{\"start_sample\":2558080,\"end_sample\":2559360,\"word\":\"who\",\"confidence\":0},{\"start_sample\":2559360,\"end_sample\":2567040,\"word\":\"are\",\"confidence\":0},{\"start_sample\":2567040,\"end_sample\":2568320,\"word\":\"only\",\"confidence\":0},{\"start_sample\":2568320,\"end_sample\":2573440,\"word\":\"destroying\",\"confidence\":0},{\"start_sample\":2573440,\"end_sample\":2614400,\"word\":\"themselves\",\"confidence\":0},{\"start_sample\":2614400,\"end_sample\":2616960,\"word\":\"And\",\"confidence\":0},{\"start_sample\":2616960,\"end_sample\":2622080,\"word\":\"when\",\"confidence\":0},{\"start_sample\":2622080,\"end_sample\":2623360,\"word\":\"you\",\"confidence\":0},{\"start_sample\":2623360,\"end_sample\":2625920,\"word\":\"see\",\"confidence\":0},{\"start_sample\":2627200,\"end_sample\":2629760,\"word\":\"a\",\"confidence\":0},{\"start_sample\":2629760,\"end_sample\":2637440,\"word\":\"button\",\"confidence\":0},{\"start_sample\":2637440,\"end_sample\":2639680,\"word\":\"pushed\",\"confidence\":0},{\"start_sample\":2643200,\"end_sample\":2644480,\"word\":\"the\",\"confidence\":0},{\"start_sample\":2644480,\"end_sample\":2656000,\"word\":\"requirement\",\"confidence\":0},{\"start_sample\":2656000,\"end_sample\":2659840,\"word\":\"by\",\"confidence\":0},{\"start_sample\":2659840,\"end_sample\":2661120,\"word\":\"the\",\"confidence\":0},{\"start_sample\":2662400,\"end_sample\":2667520,\"word\":\"people\",\"confidence\":0},{\"start_sample\":2667520,\"end_sample\":2670080,\"word\":\"who\",\"confidence\":0},{\"start_sample\":2670080,\"end_sample\":2671360,\"word\":\"are\",\"confidence\":0},{\"start_sample\":2672640,\"end_sample\":2693120,\"word\":\"stalking\",\"confidence\":0},{\"start_sample\":2693120,\"end_sample\":2694400,\"word\":\"the\",\"confidence\":0},{\"start_sample\":2726400,\"end_sample\":2739200,\"word\":\"sun\",\"confidence\":0},{\"start_sample\":2739200,\"end_sample\":2740480,\"word\":\"Stalking\",\"confidence\":0},{\"start_sample\":2744320,\"end_sample\":2746880,\"word\":\"the\",\"confidence\":0},{\"start_sample\":2746880,\"end_sample\":2748160,\"word\":\"sun\",\"confidence\":0},{\"start_sample\":2952320,\"end_sample\":2953600,\"word\":\"told\",\"confidence\":0},{\"start_sample\":2956160,\"end_sample\":2961280,\"word\":\"many\",\"confidence\":0},{\"start_sample\":2962560,\"end_sample\":2971520,\"word\":\"people\",\"confidence\":0},{\"start_sample\":2976640,\"end_sample\":2977920,\"word\":\"We\",\"confidence\":0},{\"start_sample\":2983040,\"end_sample\":2986880,\"word\":\"did\",\"confidence\":0},{\"start_sample\":2986880,\"end_sample\":2988160,\"word\":\"it\",\"confidence\":0},{\"start_sample\":2988160,\"end_sample\":2989440,\"word\":\"Let's\",\"confidence\":0},{\"start_sample\":2989440,\"end_sample\":2995840,\"word\":\"be\",\"confidence\":0},{\"start_sample\":3004800,\"end_sample\":3007360,\"word\":\"I'll\",\"confidence\":0},{\"start_sample\":3007360,\"end_sample\":3009920,\"word\":\"give\",\"confidence\":0},{\"start_sample\":3009920,\"end_sample\":3012480,\"word\":\"the\",\"confidence\":0},{\"start_sample\":3012480,\"end_sample\":3017600,\"word\":\"finger\",\"confidence\":0},{\"start_sample\":3017600,\"end_sample\":3022720,\"word\":\"in\",\"confidence\":0},{\"start_sample\":3022720,\"end_sample\":3024000,\"word\":\"the\",\"confidence\":0},{\"start_sample\":3032960,\"end_sample\":3035520,\"word\":\"rock\",\"confidence\":0},{\"start_sample\":3035520,\"end_sample\":3036800,\"word\":\"and\",\"confidence\":0},{\"start_sample\":3036800,\"end_sample\":3038080,\"word\":\"roll\",\"confidence\":0},{\"start_sample\":3038080,\"end_sample\":3039360,\"word\":\"band\",\"confidence\":0},{\"start_sample\":3053440,\"end_sample\":3054720,\"word\":\"I'll\",\"confidence\":0},{\"start_sample\":3056000,\"end_sample\":3058560,\"word\":\"give\",\"confidence\":0},{\"start_sample\":3059840,\"end_sample\":3061120,\"word\":\"the\",\"confidence\":0},{\"start_sample\":3061120,\"end_sample\":3071360,\"word\":\"finger\",\"confidence\":0},{\"start_sample\":3071360,\"end_sample\":3072640,\"word\":\"in\",\"confidence\":0},{\"start_sample\":3072640,\"end_sample\":3073920,\"word\":\"the\",\"confidence\":0},{\"start_sample\":3081600,\"end_sample\":3082880,\"word\":\"rock\",\"confidence\":0},{\"start_sample\":3082880,\"end_sample\":3084160,\"word\":\"and\",\"confidence\":0},{\"start_sample\":3084160,\"end_sample\":3085440,\"word\":\"roll\",\"confidence\":0},{\"start_sample\":3085440,\"end_sample\":3086720,\"word\":\"band\",\"confidence\":0},{\"start_sample\":3102080,\"end_sample\":3104640,\"word\":\"The\",\"confidence\":0},{\"start_sample\":3111040,\"end_sample\":3118720,\"word\":\"traveling\",\"confidence\":0},{\"start_sample\":3118720,\"end_sample\":3120000,\"word\":\"party\",\"confidence\":0},{\"start_sample\":3121920,\"end_sample\":3124480,\"word\":\"exploring\",\"confidence\":0},{\"start_sample\":3132160,\"end_sample\":3141120,\"word\":\"our\",\"confidence\":0},{\"start_sample\":3141120,\"end_sample\":3142400,\"word\":\"world\",\"confidence\":0},{\"start_sample\":3142400,\"end_sample\":3143680,\"word\":\"or\",\"confidence\":0},{\"start_sample\":3143680,\"end_sample\":3144960,\"word\":\"a\",\"confidence\":0},{\"start_sample\":3156480,\"end_sample\":3169280,\"word\":\"unicorn\",\"confidence\":0},{\"start_sample\":3169280,\"end_sample\":3170560,\"word\":\"with\",\"confidence\":0},{\"start_sample\":3180800,\"end_sample\":3183360,\"word\":\"magic\",\"confidence\":0},{\"start_sample\":3215360,\"end_sample\":3219200,\"word\":\"ears\",\"confidence\":0},{\"start_sample\":3219200,\"end_sample\":3220480,\"word\":\"I'm\",\"confidence\":0},{\"start_sample\":3220480,\"end_sample\":3221760,\"word\":\"just\",\"confidence\":0},{\"start_sample\":3221760,\"end_sample\":3223040,\"word\":\"a\",\"confidence\":0},{\"start_sample\":3223040,\"end_sample\":3224320,\"word\":\"little\",\"confidence\":0},{\"start_sample\":3224320,\"end_sample\":3225600,\"word\":\"bit\",\"confidence\":0},{\"start_sample\":3229440,\"end_sample\":3230720,\"word\":\"more\",\"confidence\":0},{\"start_sample\":3230720,\"end_sample\":3232000,\"word\":\"than\",\"confidence\":0},{\"start_sample\":3232000,\"end_sample\":3233280,\"word\":\"my\",\"confidence\":0},{\"start_sample\":3233280,\"end_sample\":3235840,\"word\":\"fair\",\"confidence\":0},{\"start_sample\":3235840,\"end_sample\":3237120,\"word\":\"They\",\"confidence\":0},{\"start_sample\":3270400,\"end_sample\":3280640,\"word\":\"never\",\"confidence\":0},{\"start_sample\":3280640,\"end_sample\":3281920,\"word\":\"want\",\"confidence\":0},{\"start_sample\":3281920,\"end_sample\":3283200,\"word\":\"to\",\"confidence\":0},{\"start_sample\":3283200,\"end_sample\":3284480,\"word\":\"go\",\"confidence\":0},{\"start_sample\":3284480,\"end_sample\":3285760,\"word\":\"bad\",\"confidence\":0},{\"start_sample\":3360640,\"end_sample\":3361920,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3361920,\"end_sample\":3363200,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3363200,\"end_sample\":3364480,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3364480,\"end_sample\":3365760,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3365760,\"end_sample\":3367040,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3367040,\"end_sample\":3368320,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3368320,\"end_sample\":3369600,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3369600,\"end_sample\":3370880,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3370880,\"end_sample\":3372160,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3372160,\"end_sample\":3373440,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3373440,\"end_sample\":3374720,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3374720,\"end_sample\":3376000,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3376000,\"end_sample\":3377280,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3377280,\"end_sample\":3378560,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3378560,\"end_sample\":3379840,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3379840,\"end_sample\":3381120,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3381120,\"end_sample\":3382400,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3382400,\"end_sample\":3383680,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3383680,\"end_sample\":3384960,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3384960,\"end_sample\":3386240,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3386240,\"end_sample\":3387520,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3387520,\"end_sample\":3388800,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3388800,\"end_sample\":3390080,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3390080,\"end_sample\":3391360,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3391360,\"end_sample\":3392640,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3392640,\"end_sample\":3393920,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3393920,\"end_sample\":3395200,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3395200,\"end_sample\":3396480,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3396480,\"end_sample\":3397760,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3397760,\"end_sample\":3399040,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3399040,\"end_sample\":3400320,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3400320,\"end_sample\":3401600,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3401600,\"end_sample\":3402880,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3402880,\"end_sample\":3404160,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3404160,\"end_sample\":3405440,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3405440,\"end_sample\":3406720,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3406720,\"end_sample\":3408000,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3408000,\"end_sample\":3409280,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3409280,\"end_sample\":3410560,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3410560,\"end_sample\":3411840,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3411840,\"end_sample\":3413120,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3413120,\"end_sample\":3414400,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3414400,\"end_sample\":3415680,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3415680,\"end_sample\":3416960,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3416960,\"end_sample\":3418240,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3418240,\"end_sample\":3419520,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3419520,\"end_sample\":3420800,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3420800,\"end_sample\":3422080,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3422080,\"end_sample\":3423360,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3423360,\"end_sample\":3424640,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3424640,\"end_sample\":3425920,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3425920,\"end_sample\":3427200,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3427200,\"end_sample\":3428480,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3428480,\"end_sample\":3429760,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3429760,\"end_sample\":3431040,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3431040,\"end_sample\":3432320,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3432320,\"end_sample\":3433600,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3433600,\"end_sample\":3434880,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3434880,\"end_sample\":3436160,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3436160,\"end_sample\":3437440,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3437440,\"end_sample\":3438720,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3438720,\"end_sample\":3440000,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3440000,\"end_sample\":3441280,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3441280,\"end_sample\":3442560,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3442560,\"end_sample\":3443840,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3443840,\"end_sample\":3445120,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3445120,\"end_sample\":3446400,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3446400,\"end_sample\":3447680,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3447680,\"end_sample\":3448960,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3448960,\"end_sample\":3450240,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3450240,\"end_sample\":3451520,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3451520,\"end_sample\":3452800,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3452800,\"end_sample\":3454080,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3454080,\"end_sample\":3455360,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3455360,\"end_sample\":3456640,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3456640,\"end_sample\":3457920,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3457920,\"end_sample\":3459200,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3459200,\"end_sample\":3460480,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3460480,\"end_sample\":3461760,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3461760,\"end_sample\":3463040,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3463040,\"end_sample\":3464320,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3464320,\"end_sample\":3465600,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3465600,\"end_sample\":3466880,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3466880,\"end_sample\":3468160,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3468160,\"end_sample\":3469440,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3469440,\"end_sample\":3470720,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3470720,\"end_sample\":3472000,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3472000,\"end_sample\":3473280,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3473280,\"end_sample\":3474560,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3474560,\"end_sample\":3475840,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3475840,\"end_sample\":3477120,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3477120,\"end_sample\":3478400,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3478400,\"end_sample\":3479680,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3479680,\"end_sample\":3480960,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3480960,\"end_sample\":3482240,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3482240,\"end_sample\":3483520,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3483520,\"end_sample\":3484800,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3484800,\"end_sample\":3486080,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3486080,\"end_sample\":3487360,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3487360,\"end_sample\":3488640,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3488640,\"end_sample\":3489920,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3489920,\"end_sample\":3491200,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3491200,\"end_sample\":3492480,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3492480,\"end_sample\":3493760,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3493760,\"end_sample\":3495040,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3495040,\"end_sample\":3496320,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3496320,\"end_sample\":3497600,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3497600,\"end_sample\":3498880,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3498880,\"end_sample\":3500160,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3500160,\"end_sample\":3501440,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3501440,\"end_sample\":3502720,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3502720,\"end_sample\":3504000,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3504000,\"end_sample\":3505280,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3505280,\"end_sample\":3506560,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3506560,\"end_sample\":3507840,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3507840,\"end_sample\":3509120,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3509120,\"end_sample\":3510400,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3510400,\"end_sample\":3511680,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3511680,\"end_sample\":3512960,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3512960,\"end_sample\":3514240,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3514240,\"end_sample\":3515520,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3515520,\"end_sample\":3516800,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3516800,\"end_sample\":3518080,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3518080,\"end_sample\":3519360,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3519360,\"end_sample\":3520640,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3520640,\"end_sample\":3521920,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3521920,\"end_sample\":3523200,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3523200,\"end_sample\":3524480,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3524480,\"end_sample\":3525760,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3525760,\"end_sample\":3527040,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3527040,\"end_sample\":3528320,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3528320,\"end_sample\":3529600,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3529600,\"end_sample\":3530880,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3530880,\"end_sample\":3532160,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3532160,\"end_sample\":3533440,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3533440,\"end_sample\":3534720,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3534720,\"end_sample\":3536000,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3536000,\"end_sample\":3537280,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3537280,\"end_sample\":3538560,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3538560,\"end_sample\":3539840,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3539840,\"end_sample\":3541120,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3541120,\"end_sample\":3542400,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3542400,\"end_sample\":3543680,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3543680,\"end_sample\":3544960,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3544960,\"end_sample\":3546240,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3546240,\"end_sample\":3547520,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3547520,\"end_sample\":3548800,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3548800,\"end_sample\":3550080,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3550080,\"end_sample\":3551360,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3551360,\"end_sample\":3552640,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3552640,\"end_sample\":3553920,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3553920,\"end_sample\":3555200,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3555200,\"end_sample\":3556480,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3556480,\"end_sample\":3557760,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3557760,\"end_sample\":3559040,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3559040,\"end_sample\":3560320,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3560320,\"end_sample\":3561600,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3561600,\"end_sample\":3562880,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3562880,\"end_sample\":3564160,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3564160,\"end_sample\":3565440,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3565440,\"end_sample\":3566720,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3566720,\"end_sample\":3568000,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3568000,\"end_sample\":3569280,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3569280,\"end_sample\":3570560,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3570560,\"end_sample\":3571840,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3571840,\"end_sample\":3573120,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3573120,\"end_sample\":3574400,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3574400,\"end_sample\":3575680,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3575680,\"end_sample\":3576960,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3576960,\"end_sample\":3578240,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3578240,\"end_sample\":3579520,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3579520,\"end_sample\":3580800,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3580800,\"end_sample\":3582080,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3582080,\"end_sample\":3583360,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3583360,\"end_sample\":3584640,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3584640,\"end_sample\":3585920,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3585920,\"end_sample\":3587200,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3587200,\"end_sample\":3588480,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3588480,\"end_sample\":3589760,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3589760,\"end_sample\":3591040,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3591040,\"end_sample\":3592320,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3592320,\"end_sample\":3593600,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3593600,\"end_sample\":3594880,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3594880,\"end_sample\":3596160,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3596160,\"end_sample\":3597440,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3597440,\"end_sample\":3598720,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3598720,\"end_sample\":3600000,\"word\":\"oh\",\"confidence\":0},{\"start_sample\":3793920,\"end_sample\":3795200,\"word\":\"Ah\",\"confidence\":0},{\"start_sample\":3795200,\"end_sample\":3796480,\"word\":\"ah\",\"confidence\":0},{\"start_sample\":3796480,\"end_sample\":3797760,\"word\":\"ah\",\"confidence\":0},{\"start_sample\":3797760,\"end_sample\":3799040,\"word\":\"ah\",\"confidence\":0},{\"start_sample\":4000640,\"end_sample\":4013440,\"word\":\"Um\",\"confidence\":0}]",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\text_notes\\c4f7ba2d89afb4fbd345538dfb81101a4ef269c761a73f9b43168057b2db1772.txt"
+      },
+      "pos": [
+        -992.2420086464057,
+        -747.4153608035151
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "type": "SheetSage2Transcriber",
+      "name": "SheetSage2 Transcriber",
+      "params": {
+        "enabled": true,
+        "audio_file": "",
+        "weight_type": 0,
+        "max_tokens": 5120,
+        "strip_chords": true,
+        "model_dir": "models/SheetSage2-GGUF",
+        "transcribe": false,
+        "download": false,
+        "cancel": false,
+        "last_abc": "C:\\Users\\janne\\src\\anode\\models\\SheetSage2-GGUF\\outputs\\20260920-004423_The Moody Blues - I'm Just A Singer (In A Rock And Roll Band)\\score.abc",
+        "last_melody": "C:\\Users\\janne\\src\\anode\\models\\SheetSage2-GGUF\\outputs\\20260920-004423_The Moody Blues - I'm Just A Singer (In A Rock And Roll Band)\\score-melody.abc"
+      },
+      "pos": [
+        -998.6087934801164,
+        -315.62771202605427
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "5cc61ee6-2da2-47bd-9191-625f0e828c23",
+      "type": "ABCNote",
+      "name": "ABC Note",
+      "params": {
+        "enabled": true,
+        "abc": "X:1\nT:\nM:4/4\nL:1/32\nQ:1/4=169\nV: Vocal clef=treble name=\"Vocal Melody\" snm=\"Vocal\"\nV: Ins clef=treble name=\"Ins Melody\" snm=\"Inst.\"\nK:Bm\n% intro\nV: Vocal\nZ4|\nV: Ins\nZ|f8z24|Z|f8z24|\nV: Vocal\nZ4|\nV: Ins\nZ2|f4z24z4|f4z4f4z4f4z4f4z4|\nV: Vocal\nZ3|z32|\nV: Ins\nf4z4f4z4f4z4f4z4|f4z4f4z4f4z4f4z4|f4z4f4z4f4f4e4B4|F4F4B4A8F2F2E4D4|\nV: Vocal\nz32|z32|z32|\nV: Ins\nB4B4B4A8F2F2E4D4|B4B4B4A8F2F2E4D4|B4B4B4A8F2F2E4D4|\n% verse\nV: Vocal\nz4f4f4f4f4e4d4e4|f4e4d4f8z4B4B4|d4d4d4d8B4d4e4|f4e4d4d8z12|\nV: Ins\nF4z24z4|Z3|\nV: Vocal\nz4f4f4f4f4e4d4e4|f4e4d4f8z4B4B4|d4d4d4d8B4d4e4|f4e4d4d4z4d4e4e4|\nV: Ins\nZ4|\nV: Vocal\ne4e4d4d4c8B4e4-|e4c4d4e4z4d4d4e4|e4e4d4d4c4c4B4e4-|e4z4e8f8e4d4|\nV: Ins\nZ4|\n% chorus\nV: Vocal\nz4d4d4d4f4e4d4e4|f4e4d4f8z12|z32|z32|\nV: Ins\nZ2|b4z4b4z4b4a4^g4f4|f4f4z4f8f4e4d4|\n% verse\nV: Vocal\nz4f4f4f4f4e4d4e4|f4e4d4f8z4B4B4|d4d4d4f8d4z4e4|f4e4d4d8z12|\nV: Ins\nB4z24z4|Z3|\nV: Vocal\nz4f4f4f4f4e4d4e4|f4e4d4f8z4d4B4|d8d4f8d4d4e4|f4e4d4d4z4d4e4e4|\nV: Ins\nZ4|\nV: Vocal\ne4e4d4d4c8B4e4-|e4d4d4e4z4d4d4e4|e4e4d4d4c8B4e4-|e4z4e8f8e4d4|\nV: Ins\nZ4|\n% chorus\nV: Vocal\nd4f4f4f4f4e4d4e4|f4e4d4f8z12|\nV: Ins\nZ2|\nV: Vocal\nM:1/4\nz8|\nV: Ins\nM:1/4\nb4z4|\nV: Vocal\nM:4/4\nz32|z32|z32|z4f4e4d4e4f4f8|\nV: Ins\nM:4/4\nb4z4B4b4z4b4a4^g4|b4b8f8f4e4d4|A4c4f4a4f4f4a4c'4|^a4z24z4|\nV: Vocal\nB4B4B4B4B4B4B4B4|c4B4c4B4c4B4c4f4-|f4c8z12d4d4-|\nV: Ins\nZ3|\nV: Vocal\nM:1/4\nd4z4|\nV: Ins\nM:1/4\nZ|\nV: Vocal\nM:4/4\nz16B4B4B4B4|d4d4d4d4d4d4d4d4|e4d4e4d4e4d4e4d4|f8d8z8f4f4-|\nV: Ins\nM:4/4\nZ4|\nV: Vocal\nf12z4e8z8|f8d8z8f4f4-|f8-f4e12z8|\nV: Ins\nZ2|z24b4b4|\n% interlude\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nb4b4b4z16z4|B4B4B4B8B4A4^G4|F4F4F4E8E4D4C4|B4B4B4A8F4A4^A4|\nV: Vocal\nz32|\nV: Ins\nB4B24z4|\n% verse\nV: Vocal\nz4B4B4B4B4B4d4e4|f4e4d4f4z8d4A4|d4d4d4f4z4f4f4e4|a4^g4f4d4z16|\nV: Ins\nB4z24z4|Z3|\nV: Vocal\nz4f4f4f4f4e4d4e4|f4e4d4f4z8d4A4|d4d4d4f4z4f4f4e4|a4^g4f4d4z4d4d4e4|\nV: Ins\nZ4|\nV: Vocal\ne4e4d4d4c8B4e4-|e4d4d4e4z4d4d4e4|e4e4d4d4c4c4B4e4-|e4z4e8f8e4d4|\nV: Ins\nZ4|\n% interlude\nV: Vocal\nz4B4B4B4d4e4d4e4|f4e4d4f8z12|z32|z32|\nV: Ins\nZ2|b4d4B4E4F4A4D4E4|B24z4F4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nd4c4B4A4F12F4|d4c4B4A4F12E4|F4D4z4C8z8F4|d4c4B4A4B12e4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nf4f24f4|g4f4f4e4f8A4B4|d4B8E4D8z4f4|g4f4e4f12a4b4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nb4b4z24|E12F8G8A4-|A4B4c8d8c4d4|e16d8c4d4|\nV: Vocal\nz32|z32|\nV: Ins\ne16z4d8e4|c24c4d4|\n% chorus\nV: Vocal\nz8f4f4f4e4d4e4|f4e4d4f8z12|z32|z32|\nV: Ins\nd4f4z24|Z|b4d4B4e4f4a4d4e4|B4B4z24|\nV: Vocal\nz32|z4f4e4d4e4f4f8|f4e4d4f8z12|z32|\nV: Ins\nA4c4f4a4f4f4a4c'4|^a4z24z4|Z|B4c4f4a4f4f4a4c'4|\nV: Vocal\nz4f4e4d4e4f4f8|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4c4B4|c4B4c4B4c4B4c4f4-|\nV: Ins\n^a4z24z4|Z3|\nV: Vocal\nf4c4c8z8c8|z8c4d4-d8z8|z16B4B4B4B4|d4d4d4d4d4d4d4d4|\nV: Ins\nZ4|\nV: Vocal\ne4d4e4d4e4d4f8|d8z12f4f8-|f16e8z8|f8d8z12f4-|\nV: Ins\nZ4|\nV: Vocal\nf12z4e8z8|z32|\nV: Ins\nZ|z4b4b4b4b4b4b4z4|\n% interlude\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nz16B8B4B4-|B4B4B8B4A4^G4F4|F4F4F4F4F4F4E8|E4D4D4C4B8z4B4|\nV: Vocal\nz32|z32|\nV: Ins\nA8F4A4^A4B4B4B4|Z|\n% chorus\nV: Vocal\nB4B4B4B4d4e4d4z4|f4e4d4B8z4F4F4|B4B4B4d8B4z8|f4e4d4B8z12|\nV: Ins\nZ4|\nV: Vocal\nz8f4f4f4e4d4e4|f4e4d4f4f4e4d4e4|f4e4d4f4f8z8|z4f4f4f4f4e4d4e4|\nV: Ins\nZ4|\nV: Vocal\nf4e4d4f4f8z8|B4B4B4B4d4e4d4z4|f4e4d4B8z12|B4B4B4B4d4e4d4z4|\nV: Ins\nZ4|\nV: Vocal\nf4e4d4f4z16|B4B4B4d8B4z8|f4e4d4f4z16|z4f4f4f4f4e4d4e4|\nV: Ins\nZ4|\nV: Vocal\nf4e4d4f4e4d4f4e4|f4e4d4a4e4f8z4|z4f4f4f4f4e4d4e4|f4e4d4f8z12|\nV: Ins\nZ4|\n% outro\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nd4c4=c4B4B4B4B4F4-|F4F4^E4=E4E4D4D4D4|D4D4D4D8D4C4=C4|B4B4z24|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nz12B4B4B4B4D4-|D4D4C4=C4B4B4B4B4|B4B4B4D8D4C4=C4|B4z24B4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\nz32|z32|z24z4z4|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4z4|\n\n",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\abc_notes\\d98c23b3b10f3ef90b4516a86231a97d4c7a70b95714447619eca8c8086bcd74.abc"
+      },
+      "pos": [
+        -485.6664057271477,
+        -165.7936259752735
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "5fe6f60e-230b-4da6-9b43-f4f3f566e2e5",
+      "type": "ABCNote",
+      "name": "ABC Note",
+      "params": {
+        "enabled": true,
+        "abc": "X:1\nT:\nM:4/4\nL:1/32\nQ:1/4=169\nV: Vocal clef=treble name=\"Vocal Melody\" snm=\"Vocal\"\nV: Ins clef=treble name=\"Ins Melody\" snm=\"Inst.\"\nK:Bm\n% intro\nV: Vocal\nZ4|\nV: Ins\nZ|f8z24|Z|f8z24|\nV: Vocal\nZ4|\nV: Ins\nZ2|f4z24z4|f4z4f4z4f4z4f4z4|\nV: Vocal\nZ3|\"Bm\"z32|\nV: Ins\nf4z4f4z4f4z4f4z4|f4z4f4z4f4z4f4z4|f4z4f4z4f4f4e4B4|F4F4B4A8F2F2E4D4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nB4B4B4A8F2F2E4D4|B4B4B4A8F2F2E4D4|B4B4B4A8F2F2E4D4|\n% verse\nV: Vocal\n\"Bm\"z4f4f4f4f4e4d4e4|\"Bm\"f4e4d4f8z4B4B4|\"Bm\"d4d4d4d8B4d4e4|\"Bm\"f4e4d4d8z12|\nV: Ins\nF4z24z4|Z3|\nV: Vocal\n\"Bm\"z4f4f4f4f4e4d4e4|\"Bm\"f4e4d4f8z4B4B4|\"Bm\"d4d4d4d8B4d4e4|\"Bm\"f4e4d4d4z4d4e4e4|\nV: Ins\nZ4|\nV: Vocal\n\"Em\"e4e4d4d4c8B4e4-|\"Em\"e4c4d4e4z4d4d4e4|\"F#\"e4e4d4d4c4c4B4e4-|\"F#\"e4z4e8f8e4d4|\nV: Ins\nZ4|\n% chorus\nV: Vocal\n\"Bm\"z4d4d4d4f4e4d4e4|\"Bm\"f4e4d4f8z12|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nZ2|b4z4b4z4b4a4^g4f4|f4f4z4f8f4e4d4|\n% verse\nV: Vocal\n\"Bm\"z4f4f4f4f4e4d4e4|\"Bm\"f4e4d4f8z4B4B4|\"Bm\"d4d4d4f8d4z4e4|\"Bm\"f4e4d4d8z12|\nV: Ins\nB4z24z4|Z3|\nV: Vocal\n\"Bm\"z4f4f4f4f4e4d4e4|\"Bm\"f4e4d4f8z4d4B4|\"Bm\"d8d4f8d4d4e4|\"Bm\"f4e4d4d4z4d4e4e4|\nV: Ins\nZ4|\nV: Vocal\n\"Em\"e4e4d4d4c8B4e4-|\"Em\"e4d4d4e4z4d4d4e4|\"F#\"e4e4d4d4c8B4e4-|\"F#\"e4z4e8f8e4d4|\nV: Ins\nZ4|\n% chorus\nV: Vocal\n\"Bm\"d4f4f4f4f4e4d4e4|\"Bm\"f4e4d4f8z12|\nV: Ins\nZ2|\nV: Vocal\nM:1/4\n\"Bm\"z8|\nV: Ins\nM:1/4\nb4z4|\nV: Vocal\nM:4/4\n\"Bm\"z32|\"Bm\"z32|\"F#m\"z32|\"F#\"z4f4e4d4e4f4f8|\nV: Ins\nM:4/4\nb4z4B4b4z4b4a4^g4|b4b8f8f4e4d4|A4c4f4a4f4f4a4c'4|^a4z24z4|\nV: Vocal\n\"Em\"B4B4B4B4B4B4B4B4|\"A\"c4B4c4B4c4B4c4f4-|\"A\"f4c8z12d4d4-|\nV: Ins\nZ3|\nV: Vocal\nM:1/4\n\"Bm\"d4z4|\nV: Ins\nM:1/4\nZ|\nV: Vocal\nM:4/4\n\"Bm\"z16B4B4B4B4|\"Em\"d4d4d4d4d4d4d4d4|\"A\"e4d4e4d4e4d4e4d4|\"Bm\"f8d8z8f4f4-|\nV: Ins\nM:4/4\nZ4|\nV: Vocal\n\"F#m\"f12z4\"A\"e8z8|\"Bm\"f8d8z8f4f4-|\"F#m\"f8-\"A\"f4e12\"Bm\"z8|\nV: Ins\nZ2|z24b4b4|\n% interlude\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nb4b4b4z16z4|B4B4B4B8B4A4^G4|F4F4F4E8E4D4C4|B4B4B4A8F4A4^A4|\nV: Vocal\n\"Bm\"z32|\nV: Ins\nB4B24z4|\n% verse\nV: Vocal\n\"Bm\"z4B4B4B4B4B4d4e4|\"Bm\"f4e4d4f4z8d4A4|\"Bm\"d4d4d4f4z4f4f4e4|\"Bm\"a4^g4f4d4z16|\nV: Ins\nB4z24z4|Z3|\nV: Vocal\n\"Bm\"z4f4f4f4f4e4d4e4|\"Bm\"f4e4d4f4z8d4A4|\"Bm\"d4d4d4f4z4f4f4e4|\"Bm\"a4^g4f4d4z4d4d4e4|\nV: Ins\nZ4|\nV: Vocal\n\"Em\"e4e4d4d4c8B4e4-|\"Em\"e4d4d4e4z4d4d4e4|\"F#\"e4e4d4d4c4c4B4e4-|\"F#\"e4z4e8f8e4d4|\nV: Ins\nZ4|\n% interlude\nV: Vocal\n\"Bm\"z4B4B4B4d4e4d4e4|\"Bm\"f4e4d4f8z12|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nZ2|b4d4B4E4F4A4D4E4|B24z4F4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nd4c4B4A4F12F4|d4c4B4A4F12E4|F4D4z4C8z8F4|d4c4B4A4B12e4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nf4f24f4|g4f4f4e4f8A4B4|d4B8E4D8z4f4|g4f4e4f12a4b4|\nV: Vocal\n\"Bm\"z32|\"Em\"z32|\"Em\"z32|\"Em\"z32|\nV: Ins\nb4b4z24|E12F8G8A4-|A4B4c8d8c4d4|e16d8c4d4|\nV: Vocal\n\"F#\"z32|\"F#\"z32|\nV: Ins\ne16z4d8e4|c24c4d4|\n% chorus\nV: Vocal\n\"Bm\"z8f4f4f4e4d4e4|\"Bm\"f4e4d4f8z12|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nd4f4z24|Z|b4d4B4e4f4a4d4e4|B4B4z24|\nV: Vocal\n\"F#m\"z32|\"F#\"z4f4e4d4e4f4f8|\"F#\"f4e4d4f8z12|\"Em\"z32|\nV: Ins\nA4c4f4a4f4f4a4c'4|^a4z24z4|Z|B4c4f4a4f4f4a4c'4|\nV: Vocal\n\"A\"z4f4e4d4e4f4f8|\"F#\"B4B4B4B4B4B4B4B4|\"Em\"B4B4B4B4\"A\"B4B4c4B4|\"A\"c4B4c4B4c4B4c4f4-|\nV: Ins\n^a4z24z4|Z3|\nV: Vocal\n\"F#m\"f4c4c8z8c8|\"F#m\"z8c4d4-\"Bm\"d8z8|\"Bm\"z16B4B4B4B4|\"Em\"d4d4d4d4d4d4d4d4|\nV: Ins\nZ4|\nV: Vocal\n\"A\"e4d4e4d4e4d4\"Bm\"f8|\"Bm\"d8z12f4f8-|\"F#m\"f16\"A\"e8z8|\"Bm\"f8d8z12f4-|\nV: Ins\nZ4|\nV: Vocal\n\"F#m\"f12z4\"A\"e8z8|\"Bm\"z32|\nV: Ins\nZ|z4b4b4b4b4b4b4z4|\n% interlude\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nz16B8B4B4-|B4B4B8B4A4^G4F4|F4F4F4F4F4F4E8|E4D4D4C4B8z4B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\nV: Ins\nA8F4A4^A4B4B4B4|Z|\n% chorus\nV: Vocal\n\"Bm\"B4B4B4B4d4e4d4z4|\"Bm\"f4e4d4B8z4F4F4|\"Bm\"B4B4B4d8B4z8|\"Bm\"f4e4d4B8z12|\nV: Ins\nZ4|\nV: Vocal\n\"Bm\"z8f4f4f4e4d4e4|\"Bm\"f4e4d4f4f4e4d4e4|\"Bm\"f4e4d4f4f8z8|\"Bm\"z4f4f4f4f4e4d4e4|\nV: Ins\nZ4|\nV: Vocal\n\"Bm\"f4e4d4f4f8z8|\"Bm\"B4B4B4B4d4e4d4z4|\"Bm\"f4e4d4B8z12|\"Bm\"B4B4B4B4d4e4d4z4|\nV: Ins\nZ4|\nV: Vocal\n\"Bm\"f4e4d4f4z16|\"Bm\"B4B4B4d8B4z8|\"Bm\"f4e4d4f4z16|\"Bm\"z4f4f4f4f4e4d4e4|\nV: Ins\nZ4|\nV: Vocal\n\"Bm\"f4e4d4f4e4d4f4e4|\"Bm\"f4e4d4a4e4f8z4|\"Bm\"z4f4f4f4f4e4d4e4|\"Bm\"f4e4d4f8z12|\nV: Ins\nZ4|\n% outro\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nd4c4=c4B4B4B4B4F4-|F4F4^E4=E4E4D4D4D4|D4D4D4D8D4C4=C4|B4B4z24|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nz12B4B4B4B4D4-|D4D4C4=C4B4B4B4B4|B4B4B4D8D4C4=C4|B4z24B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\"Bm\"z32|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|\nV: Vocal\n\"Bm\"z32|\"Bm\"z32|\"Bm\"z24z4z4|\nV: Ins\nB4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4B4|B4B4B4B4B4B4B4z4|\n\n",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\abc_notes\\bfa7acd577d78e09c8470114fb290f5f7bce92fa86e4982f98caa04fd61142ef.abc"
+      },
+      "pos": [
+        -481.14085205527294,
+        173.2599806184765
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "f286e9a5-2a2e-4f7b-80a1-a9d2b2488a05",
+      "type": "BSRoFormerSeparator",
+      "name": "BS-RoFormer Separator",
+      "params": {
+        "enabled": true,
+        "audio_file": "",
+        "weight_type": 0,
+        "num_overlap": 4,
+        "model_dir": "models/BS-RoFormer-ep368-GGUF",
+        "separate": false,
+        "download": false,
+        "cancel": false,
+        "last_vocals": "C:\\Users\\janne\\src\\anode\\models\\BS-RoFormer-ep368-GGUF\\outputs\\20260920-004131_The Moody Blues - I'm Just A Singer (In A Rock And Roll Band)\\vocals.wav",
+        "last_instrumental": "C:\\Users\\janne\\src\\anode\\models\\BS-RoFormer-ep368-GGUF\\outputs\\20260920-004131_The Moody Blues - I'm Just A Singer (In A Rock And Roll Band)\\instrumental.wav"
+      },
+      "pos": [
+        -1738.8025990093734,
+        -831.2407147007024
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "7f70955b-65dc-472f-89c2-0d127bcdf2ff",
+      "type": "LyricFitter",
+      "name": "Lyric Fitter",
+      "params": {
+        "enabled": true,
+        "lyrics_file": "",
+        "words_file": "",
+        "abc_file": "",
+        "fit": false,
+        "last_fit": "C:\\Users\\janne\\src\\anode\\outputs\\lyric_fits\\20260920-004423_words\\fitted.txt"
+      },
+      "pos": [
+        -416.55548547792944,
+        -885.0744920299605
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "43b1787e-5f52-48d5-b7b4-140a1e11ba8b",
+      "type": "TextNote",
+      "name": "Text Note",
+      "params": {
+        "enabled": true,
+        "text": "[intro]\nThe\n\n[verse]\nI'm used to warming on the face of the earth\nteaching so many people who\nwill try to be free and what I'm drowning by is so many words That barrier is broken now We found peace and if you want the window to change you blow about you And you're the only\n\n[chorus]\nother person to know Don't tell me I'm yet the savior in a\nin a rock and roll band A\n\n[verse]\nthousand creatures can be drawn from one world For me who's the artist\nwe gotta agree\nA thousand miles can lead so many ways Just know you're driving wanna help you fucking throw If you want me for the pure of the heart you and you can see exactly what to do\n\n[chorus]\nPlease tell me can you see a little of\nthe moonlight\nI've found we understand by by the people for the people who are all with you\nsmiling themselves And when you see a bright and\nbeautiful light in\ndarkness people who are guarding touching\nthis\nPlease tell me can you see a little of\nthe moonlight\nI've found we understand by by the people for the people who are all with you\n\n[interlude]\nearth I'm touching this earth I've set the warning warning on the face of this earth\nwe can solve it People can reclaim it We've seen Come on traveling at an astonishing\nburst Let\n\n[verse]\nthe carriage go We'll be found deep at the\nview The wind of change will blow about you and you're\nthe only on on earth\nthat knows Tell me I'm just a\nsinger little like a dog\n\n[interlude]\nfinger in the world rock 'n' roll band I\ncan't\nunderstand why a lot of people fall to people who are only destroying themselves And when you see a button pushed the requirement by the people who are\nstalking the sun\nStalking the sun\n\n[chorus]\ntold many\npeople We did it Let's be I'll\ngive the finger in the rock and roll band I'll give the finger\nin the rock and roll band The traveling party exploring our\nworld or a unicorn with magic\nears I'm just a little bit more than my fair They never want to go bad\noh oh\noh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh\noh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh\noh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh\noh oh oh oh oh oh oh oh oh oh oh oh oh oh\noh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh\noh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh oh\ntold many\n\n[interlude]\noh oh oh oh oh oh oh oh Ah ah ah ah\n\n[chorus]\nUm\nUm\nUm\nUm\nUm\nUm\nUm\nUm\nUm\nUm\nUm\n\n[outro]\n",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\text_notes\\def44708812c7e83c0de9018371c6b1335a2d039ddda2e870e38825348c9e485.txt"
+      },
+      "pos": [
+        126.75493531972697,
+        -1098.9529322252724
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "9cd6e540-a1b1-4f1e-a11e-ee8a7c05c646",
+      "type": "AudioDeviceOutput",
+      "name": "Audio Device Output",
+      "params": {
+        "enabled": true,
+        "device_index": -1
+      },
+      "pos": [
+        809.1713868239485,
+        -372.5497865042638
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "22a5ef40-6052-4dfb-a733-3991fe7b6d2e",
+      "type": "YuE2SongGenerator",
+      "name": "YuE2 Song Generator",
+      "params": {
+        "enabled": true,
+        "style": "English, late-90s Swedish power metal, twin harmonized electric guitars, driving bass, double-bass drums, growly female vocal with gang-vocal chorus, heroic anthemic, 155 BPM, polished powerful mix",
+        "lyrics_file": "",
+        "abc_file": "",
+        "profile": 0,
+        "weight_type": 1,
+        "format": 0,
+        "cot": 1,
+        "ar_lora": "",
+        "ar_lora_scale": 1.0,
+        "nar_lora": "",
+        "nar_lora_scale": 1.0,
+        "guidance_scale": 1.0,
+        "num_inference_steps": 8,
+        "attention": 0,
+        "seed": 831001,
+        "auto_seed": false,
+        "model_dir": "models/YuE2-3B-GGUF",
+        "generate": false,
+        "download": false,
+        "cancel": false,
+        "last_wav": "C:\\Users\\janne\\src\\anode\\models\\YuE2-3B-GGUF\\outputs\\20260920-004728_seed831001_melody\\song.mp3",
+        "last_plan": ""
+      },
+      "pos": [
+        106.78080625000007,
+        -623.00286875
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "aed83e3e-aedb-4b18-9c59-37186babf44f",
+      "type": "MediaPlayerNode",
+      "name": "Media Player",
+      "params": {
+        "enabled": true,
+        "file_path": "",
+        "playing": true,
+        "looping": false,
+        "seek_ratio": -1.0
+      },
+      "pos": [
+        483.2177921293586,
+        -667.851375296345
+      ],
+      "ui_size": null,
+      "meta": {
+        "title": "song.mp3",
+        "duration": 301.7986666666667,
+        "path": "C:\\Users\\janne\\src\\anode\\models\\YuE2-3B-GGUF\\outputs\\20260920-004728_seed831001_melody\\song.mp3"
+      }
+    },
+    {
+      "id": "13746d51-5d53-4910-accc-ef73e8de9d78",
+      "type": "WaveformDisplay",
+      "name": "Oscilloscope",
+      "params": {
+        "enabled": true
+      },
+      "pos": [
+        485.6206578546751,
+        -384.0655891067613
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "1d346d5f-e4db-40cb-b950-c3ba46fe2c18",
+      "type": "FileSource",
+      "name": "File",
+      "params": {
+        "enabled": true,
+        "file": "",
+        "refresh": false
+      },
+      "pos": [
+        -2169.973208023738,
+        -448.55629735334435
+      ],
+      "ui_size": null
+    }
+  ],
+  "connections": [
+    {
+      "src_id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "src_port": "done",
+      "dst_id": "2bc8dd76-e6da-4af0-a2a8-597b28fd2014",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "src_port": "lyrics",
+      "dst_id": "2bc8dd76-e6da-4af0-a2a8-597b28fd2014",
+      "dst_port": "text_uri"
+    },
+    {
+      "src_id": "f286e9a5-2a2e-4f7b-80a1-a9d2b2488a05",
+      "src_port": "done",
+      "dst_id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "f286e9a5-2a2e-4f7b-80a1-a9d2b2488a05",
+      "src_port": "vocals",
+      "dst_id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "dst_port": "audio_uri"
+    },
+    {
+      "src_id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "src_port": "done",
+      "dst_id": "80408415-78c4-4071-baad-ef64b400a463",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "src_port": "words",
+      "dst_id": "80408415-78c4-4071-baad-ef64b400a463",
+      "dst_port": "text_uri"
+    },
+    {
+      "src_id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "src_port": "done",
+      "dst_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "1d346d5f-e4db-40cb-b950-c3ba46fe2c18",
+      "src_port": "file",
+      "dst_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "dst_port": "audio_uri"
+    },
+    {
+      "src_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "src_port": "done",
+      "dst_id": "5cc61ee6-2da2-47bd-9191-625f0e828c23",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "src_port": "melody",
+      "dst_id": "5cc61ee6-2da2-47bd-9191-625f0e828c23",
+      "dst_port": "abc_uri"
+    },
+    {
+      "src_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "src_port": "done",
+      "dst_id": "5fe6f60e-230b-4da6-9b43-f4f3f566e2e5",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "src_port": "score",
+      "dst_id": "5fe6f60e-230b-4da6-9b43-f4f3f566e2e5",
+      "dst_port": "abc_uri"
+    },
+    {
+      "src_id": "1d346d5f-e4db-40cb-b950-c3ba46fe2c18",
+      "src_port": "done",
+      "dst_id": "f286e9a5-2a2e-4f7b-80a1-a9d2b2488a05",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "1d346d5f-e4db-40cb-b950-c3ba46fe2c18",
+      "src_port": "file",
+      "dst_id": "f286e9a5-2a2e-4f7b-80a1-a9d2b2488a05",
+      "dst_port": "audio_uri"
+    },
+    {
+      "src_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "src_port": "done",
+      "dst_id": "7f70955b-65dc-472f-89c2-0d127bcdf2ff",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "src_port": "melody",
+      "dst_id": "7f70955b-65dc-472f-89c2-0d127bcdf2ff",
+      "dst_port": "abc_uri"
+    },
+    {
+      "src_id": "900a6a23-8ffb-4ba7-8dc3-b56b0b49811c",
+      "src_port": "words",
+      "dst_id": "7f70955b-65dc-472f-89c2-0d127bcdf2ff",
+      "dst_port": "words_uri"
+    },
+    {
+      "src_id": "7f70955b-65dc-472f-89c2-0d127bcdf2ff",
+      "src_port": "done",
+      "dst_id": "43b1787e-5f52-48d5-b7b4-140a1e11ba8b",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "7f70955b-65dc-472f-89c2-0d127bcdf2ff",
+      "src_port": "lyrics",
+      "dst_id": "43b1787e-5f52-48d5-b7b4-140a1e11ba8b",
+      "dst_port": "text_uri"
+    },
+    {
+      "src_id": "13746d51-5d53-4910-accc-ef73e8de9d78",
+      "src_port": "out",
+      "dst_id": "9cd6e540-a1b1-4f1e-a11e-ee8a7c05c646",
+      "dst_port": "audio_in"
+    },
+    {
+      "src_id": "7f70955b-65dc-472f-89c2-0d127bcdf2ff",
+      "src_port": "done",
+      "dst_id": "22a5ef40-6052-4dfb-a733-3991fe7b6d2e",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "76df66b5-242b-449e-9fd2-16e9e24d483e",
+      "src_port": "melody",
+      "dst_id": "22a5ef40-6052-4dfb-a733-3991fe7b6d2e",
+      "dst_port": "abc_uri"
+    },
+    {
+      "src_id": "7f70955b-65dc-472f-89c2-0d127bcdf2ff",
+      "src_port": "lyrics",
+      "dst_id": "22a5ef40-6052-4dfb-a733-3991fe7b6d2e",
+      "dst_port": "lyrics_uri"
+    },
+    {
+      "src_id": "22a5ef40-6052-4dfb-a733-3991fe7b6d2e",
+      "src_port": "song",
+      "dst_id": "aed83e3e-aedb-4b18-9c59-37186babf44f",
+      "dst_port": "uri_in"
+    },
+    {
+      "src_id": "22a5ef40-6052-4dfb-a733-3991fe7b6d2e",
+      "src_port": "ready",
+      "dst_id": "aed83e3e-aedb-4b18-9c59-37186babf44f",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "aed83e3e-aedb-4b18-9c59-37186babf44f",
+      "src_port": "out",
+      "dst_id": "13746d51-5d53-4910-accc-ef73e8de9d78",
+      "dst_port": "in"
+    }
+  ]
+}
