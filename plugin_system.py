@@ -88,7 +88,8 @@ def load_plugins(folder="plugins"):
                             if target:
                                 UI_REGISTRY[target] = obj
                     # Register type aliases for saved-patch compat
-                    # (e.g. FileSource -> TextFileSource in text_notes).
+                    # (a plugin module may define NODE_ALIASES/UI_ALIASES
+                    # mapping old type names to current ones).
                     for alias_map, registry in (
                         (getattr(mod, "NODE_ALIASES", {}), NODE_REGISTRY),
                         (getattr(mod, "UI_ALIASES", {}), UI_REGISTRY),

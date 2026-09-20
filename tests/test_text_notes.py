@@ -270,7 +270,7 @@ def test_file_source_widget_publish_and_warning(qapp, registry):
             return w
 
     proxy = _FileProxy({})
-    widget = sys.modules["text_notes"].TextFileSourceWidget(proxy)
+    widget = sys.modules["text_notes"].FileSourceWidget(proxy)
     widget.btn_publish.click()
     assert proxy.calls == [("refresh", True)]
     widget.update_from_params({"file": "/tmp/x.txt"})
@@ -393,18 +393,17 @@ def test_resize_command_and_save_json_roundtrip(registry):
 # file sources (no NRT: publishing is a synchronous string assignment)
 # ----------------------------------------------------------------------
 def test_file_source_registration(registry):
-    assert "_FileSourceBase" not in registry
-    assert "ABCFileSource" not in registry
-    node = registry["TextFileSource"]()
+    assert "FileSource" in registry
+    node = registry["FileSource"]()
     assert node.is_abstract is False
     assert node.is_offline is True
     assert node.outputs["file"].slot_type == "uri"
     assert node.params["file"].type == "file"
-    assert plugin_system.get_ui_class("TextFileSource") is not None
+    assert plugin_system.get_ui_class("FileSource") is not None
 
 
 def test_file_source_publish_and_pulse(registry, tmp_path):
-    node = registry["TextFileSource"]()
+    node = registry["FileSource"]()
     f = tmp_path / "lyrics.txt"
     f.write_text("la", encoding="utf-8")
     node.params["file"].set(str(f))
@@ -421,7 +420,7 @@ def test_file_source_publish_and_pulse(registry, tmp_path):
 def test_file_source_is_generic(registry, tmp_path):
     """The File node publishes any file kind, not just text: audio files
     pass straight through for wiring into audio_uri consumer inputs."""
-    node = registry["TextFileSource"]()
+    node = registry["FileSource"]()
     assert node.label == "File"
     f = tmp_path / "song.wav"
     f.write_bytes(b"RIFF" + bytes(100))
@@ -433,7 +432,7 @@ def test_file_source_is_generic(registry, tmp_path):
 
 
 def test_file_source_trigger_edge_stages_refresh(registry):
-    node = registry["TextFileSource"]()
+    node = registry["FileSource"]()
     engine = _attach_fake_engine(node)
     _wire_trigger(node)
     node.process()
@@ -520,7 +519,7 @@ def test_file_source_publish_pushes_telemetry_with_busy(registry, tmp_path):
     Sources never have NRT in flight, so 'busy' is always present but False."""
     import queue
     from types import SimpleNamespace
-    node = registry["TextFileSource"]()
+    node = registry["FileSource"]()
     out_q = queue.SimpleQueue()
     snapshots = []
     node.graph = SimpleNamespace(

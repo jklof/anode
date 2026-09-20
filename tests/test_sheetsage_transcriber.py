@@ -474,7 +474,7 @@ def test_audio_param_used_when_unwired(node_cls, tmp_path):
 def test_file_node_feeds_audio_uri(node_cls, tmp_path):
     """The generic File node output wires into audio_uri with matching types."""
     plugin_system.load_plugins("plugins")
-    file_cls = plugin_system.NODE_REGISTRY.get("TextFileSource")
+    file_cls = plugin_system.NODE_REGISTRY.get("FileSource")
     assert file_cls is not None
     src, node = file_cls(), make_node(node_cls)
     node.inputs["audio_uri"].connect(src.outputs["file"])

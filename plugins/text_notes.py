@@ -27,13 +27,10 @@ raises) in the worker and shows sections in the widget's section list (parsed
 locally in the UI for instant feedback; the engine telemetry carries the
 note/section/beat summary and any error).
 
-TextFileSource — minimal URI source: a file picker whose selected path is
-published directly on the URI output (no reading, no worker, no kept copy).
-It is the generic file node (any file kind — lyrics, audio, …) for handing
+FileSource — minimal URI source: a file picker whose selected path is
+published directly on the "file" URI output (no reading, no worker, no kept
+copy). The generic file node (any file kind — lyrics, audio, …) for handing
 an existing file to a consumer without an editable note in the middle.
-It publishes on the "file" URI output (plus an identical "text" alias slot
-kept for saved-patch compatibility; patches wire that output into any uri
-input).
 """
 
 import hashlib
@@ -400,12 +397,16 @@ class ABCNote(_NoteNodeBase):
         return f"{len(score.notes)} notes, {score.total_beats:.0f} beats @ {score.bpm:g} BPM{sec}"
 
 
-class _FileSourceBase(Node):
-    # Generic file node.
-    # (lyrics, audio, ...) can be published and wired into any uri input.
+class FileSource(Node):
+    """Generic file -> URI publisher: the picked path is the payload.
+
+    Ports: trigger_in (audio) re-publishes on a rising edge; file (uri out)
+    carries the selected path; done (audio, 1 ch) pulses on (re-)publish.
+    Publishing is a synchronous string assignment (no I/O, no worker).
+    """
     category = "Offline"
     label = "File"
-    is_abstract = True
+    is_abstract = False
     is_offline = True
     description = (
         "Publishes any picked file directly on the file URI output "
@@ -414,24 +415,17 @@ class _FileSourceBase(Node):
         "for chaining into lyric/song/score/audio nodes."
     )
 
-    URI_OUT = "file"
-    FILE_FILTER = "All Files (*.*)"
-
     def __init__(self, name=""):
         super().__init__(name)
         self.add_input("trigger_in",
                        help="Gate/trigger signal; a rising edge re-publishes the selected "
                             "file and emits the done pulse (e.g. wired from a done pulse).")
-        self.add_uri_output(self.URI_OUT,
-                            help="Selected file path (labeled 'file' for wiring); "
-                                 "published on pick, on trigger, "
+        self.add_uri_output("file",
+                            help="Selected file path; published on pick, on trigger, "
                                  "and on patch-load relink.")
-        # Saved-patch compat: historic patches wire the "text" output.
-        # Alias to the same slot object so either name publishes identically.
-        self.outputs["text"] = self.outputs[self.URI_OUT]
         self.done = self.add_output("done", channels=1,
                                     help="One-block 1.0 pulse when the file is (re-)published.")
-        self.add_file_param("file", "", filter=self.FILE_FILTER,
+        self.add_file_param("file", "", filter="All Files (*.*)",
                             help="File to publish on the URI output.")
         self.add_bool_param("refresh", False,
                             help="Transient trigger: re-publish the selected file, then resets itself.")
@@ -466,13 +460,13 @@ class _FileSourceBase(Node):
         consumers validate at use time with their own clear messages."""
         path = self.params["file"].value
         if not path:
-            self.outputs[self.URI_OUT].uri = ""
+            self.outputs["file"].uri = ""
             self._status = "Idle"
             self._status_detail = "No file selected"
             self.error_msg = None
             self._refresh_ui()
             return
-        self.outputs[self.URI_OUT].uri = path
+        self.outputs["file"].uri = path
         if pulse:
             self._done_pulse = True
         self.error_msg = None
@@ -521,12 +515,12 @@ class _FileSourceBase(Node):
         # missing file clears (like the note nodes) instead of warning.
         path = self.params["file"].value
         if path and Path(path).exists():
-            self.outputs[self.URI_OUT].uri = path
+            self.outputs["file"].uri = path
             self._status = "Ready"
             self._status_detail = f"Re-linked {Path(path).name}"
             self.error_msg = None
         else:
-            self.outputs[self.URI_OUT].uri = ""
+            self.outputs["file"].uri = ""
             self._status = "Idle"
             self._status_detail = "Previous file is missing; pick again" if path else "No file selected"
 
@@ -536,21 +530,6 @@ class _FileSourceBase(Node):
         # also reads as idle in NodeItem.propagate_telemetry).
         return {"status": self._status, "audio": self._status_detail,
                 "busy": False}
-
-
-class TextFileSource(_FileSourceBase):
-    """Generic file -> URI publisher (kept name for saved-patch compat).
-
-    Historical patches reference type "TextFileSource" with a "text"
-    output; the base publishes URI_OUT="file" plus an identical "text"
-    alias slot, so both old and new patches load.
-    """
-    is_abstract = False
-
-
-# Back-compat alias: some code/widgets import FileSource directly.
-FileSource = TextFileSource
-
 
 
 if GUI_AVAILABLE:
@@ -714,12 +693,12 @@ if GUI_AVAILABLE:
         USE_ABC_HIGHLIGHT = True
 
 
-    class TextFileSourceWidget(QWidget):
-        """File picker + Publish button + status for the file source nodes.
+    class FileSourceWidget(QWidget):
+        """File picker + Publish button + status for the FileSource node.
         Small fixed widget (not resizable): the file row is the whole UI."""
 
         IS_NODE_UI = True
-        NODE_CLASS_NAME = "TextFileSource"
+        NODE_CLASS_NAME = "FileSource"
 
         def __init__(self, node_proxy):
             super().__init__()
@@ -758,12 +737,4 @@ if GUI_AVAILABLE:
         def update_from_params(self, params):
             if "file" in params:
                 self.file_widget.update_from_backend(params["file"])
-
-    FileSourceWidget = TextFileSourceWidget
-
-
-# Registry aliases for saved-patch compat: old patches reference type
-# "FileSource" (and its widget). The loader maps these to TextFileSource.
-NODE_ALIASES = {"FileSource": "TextFileSource"}
-UI_ALIASES = {"FileSource": "TextFileSource"}
 
