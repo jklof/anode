@@ -529,7 +529,25 @@ def test_complete_failure_and_cancel(node_cls):
 
 
 def test_transcribe_rejects_missing_audio(node_cls, tmp_path, monkeypatch):
+    import sys
+    mod = sys.modules["sheetsage_transcriber"]
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.cli = tmp_path / "bin" / "audiocpp_cli.exe"
+
+        def check_ready(self):
+            return True, ""
+
+    monkeypatch.setattr(mod, "AudioCppRuntime", StubRuntime)
+    # Dummy weights so validation reaches the audio_file check
+    # deterministically (repo models/ has no GGUF checked in).
+    model_dir = tmp_path / "models" / "SheetSage2-GGUF"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "sheetsage2-orig.gguf").write_text("x")
     node = make_node(node_cls)
+    node.params["model_dir"].set(str(model_dir))
+    node.params["model_dir"].sync()
     from types import SimpleNamespace
     import queue
     engine = SimpleNamespace(output_queue=queue.Queue())

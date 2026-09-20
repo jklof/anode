@@ -16,6 +16,10 @@ models/*.onnx.data
 # audio.cpp native runtime (fetched via tools/audiocpp/fetch_audiocpp.py)
 tools/audiocpp/bin/
 
+# Local CMake configure/build tree (VS Code cmake.sourceDirectory points at
+# cpp/, so the extension configures in cpp/build/)
+cpp/build/
+
 # YuE2 GGUF weights + sidecars (fetched via tools/audiocpp/fetch_yue2_gguf.py);
 # per-generation outputs are local provenance records, never committed.
 models/YuE2-3B-GGUF/*.gguf

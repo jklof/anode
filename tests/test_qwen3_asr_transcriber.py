@@ -546,9 +546,15 @@ def test_run_nrt_full_pipeline(node_cls, tmp_path, monkeypatch):
 
 
 def test_build_fetch_payload_lists_missing(node_cls, tmp_path, monkeypatch):
+    import sys
+
     import download_util
     import audiocpp_backend
     from pathlib import Path as _Path
+
+    # Windows auto-fetch path: pin the platform so the test is hermetic on
+    # Linux/macOS (runtime_fetch_specs raises RuntimeError off win32).
+    monkeypatch.setattr(sys, "platform", "win32")
 
     class StubRuntime:
         def __init__(self, *a, **k):

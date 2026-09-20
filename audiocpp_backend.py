@@ -819,10 +819,17 @@ class AudioCppRuntime:
                        if p.is_file()}
         except OSError:
             present = set()
-        # Backend DLLs shipped alongside audiocpp_cli in the pinned
-        # archives (cudart + ggml backends). Prefix/suffix match so
-        # versioned filenames (cudart64_12.dll, ggml-cuda.dll, ...) count.
-        required = ("cudart", "ggml", "audio")
+        # Backend libraries shipped alongside audiocpp_cli in the pinned
+        # archives. Prefix/suffix match so versioned filenames
+        # (cudart64_12.dll, ggml-cuda.dll, libggml-*.so, ...) count.
+        # cudart exists only in the Windows CUDA track; CPU/vulkan/metal
+        # builds (Linux/macOS manual installs) ship ggml backends without
+        # it, so require it on Windows only.
+        import sys
+        if sys.platform == "win32":
+            required = ("cudart", "ggml", "audio")
+        else:
+            required = ("ggml", "audio")
         if present:
             for needle in required:
                 if not any(needle in name for name in present):
