@@ -331,6 +331,37 @@ def default_backend():
     return "cpu"
 
 
+_TERMINATE_WAIT_S = 5.0
+
+
+def _terminate(proc, timeout_s=_TERMINATE_WAIT_S):
+    """Terminate a sidecar subprocess and reap it (no zombie/VRAM holder).
+
+    Best-effort: never raises. Sends ``terminate()``, waits up to
+    ``timeout_s`` for exit, then escalates to ``kill()`` + ``wait()`` on
+    :class:`subprocess.TimeoutExpired`. Callers keep the surrounding
+    ``if proc.poll() is None`` guard so an already-reaped child is left
+    alone.
+    """
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=timeout_s)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _build_sheetsage_argv(cli, model_dir, *, audio_wav, weight_type,
                           max_tokens, out_abc, backend="cuda"):
     """Pure argv builder (no process). Tested without a GPU."""
@@ -401,10 +432,7 @@ def run_sheetsage_transcribe(cli, model_dir, *, audio_wav, weight_type="native",
                     )
     finally:
         if proc.poll() is None:
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            _terminate(proc)
     if proc.returncode != 0:
         raise RuntimeError(
             f"audio.cpp exited with code {proc.returncode}: "
@@ -554,10 +582,7 @@ def run_qwen3_asr(cli, gguf, *, audio_wav, language=None,
                     )
     finally:
         if proc.poll() is None:
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            _terminate(proc)
     if proc.returncode != 0:
         raise RuntimeError(
             f"audio.cpp exited with code {proc.returncode}: "
@@ -648,10 +673,7 @@ def run_qwen3_align(cli, gguf, *, audio_wav, text, language,
                     )
     finally:
         if proc.poll() is None:
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            _terminate(proc)
     if proc.returncode != 0:
         raise RuntimeError(
             f"audio.cpp exited with code {proc.returncode}: "
@@ -743,10 +765,7 @@ def run_bs_roformer(cli, gguf, *, audio_wav, weight_type="native",
                     )
     finally:
         if proc.poll() is None:
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            _terminate(proc)
     if proc.returncode != 0:
         raise RuntimeError(
             f"audio.cpp exited with code {proc.returncode}: "
@@ -1012,10 +1031,7 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
                     )
     finally:
         if proc.poll() is None:
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            _terminate(proc)
     if proc.returncode != 0:
         raise RuntimeError(
             f"audio.cpp exited with code {proc.returncode}: "

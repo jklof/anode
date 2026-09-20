@@ -119,6 +119,8 @@ class _StubProc:
         self._code = code
         self._text = metrics_text
         self.terminated = False
+        self.wait_calls = 0
+        self.kill_calls = 0
 
     def communicate(self, timeout=None):
         if self._code == 0 and self._out is not None:
@@ -128,6 +130,13 @@ class _StubProc:
 
     def terminate(self):
         self.terminated = True
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        return self._code
+
+    def kill(self):
+        self.kill_calls += 1
 
     def poll(self):
         return None

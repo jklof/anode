@@ -140,6 +140,9 @@ class _StubProc:
         self._skip_vocals = skip_vocals
         self._skip_instrumental = skip_instrumental
         self.terminated = False
+        self.wait_calls = 0
+        self.kill_calls = 0
+        self._reaped = False
 
     def _out_dir(self):
         if "--out-dir" in self.argv:
@@ -160,10 +163,20 @@ class _StubProc:
     def terminate(self):
         self.terminated = True
 
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        self._reaped = True
+        return self._code
+
+    def kill(self):
+        self.kill_calls += 1
+        self._reaped = True
+
     def poll(self):
-        # A live process: the runner only skips terminate() after the real
-        # communicate() has reaped an exit code.
-        return None
+        # A live process until reaped via wait(): communicate() leaves the
+        # child "live" so the runner's finally block exercises _terminate();
+        # wait() reaps it (poll() is no longer None — no survivor).
+        return self._code if self._reaped else None
 
     @property
     def returncode(self):
@@ -249,6 +262,38 @@ def test_run_sep_cancel_terminates(tmp_path, monkeypatch):
         run_bs_roformer(str(cli), str(gguf), audio_wav=str(audio),
                         out_dir=str(out_dir), cancel_event=cancel)
     assert seen["proc"].terminated
+    # F-02: the child must be reaped, not just signalled — no survivor.
+    assert seen["proc"].wait_calls >= 1
+    assert seen["proc"].poll() is not None
+
+
+def test_terminate_reaps_child():
+    proc = _StubProc(["cli"], code=0)
+    assert proc.poll() is None
+    backend._terminate(proc)
+    assert proc.terminated
+    assert proc.wait_calls == 1
+    assert proc.kill_calls == 0
+    assert proc.poll() is not None
+
+
+def test_terminate_escalates_to_kill_on_timeout():
+    import subprocess
+
+    class _HangingProc(_StubProc):
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired(cmd="cli", timeout=timeout)
+            self._reaped = True
+            return self._code
+
+    proc = _HangingProc(["cli"], code=0)
+    backend._terminate(proc)
+    assert proc.terminated
+    assert proc.wait_calls == 2
+    assert proc.kill_calls == 1
+    assert proc.poll() is not None
 
 
 def test_run_sep_missing_inputs(tmp_path):
