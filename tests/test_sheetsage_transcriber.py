@@ -394,6 +394,35 @@ def test_viewer_empty_score_clears(qapp):
     assert widget.score_browser.toPlainText() == ""
 
 
+def test_viewer_section_click_finds_no_space_header(qapp):
+    widget = _live().SheetSageWidget(_StubProxy())
+    abc = "X:1\nK:C\n%intro\nC D E F|G4 z2|\n"
+    widget.on_telemetry({"status": "Ready", "audio": "s.abc",
+                         "score_text": abc})
+    assert [widget.section_list.item(i).text() for i in
+            range(widget.section_list.count())] == ["intro"]
+    widget._on_section_clicked(widget.section_list.item(0))
+    cursor = widget.score_browser.textCursor()
+    assert not cursor.isNull()
+    assert "%intro" in cursor.block().text()
+
+
+def test_viewer_empty_section_click_is_safe_noop(qapp):
+    from PySide6.QtWidgets import QListWidgetItem
+    widget = _live().SheetSageWidget(_StubProxy())
+    abc = "X:1\nK:C\n%intro\nC D E F|G4 z2|\n"
+    widget.on_telemetry({"status": "Ready", "audio": "s.abc",
+                         "score_text": abc})
+    cursor = widget.score_browser.textCursor()
+    cursor.setPosition(0)
+    widget.score_browser.setTextCursor(cursor)
+    before = widget.score_browser.textCursor().position()
+    widget._on_section_clicked(QListWidgetItem("—"))
+    widget._on_section_clicked(QListWidgetItem(""))
+    after = widget.score_browser.textCursor().position()
+    assert after == before
+
+
 def _wire_audio_uri(node, uri):
     """Connect the node's audio_uri input to a scratch URI output."""
     from base import OutputSlot

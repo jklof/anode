@@ -294,6 +294,36 @@ def test_abc_widget_sections_and_load_button(qapp, registry):
     assert names == ["Solo"]
 
 
+def test_abc_widget_section_click_finds_no_space_header(qapp, registry):
+    import sys
+    node = registry["ABCNote"]()
+    proxy = _StubProxy(_widget_params(node.params["abc"].value))
+    widget = sys.modules["text_notes"].ABCNoteWidget(proxy)
+    widget.editor.setPlainText("X:1\nK:C\n%intro\nC D E|\n")
+    names = [widget.section_list.item(i).text() for i in range(widget.section_list.count())]
+    assert names == ["intro"]
+    widget._on_section_clicked(widget.section_list.item(0))
+    cursor = widget.editor.textCursor()
+    assert not cursor.isNull()
+    assert "%intro" in cursor.block().text()
+
+
+def test_abc_widget_empty_section_click_is_safe_noop(qapp, registry):
+    import sys
+    from PySide6.QtWidgets import QListWidgetItem
+    node = registry["ABCNote"]()
+    proxy = _StubProxy(_widget_params(node.params["abc"].value))
+    widget = sys.modules["text_notes"].ABCNoteWidget(proxy)
+    widget.editor.setPlainText("X:1\nK:C\n%intro\nC D E|\n")
+    cursor = widget.editor.textCursor()
+    cursor.setPosition(0)
+    widget.editor.setTextCursor(cursor)
+    before = widget.editor.textCursor().position()
+    widget._on_section_clicked(QListWidgetItem("—"))
+    widget._on_section_clicked(QListWidgetItem(""))
+    assert widget.editor.textCursor().position() == before
+
+
 def _snapshot_for(node):
     return {
         "id": node.id, "name": node.name, "type": node.__class__.__name__,

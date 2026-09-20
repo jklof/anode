@@ -626,9 +626,20 @@ if GUI_AVAILABLE:
             self.proxy.set_parameter(self.TEXT_PARAM, self.editor.toPlainText())
 
         def _on_section_clicked(self, item):
+            """Move the editor cursor to the clicked section's % line.
+
+            Tolerant of ``%name`` (no space) headers: tries ``"% " + name``
+            first, then ``"%" + name``. The "—" empty-section placeholder
+            (or an empty name) is a safe no-op — there is no header to find.
+            """
             if self.section_list is None:
                 return
-            cursor = self.editor.document().find(f"% {item.text()}")
+            name = item.text()
+            if not name or name == "—":
+                return
+            cursor = self.editor.document().find(f"% {name}")
+            if cursor.isNull():
+                cursor = self.editor.document().find(f"%{name}")
             if not cursor.isNull():
                 self.editor.setTextCursor(cursor)
                 self.editor.ensureCursorVisible()

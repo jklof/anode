@@ -99,10 +99,20 @@ class OfflineJobWidget(QWidget):
             layout.addWidget(self.score_browser)
 
     def _on_section_clicked(self, item):
-        """Scroll the browser to the clicked section's % line."""
+        """Scroll the browser to the clicked section's % line.
+
+        Tolerant of ``%name`` (no space) headers: tries ``"% " + name``
+        first, then ``"%" + name``. The "—" empty-section placeholder
+        (or an empty name) is a safe no-op — there is no header to find.
+        """
         if not self.SHOW_SCORE:
             return
-        cursor = self.score_browser.document().find(f"% {item.text()}")
+        name = item.text()
+        if not name or name == "—":
+            return
+        cursor = self.score_browser.document().find(f"% {name}")
+        if cursor.isNull():
+            cursor = self.score_browser.document().find(f"%{name}")
         if not cursor.isNull():
             self.score_browser.setTextCursor(cursor)
             self.score_browser.ensureCursorVisible()
