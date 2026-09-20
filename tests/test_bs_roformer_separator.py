@@ -615,6 +615,52 @@ def test_build_fetch_payload_lists_missing(node_cls, tmp_path, monkeypatch):
     assert payload["models"] == []
 
 
+def test_build_fetch_payload_non_win32_manual_cli_fetches_models(
+        node_cls, tmp_path, monkeypatch):
+    """F-03: off win32 with a manually installed CLI, Download must still
+    fetch GGUF weights instead of aborting the whole payload."""
+    import sys
+
+    import audiocpp_backend
+
+    class StubRuntime:
+        def __init__(self, *a, **k):
+            self.root = tmp_path / "tools" / "audiocpp"
+            self.bin_dir = self.root / "bin"
+            self.cli = self.bin_dir / "audiocpp_cli"
+
+        def check_installed(self):
+            return True, []
+
+    monkeypatch.setattr(audiocpp_backend, "AudioCppRuntime", StubRuntime)
+    # Simulate Linux/macOS: runtime_fetch_specs raises RuntimeError there.
+    monkeypatch.setattr(sys, "platform", "linux")
+    # Manual CLI install present.
+    (tmp_path / "tools" / "audiocpp" / "bin").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "tools" / "audiocpp" / "bin" / "audiocpp_cli").write_text("x")
+    node = make_node(node_cls)
+    node.params["model_dir"].set(str(tmp_path / "models" / "BS-RoFormer-ep368-GGUF"))
+    node.params["model_dir"].sync()
+    payload = node._build_fetch_payload()  # must not raise
+    assert payload["runtime"] == []
+    assert len(payload["models"]) == 1
+    # Fallback keeps the same staging/bin_dir layout keys valid.
+    assert payload["staging"].endswith("_dl")
+    assert payload["bin_dir"].endswith("bin")
+    assert "manual install" in payload.get("runtime_note", "")
+    # The download status line surfaces the hint instead of a hard error.
+    node._refresh_ui = lambda: None
+    submitted = {}
+    node.submit_job = lambda tag, fn, p: submitted.setdefault("payload", p)
+    _attach_engine(node)
+    node.params["download"].set(True)
+    node.params["download"].sync()
+    node.on_ui_param_change("download")
+    assert node._status == "Downloading"
+    assert "manual install" in node._status_detail
+    assert submitted["payload"]["runtime"] == []
+
+
 # ----------------------------------------------------------------------
 # trigger_in (rising edge stages a separation, like the transcribers)
 # ----------------------------------------------------------------------

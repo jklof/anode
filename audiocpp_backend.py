@@ -1234,6 +1234,8 @@ class AudioCppJob(Node):
             self.error_msg = None
             self._status = "Downloading"
             self._status_detail = "Starting download…"
+            if payload.get("runtime_note"):
+                self._status_detail += f" ({payload['runtime_note']})"
             self.submit_job("fetch", self._fetch_nrt, payload)
             self._refresh_ui()
 
@@ -1253,10 +1255,17 @@ class AudioCppJob(Node):
         """Plain-data fetch plan for the NRT worker. Raises ValueError."""
         runtime = AudioCppRuntime()
         model_dir = self._resolve_model_dir()
+        runtime_note = ""
         try:
             runtime_specs, staging = runtime_fetch_specs(runtime.root)
-        except RuntimeError as e:
-            raise ValueError(str(e))
+        except RuntimeError:
+            # No pinned runtime for this platform (Linux/macOS): a manually
+            # installed bin/audiocpp_cli is still usable, so fall back to an
+            # empty runtime spec list (same staging/bin_dir layout) and let
+            # the model specs flow normally instead of aborting the payload.
+            runtime_specs = []
+            staging = Path(runtime.root) / "_dl"
+            runtime_note = "runtime: manual install expected"
         ok, _missing = runtime.check_installed() if hasattr(runtime, "check_installed") else (runtime.cli.exists(), [])
         return {
             "runtime": [self._spec_to_dict(s)
@@ -1266,6 +1275,7 @@ class AudioCppJob(Node):
             "bin_dir": str(runtime.bin_dir),
             "models": [self._spec_to_dict(s)
                        for s in missing_specs(self._model_fetch_specs(model_dir))],
+            "runtime_note": runtime_note,
         }
 
     def _fetch_nrt(self, cancel_event, payload):
