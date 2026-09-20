@@ -394,6 +394,7 @@ def test_resize_command_and_save_json_roundtrip(registry):
 # ----------------------------------------------------------------------
 def test_file_source_registration(registry):
     assert "_FileSourceBase" not in registry
+    assert "ABCFileSource" not in registry
     node = registry["TextFileSource"]()
     assert node.is_abstract is False
     assert node.is_offline is True

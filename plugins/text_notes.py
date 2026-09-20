@@ -27,13 +27,13 @@ raises) in the worker and shows sections in the widget's section list (parsed
 locally in the UI for instant feedback; the engine telemetry carries the
 note/section/beat summary and any error).
 
-TextFileSource / ABCFileSource — minimal URI sources: a file picker whose
-selected path is published directly on the URI output (no reading, no worker,
-no kept copy). TextFileSource is the generic file node (any file kind —
-lyrics, audio, …) for handing an existing file to a consumer without an
-editable note in the middle; ABCFileSource is its ABC-filtered sibling.
-The TextFileSource type name and its "text" output are kept for saved-patch
-compatibility (patches wire that output into any uri input).
+TextFileSource — minimal URI source: a file picker whose selected path is
+published directly on the URI output (no reading, no worker, no kept copy).
+It is the generic file node (any file kind — lyrics, audio, …) for handing
+an existing file to a consumer without an editable note in the middle.
+It publishes on the "file" URI output (plus an identical "text" alias slot
+kept for saved-patch compatibility; patches wire that output into any uri
+input).
 """
 
 import hashlib
