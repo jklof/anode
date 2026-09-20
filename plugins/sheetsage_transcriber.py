@@ -144,7 +144,7 @@ class SheetSage2Transcriber(AudioCppJob):
 
         self._abc_text = None
         self._abc_path = ""
-        self._done_pulse = False  # emitted as a one-block pulse on done
+        self._pulse = False  # emitted as a one-block pulse on done
         self._last_trig = 0.0
         self._status = "Idle"
         self._status_detail = "No transcription yet"
@@ -152,25 +152,7 @@ class SheetSage2Transcriber(AudioCppJob):
     # ------------------------------------------------------------------
     # engine/control thread
     # ------------------------------------------------------------------
-    def start(self):
-        self._done_pulse = False
-        self._last_trig = 0.0
-
-    def process(self):
-        """Emit the one-block done pulse plus trigger edge detect (both
-        allocation-free; no file I/O, no param writes here)."""
-        buf = self.done.buffer
-        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
-        if self._done_pulse:
-            self._done_pulse = False
-            buf.fill_(1.0)
-        trig = self.inputs["trigger_in"].get_tensor()[0]
-        t_max = float(trig.max().item())
-        if self._last_trig <= 0.0 and t_max > 0.0:
-            self._request_transcribe()
-        self._last_trig = float(trig[-1].item())
-
-    def _request_transcribe(self):
+    def _request_job(self):
         """Ask the engine thread to stage a transcription (one-shot per edge).
 
         The audio thread must never build the job spec (file existence
@@ -294,7 +276,7 @@ class SheetSage2Transcriber(AudioCppJob):
             self.outputs["score"].uri = self._abc_path
             melody_path = result.get("melody_path") or ""
             self.outputs["melody"].uri = melody_path
-            self._done_pulse = True
+            self._pulse = True
             self.error_msg = None
             sections = result.get("sections", [])
             self._status = "Ready"

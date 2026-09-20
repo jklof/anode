@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from base import Node
+from base import Node, TriggerPulseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ class LyricFitterWidget(QWidget):
                 widget.update_from_backend(params[key])
 
 
-class LyricFitter(Node):
+class LyricFitter(TriggerPulseMixin, Node):
     category = "Offline"
     label = "Lyric Fitter"
     description = (
@@ -153,7 +153,7 @@ class LyricFitter(Node):
         self.add_string_param("last_fit", "",
                               help="Path of the last fitted lyrics; re-linked on patch load.")
 
-        self._done_pulse = False  # emitted as a one-block pulse on done
+        self._pulse = False  # emitted as a one-block pulse on done
         self._last_trig = 0.0
         self._status = "Idle"
         self._status_detail = "No fit yet"
@@ -162,25 +162,7 @@ class LyricFitter(Node):
     # ------------------------------------------------------------------
     # engine/control thread
     # ------------------------------------------------------------------
-    def start(self):
-        self._done_pulse = False
-        self._last_trig = 0.0
-
-    def process(self):
-        """Emit the one-block done pulse; a trigger rising edge stages a
-        background fit. Otherwise nothing per block."""
-        buf = self.done.buffer
-        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
-        if self._done_pulse:
-            self._done_pulse = False
-            buf.fill_(1.0)
-        trig = self.inputs["trigger_in"].get_tensor()[0]
-        t_max = float(trig.max().item())
-        if self._last_trig <= 0.0 and t_max > 0.0:
-            self._request_fit()
-        self._last_trig = float(trig[-1].item())
-
-    def _request_fit(self):
+    def _request_job(self):
         """Ask the engine thread to stage a fit (one-shot per edge).
 
         The audio thread must never build the job spec (file existence
@@ -335,7 +317,7 @@ class LyricFitter(Node):
             self._fail(f"Fit failed: {result}")
             return
         self.outputs["lyrics"].uri = result["path"]
-        self._done_pulse = True
+        self._pulse = True
         self.error_msg = None
         self._report = result.get("report", "")
         self._status = "Ready"

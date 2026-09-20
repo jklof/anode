@@ -15,11 +15,7 @@
 #include "NAM/dsp.h"
 #include "NAM/get_dsp.h"
 
-#ifdef _WIN32
-#define EXPORT extern "C" __declspec(dllexport)
-#else
-#define EXPORT extern "C"
-#endif
+#include "anode_export.h"
 
 #ifdef NAM_SAMPLE_FLOAT
     #define NAM_SAMPLE float

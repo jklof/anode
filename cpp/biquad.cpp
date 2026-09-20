@@ -4,11 +4,7 @@
 #include <new>
 #include <cstddef>
 
-#if defined(_WIN32)
-    #define EXPORT extern "C" __declspec(dllexport)
-#else
-    #define EXPORT extern "C"
-#endif
+#include "anode_export.h"
 
 // ANode Biquad Filter (IIR) — Robert Bristow-Johnson Audio EQ Cookbook
 // topologies, Direct Form II Transposed, double-precision state.

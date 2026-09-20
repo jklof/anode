@@ -129,7 +129,7 @@ class BSRoFormerSeparator(AudioCppJob):
 
         self._vocals_path = ""
         self._instrumental_path = ""
-        self._done_pulse = False  # emitted as a one-block pulse on done
+        self._pulse = False  # emitted as a one-block pulse on done
         self._last_trig = 0.0
         self._status = "Idle"
         self._status_detail = "No separation yet"
@@ -137,25 +137,7 @@ class BSRoFormerSeparator(AudioCppJob):
     # ------------------------------------------------------------------
     # engine/control thread
     # ------------------------------------------------------------------
-    def start(self):
-        self._done_pulse = False
-        self._last_trig = 0.0
-
-    def process(self):
-        """Emit the one-block done pulse plus trigger edge detect (both
-        allocation-free; no file I/O, no param writes here)."""
-        buf = self.done.buffer
-        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
-        if self._done_pulse:
-            self._done_pulse = False
-            buf.fill_(1.0)
-        trig = self.inputs["trigger_in"].get_tensor()[0]
-        t_max = float(trig.max().item())
-        if self._last_trig <= 0.0 and t_max > 0.0:
-            self._request_separate()
-        self._last_trig = float(trig[-1].item())
-
-    def _request_separate(self):
+    def _request_job(self):
         """Ask the engine thread to stage a separation (one-shot per edge).
 
         The audio thread must never build the job spec (file existence
@@ -277,7 +259,7 @@ class BSRoFormerSeparator(AudioCppJob):
             self.outputs["vocals"].uri = self._vocals_path
             # Missing instrumental is tolerated, not an error: publish empty.
             self.outputs["instrumental"].uri = self._instrumental_path
-            self._done_pulse = True
+            self._pulse = True
             self.error_msg = None
             stems = "vocals+instrumental" if self._instrumental_path else "vocals only"
             self._status = "Ready"

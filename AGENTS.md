@@ -209,15 +209,9 @@ Prefer constructing replacement native state off the audio thread and swapping o
 
 Native `process()` functions must receive correctly sized CPU-resident contiguous buffers.
 
-Every native DSP translation unit must define the standard export macro and prefix all C-ABI functions with it:
-
-```cpp
-#if defined(_WIN32)
-    #define EXPORT extern "C" __declspec(dllexport)
-#else
-    #define EXPORT extern "C"
-#endif
-```
+Every native DSP translation unit must `#include "anode_export.h"` (the shared
+standard export macro, `cpp/anode_export.h`) and prefix all C-ABI functions
+with `EXPORT`:
 
 All native DSP classes must implement and export `reset(void* handle)` (clearing delay lines, envelopes, and internal state) so transport restarts cannot leak stale audio. `FFINode.start()` calls it via `lib.reset()` when available.
 

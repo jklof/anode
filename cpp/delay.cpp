@@ -4,11 +4,7 @@
 #include <new>
 #include <cstddef>
 
-#if defined(_WIN32)
-    #define EXPORT extern "C" __declspec(dllexport)
-#else
-    #define EXPORT extern "C"
-#endif
+#include "anode_export.h"
 
 // A reasonable maximum delay buffer (e.g., 5 seconds at 48k)
 // This prevents reallocation during runtime which causes audio glitches.

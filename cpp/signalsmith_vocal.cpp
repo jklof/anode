@@ -31,11 +31,7 @@
 
 #include "signalsmith-stretch.h"
 
-#if defined(_WIN32)
-    #define EXPORT extern "C" __declspec(dllexport)
-#else
-    #define EXPORT extern "C"
-#endif
+#include "anode_export.h"
 
 namespace {
 

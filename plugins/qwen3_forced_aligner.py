@@ -207,7 +207,7 @@ class Qwen3ForcedAligner(AudioCppJob):
         self._words_text = None
         self._words_path = ""
         self._word_count = 0
-        self._done_pulse = False  # emitted as a one-block pulse on done
+        self._pulse = False  # emitted as a one-block pulse on done
         self._last_trig = 0.0
         self._status = "Idle"
         self._status_detail = "No alignment yet"
@@ -215,25 +215,7 @@ class Qwen3ForcedAligner(AudioCppJob):
     # ------------------------------------------------------------------
     # engine/control thread
     # ------------------------------------------------------------------
-    def start(self):
-        self._done_pulse = False
-        self._last_trig = 0.0
-
-    def process(self):
-        """Emit the one-block done pulse plus trigger edge detect (both
-        allocation-free; no file I/O, no param writes here)."""
-        buf = self.done.buffer
-        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
-        if self._done_pulse:
-            self._done_pulse = False
-            buf.fill_(1.0)
-        trig = self.inputs["trigger_in"].get_tensor()[0]
-        t_max = float(trig.max().item())
-        if self._last_trig <= 0.0 and t_max > 0.0:
-            self._request_align()
-        self._last_trig = float(trig[-1].item())
-
-    def _request_align(self):
+    def _request_job(self):
         """Ask the engine thread to stage an alignment (one-shot per edge).
 
         The audio thread must never build the job spec (file existence
@@ -387,7 +369,7 @@ class Qwen3ForcedAligner(AudioCppJob):
                 self._fail("Worker returned empty words.")
                 return
             self.outputs["words"].uri = self._words_path
-            self._done_pulse = True
+            self._pulse = True
             self.error_msg = None
             self._status = "Ready"
             self._status_detail = (

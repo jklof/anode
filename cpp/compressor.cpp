@@ -5,11 +5,7 @@
 #include <new>
 #include <cstddef>
 
-#if defined(_WIN32)
-    #define EXPORT extern "C" __declspec(dllexport)
-#else
-    #define EXPORT extern "C"
-#endif
+#include "anode_export.h"
 
 constexpr int SIDECHAIN_DOWNSAMPLE_FACTOR = 16;
 constexpr float EPSILON = 1e-9f;

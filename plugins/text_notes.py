@@ -39,7 +39,7 @@ import os
 import re
 from pathlib import Path
 
-from base import Node
+from base import Node, TriggerPulseMixin
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +108,7 @@ if GUI_AVAILABLE:
                     self.setFormat(start, end - start, fmt)
 
 
-class _NoteNodeBase(Node):
+class _NoteNodeBase(TriggerPulseMixin, Node):
     """Shared engine logic for TextNote / ABCNote. Subclasses set:
 
     TEXT_PARAM  — name of the multiline string param ("text" / "abc")
@@ -150,7 +150,7 @@ class _NoteNodeBase(Node):
         self.add_string_param("last_path", "",
                               help="Path of the last published file; re-linked on patch load.")
 
-        self._done_pulse = False
+        self._pulse = False
         self._last_trig = 0.0
         self._io_epoch = 0
         self._status = "Idle"
@@ -159,25 +159,7 @@ class _NoteNodeBase(Node):
     # ------------------------------------------------------------------
     # engine/control thread
     # ------------------------------------------------------------------
-    def start(self):
-        self._done_pulse = False
-        self._last_trig = 0.0
-
-    def process(self):
-        """Emit the one-block done pulse; a trigger rising edge stages NRT
-        work via the engine command queue (never I/O here)."""
-        buf = self.done.buffer
-        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
-        if self._done_pulse:
-            self._done_pulse = False
-            buf.fill_(1.0)
-        trig = self.inputs["trigger_in"].get_tensor()[0]
-        t_max = float(trig.max().item())
-        if self._last_trig <= 0.0 and t_max > 0.0:
-            self._request_refresh()
-        self._last_trig = float(trig[-1].item())
-
-    def _request_refresh(self):
+    def _request_job(self):
         graph = getattr(self, "graph", None)
         engine = getattr(graph, "engine", None) if graph is not None else None
         if engine is None:
@@ -298,7 +280,7 @@ class _NoteNodeBase(Node):
             self.params[self.TEXT_PARAM].set(result.get("text", ""))
             self.params[self.TEXT_PARAM].sync()
         self.outputs[self.URI_OUT].uri = result["path"]
-        self._done_pulse = True
+        self._pulse = True
         self.error_msg = None
         self._status = "Ready"
         self._status_detail = result.get("summary") or Path(result["path"]).name
@@ -397,7 +379,7 @@ class ABCNote(_NoteNodeBase):
         return f"{len(score.notes)} notes, {score.total_beats:.0f} beats @ {score.bpm:g} BPM{sec}"
 
 
-class FileSource(Node):
+class FileSource(TriggerPulseMixin, Node):
     """Generic file -> URI publisher: the picked path is the payload.
 
     Ports: trigger_in (audio) re-publishes on a rising edge; file (uri out)
@@ -430,29 +412,16 @@ class FileSource(Node):
         self.add_bool_param("refresh", False,
                             help="Transient trigger: re-publish the selected file, then resets itself.")
 
-        self._done_pulse = False
+        self._pulse = False
         self._last_trig = 0.0
         self._status = "Idle"
         self._status_detail = "No file selected"
 
-    def start(self):
-        self._done_pulse = False
-        self._last_trig = 0.0
-
-    def process(self):
-        buf = self.done.buffer
-        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
-        if self._done_pulse:
-            self._done_pulse = False
-            buf.fill_(1.0)
-        trig = self.inputs["trigger_in"].get_tensor()[0]
-        t_max = float(trig.max().item())
-        if self._last_trig <= 0.0 and t_max > 0.0:
-            graph = getattr(self, "graph", None)
-            engine = getattr(graph, "engine", None) if graph is not None else None
-            if engine is not None:
-                engine.push_command(("param", self.id, "refresh", True))
-        self._last_trig = float(trig[-1].item())
+    def _request_job(self):
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        if engine is not None:
+            engine.push_command(("param", self.id, "refresh", True))
 
     def _publish(self, pulse=True):
         """Install the committed file path on the URI output. Synchronous —
@@ -468,7 +437,7 @@ class FileSource(Node):
             return
         self.outputs["file"].uri = path
         if pulse:
-            self._done_pulse = True
+            self._pulse = True
         self.error_msg = None
         if Path(path).exists():
             self._status = "Ready"

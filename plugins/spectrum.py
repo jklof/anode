@@ -20,6 +20,11 @@ import torch
 from base import Node, BLOCK_SIZE, SAMPLE_RATE, CHANNELS, DTYPE, TelemetryRingBuffer
 
 try:
+    from spectral_core import SlidingLogSTFT
+except ImportError:  # pragma: no cover - direct package import path
+    from plugins.spectral_core import SlidingLogSTFT
+
+try:
     from PySide6.QtWidgets import QWidget, QVBoxLayout
     from PySide6.QtCore import Qt, QTimer, QRectF
     from PySide6.QtGui import QPainter, QColor, QPen, QPainterPath, QLinearGradient, QFont
@@ -64,74 +69,25 @@ class SpectrumDisplay(Node):
         # Pre-allocated SPSC telemetry buffer for instantaneous spectra (capacity 4 frames)
         self.monitor_queue = TelemetryRingBuffer(capacity=4, shape=(CHANNELS, DISPLAY_BINS), dtype=np.float32)
 
-        self._fft_bins = FFT_SIZE // 2 + 1
-
-        self._ring = torch.zeros((CHANNELS, FFT_SIZE), dtype=DTYPE)
-        self._write_pos = 0
-        self._unwrapped = torch.zeros((CHANNELS, FFT_SIZE), dtype=DTYPE)
-        self._window = torch.hann_window(FFT_SIZE, dtype=DTYPE)
-        self._windowed = torch.zeros((CHANNELS, FFT_SIZE), dtype=DTYPE)
-        self._mag = torch.zeros((CHANNELS, self._fft_bins), dtype=DTYPE)
-        self._db = torch.zeros((CHANNELS, self._fft_bins), dtype=DTYPE)
-        self._display_points = torch.zeros((CHANNELS, DISPLAY_BINS), dtype=DTYPE)
-
-        # Full-scale sine (amplitude 1.0) peaks near window_sum/2 -> 0 dBFS
-        self._db_ref = max(1e-9, float(self._window.sum()) / 2.0)
-
-        # Logarithmic frequency mapping: linear bin -> display bin indices
-        bin_freqs = torch.linspace(0, SAMPLE_RATE / 2.0, steps=self._fft_bins)
-        targets = torch.tensor(
-            np.logspace(np.log10(MIN_FREQ), np.log10(MAX_FREQ), num=DISPLAY_BINS),
-            dtype=DTYPE,
-        )
-        self._log_indices = torch.searchsorted(bin_freqs, targets).clamp_(0, self._fft_bins - 1)
+        self._stft = SlidingLogSTFT(num_bins=DISPLAY_BINS, fft_size=FFT_SIZE,
+                                    min_freq=MIN_FREQ, max_freq=MAX_FREQ)
 
     def start(self):
         # Transport restart must not smear the previous session's audio back in
-        self._ring.zero_()
-        self._write_pos = 0
+        self._stft.reset()
 
     def process(self):
         sig = self.inp.get_tensor()
-        in_ch = sig.shape[0]
 
         # 1. Bit-exact pass-through. Mono broadcasts to both channels.
         self.out.buffer.copy_(sig)
 
-        # 2. Ring write. Safe slice: FFT_SIZE % BLOCK_SIZE == 0.
-        wp = self._write_pos
-        seg = self._ring[:, wp:wp + BLOCK_SIZE]
-        if in_ch >= CHANNELS:
-            seg.copy_(sig[:CHANNELS])
-        else:
-            seg[0].copy_(sig[0])
-            seg[1].copy_(sig[0])
-        self._write_pos = (wp + BLOCK_SIZE) % FFT_SIZE
-
-        # 3. Unwrap circular -> chronological [oldest ... newest]
-        tail = FFT_SIZE - self._write_pos
-        self._unwrapped[:, :tail].copy_(self._ring[:, self._write_pos:])
-        self._unwrapped[:, tail:].copy_(self._ring[:, :self._write_pos])
-
-        # 4. Window + FFT (rfft has no out=; documented transient)
-        torch.mul(self._unwrapped, self._window, out=self._windowed)
-        spectrum = torch.fft.rfft(self._windowed, n=FFT_SIZE, dim=1)
-
-        # 5. Magnitude -> dBFS
-        torch.abs(spectrum, out=self._mag)
-        self._mag.div_(self._db_ref).clamp_(min=1e-9)
-        torch.log10(self._mag, out=self._db)
-        self._db.mul_(20.0)
-
-        # 6. Log-frequency resample + normalize into [0, 1]
-        torch.index_select(self._db, 1, self._log_indices, out=self._display_points)
-        min_db = self.params["min_db"].value
-        max_db = self.params["max_db"].value
-        db_range = max(1.0, max_db - min_db)
-        self._display_points.sub_(min_db).div_(db_range).clamp_(0.0, 1.0)
+        # 2-6. Sliding log-STFT (shared core) + normalize into [0, 1].
+        display_points = self._stft.analyze_block(
+            sig, self.params["min_db"].value, self.params["max_db"].value)
 
         # 7. Dispatch to UI via lock-free SPSC ring buffer (overflow is free)
-        self.monitor_queue.push(self._display_points.numpy())
+        self.monitor_queue.push(display_points.numpy())
 
 
 # ==============================================================================

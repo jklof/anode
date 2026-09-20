@@ -622,6 +622,43 @@ class Node:
                     self.params[k].sync()
 
 
+class TriggerPulseMixin:
+    """Shared trigger-edge + one-block pulse machine for offline/NRT nodes.
+
+    Subclasses declare ``PULSE_OUTPUT_NAME`` (``"done"`` by default,
+    ``"ready"`` for YuE2) and implement ``_request_job()`` (one
+    ``push_command(("param", ...))`` line). ``start()``/``process()`` are
+    fully owned here so the nine offline/note/fitter/source nodes cannot
+    drift apart again.
+
+    RT constraints: ``process()`` stays allocation-free — ``zero_`` /
+    ``fill_`` / ``get_tensor()[0].max().item()`` verbatim, no file I/O,
+    no param writes, no logging.
+    """
+
+    PULSE_OUTPUT_NAME = "done"
+
+    def start(self):
+        self._pulse = False
+        self._last_trig = 0.0
+
+    def process(self):
+        buf = self.outputs[self.PULSE_OUTPUT_NAME].buffer
+        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
+        if self._pulse:
+            self._pulse = False
+            buf.fill_(1.0)
+        trig = self.inputs["trigger_in"].get_tensor()[0]
+        t_max = float(trig.max().item())
+        if self._last_trig <= 0.0 and t_max > 0.0:
+            self._request_job()
+        self._last_trig = float(trig[-1].item())
+
+    def _request_job(self):
+        """Queue the per-node trigger command. Subclass hook."""
+        raise NotImplementedError
+
+
 def apply_bypass(node: "Node"):
     """Steady-state bypass for a disabled node (``enabled == False``).
 

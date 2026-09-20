@@ -162,6 +162,8 @@ class YuE2SongGenerator(AudioCppJob):
         "Weights are CC BY-NC 4.0 (non-commercial)."
     )
 
+    PULSE_OUTPUT_NAME = "ready"
+
     def __init__(self, name=""):
         super().__init__(name)
         self.add_input("trigger_in",
@@ -243,7 +245,7 @@ class YuE2SongGenerator(AudioCppJob):
         self.add_string_param("last_plan", "",
                               help="Path of the last generated ABC plan (plan.abc); re-linked on patch load.")
 
-        self._ready_pulse = False  # emitted as a one-block pulse on ready
+        self._pulse = False  # emitted as a one-block pulse on ready
         self._last_trig = 0.0
         self._gen_t0 = None  # monotonic start of the in-flight job (elapsed display)
         self._plan_text = None  # generated plan text for the score viewer
@@ -254,10 +256,6 @@ class YuE2SongGenerator(AudioCppJob):
     # ------------------------------------------------------------------
     # engine/control thread
     # ------------------------------------------------------------------
-    def start(self):
-        self._ready_pulse = False
-        self._last_trig = 0.0
-
     def _resolve_score(self):
         """Wired abc_uri wins over the abc_file param (both snapshot at
         Generate time). Raises ValueError with a clear message."""
@@ -552,7 +550,7 @@ class YuE2SongGenerator(AudioCppJob):
                 self._plan_text = None
                 self._plan_path = ""
                 plan = None
-            self._ready_pulse = True
+            self._pulse = True
             self.error_msg = None
             secs = audio.shape[1] / SAMPLE_RATE
             rtf = result["metrics"].get("rtf")
@@ -635,23 +633,7 @@ class YuE2SongGenerator(AudioCppJob):
                 "busy": self._busy_flag(),
                 "score_text": self._plan_text or ""}
 
-    # ------------------------------------------------------------------
-    # audio thread: one-block ready pulse + trigger edge detect (both
-    # allocation-free; no file I/O, no param writes here)
-    # ------------------------------------------------------------------
-    def process(self):
-        buf = self.ready.buffer
-        buf.zero_()  # anti-ghost: a stale pulse must never retrigger downstream
-        if self._ready_pulse:
-            self._ready_pulse = False
-            buf.fill_(1.0)
-        trig = self.inputs["trigger_in"].get_tensor()[0]
-        t_max = float(trig.max().item())
-        if self._last_trig <= 0.0 and t_max > 0.0:
-            self._request_generate()
-        self._last_trig = float(trig[-1].item())
-
-    def _request_generate(self):
+    def _request_job(self):
         """Ask the engine thread to stage a generation (one-shot per edge).
 
         The audio thread must never build the job spec (file existence

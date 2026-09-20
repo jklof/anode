@@ -4,11 +4,7 @@
 #include <new>
 #include <cstddef>
 
-#if defined(_WIN32)
-    #define EXPORT extern "C" __declspec(dllexport)
-#else
-    #define EXPORT extern "C"
-#endif
+#include "anode_export.h"
 
 // ANode Linear Phase EQ (FIR) — Hann-windowed sinc designs, overlap-save
 // block convolution. Odd tap count (Type I symmetric) => integer group delay.

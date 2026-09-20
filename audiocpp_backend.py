@@ -44,7 +44,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from base import Node
+from base import Node, TriggerPulseMixin
 from download_util import DownloadCancelled, DownloadSpec, fetch_all, format_bytes
 
 logger = logging.getLogger(__name__)
@@ -362,6 +362,51 @@ def _terminate(proc, timeout_s=_TERMINATE_WAIT_S):
         pass
 
 
+def run_audiocpp_subprocess(argv, *, cancel_event=None, timeout_s=3600,
+                            task_label="job", cancel_message="cancelled") -> str:
+    """Run one audio.cpp sidecar subprocess to completion. Blocking; NRT only.
+
+    Shared lifecycle for all ``run_*`` wrappers: launch, cooperative
+    cancellation polling, timeout supervision, reap-on-exit, and nonzero
+    exit reporting. Returns the combined stdout/stderr tail. Raises
+    :class:`GenerationCancelled` on cancellation, ``TimeoutError`` on
+    timeout, ``RuntimeError`` on launch failure or nonzero exit.
+    """
+    try:
+        proc = subprocess.Popen(
+            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, **_no_window_kwargs(),
+        )
+    except OSError as e:
+        raise RuntimeError(f"failed to launch audio.cpp: {e}")
+    try:
+        elapsed = 0.0
+        step = 0.5
+        output_tail = ""
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise GenerationCancelled(cancel_message)
+            try:
+                # May be retried after TimeoutExpired; returns full output.
+                output_tail, _ = proc.communicate(timeout=step)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed += step
+                if elapsed >= timeout_s:
+                    raise TimeoutError(
+                        f"{task_label} exceeded {timeout_s}s; terminating"
+                    )
+    finally:
+        if proc.poll() is None:
+            _terminate(proc)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"audio.cpp exited with code {proc.returncode}: "
+            f"{output_tail[-2000:].strip()}"
+        )
+    return output_tail
+
+
 def _build_sheetsage_argv(cli, model_dir, *, audio_wav, weight_type,
                           max_tokens, out_abc, backend="cuda"):
     """Pure argv builder (no process). Tested without a GPU."""
@@ -406,38 +451,11 @@ def run_sheetsage_transcribe(cli, model_dir, *, audio_wav, weight_type="native",
                                  out_abc=out_abc,
                                  backend=backend or default_backend())
     out_abc.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, **_no_window_kwargs(),
-        )
-    except OSError as e:
-        raise RuntimeError(f"failed to launch audio.cpp: {e}")
-    try:
-        elapsed = 0.0
-        step = 0.5
-        output_tail = ""
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                raise GenerationCancelled("transcription cancelled")
-            try:
-                # May be retried after TimeoutExpired; returns full output.
-                output_tail, _ = proc.communicate(timeout=step)
-                break
-            except subprocess.TimeoutExpired:
-                elapsed += step
-                if elapsed >= timeout_s:
-                    raise TimeoutError(
-                        f"SheetSage2 transcription exceeded {timeout_s}s; terminating"
-                    )
-    finally:
-        if proc.poll() is None:
-            _terminate(proc)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"audio.cpp exited with code {proc.returncode}: "
-            f"{output_tail[-2000:].strip()}"
-        )
+    output_tail = run_audiocpp_subprocess(
+        argv, cancel_event=cancel_event, timeout_s=timeout_s,
+        task_label="SheetSage2 transcription",
+        cancel_message="transcription cancelled",
+    )
     if not out_abc.exists():
         raise RuntimeError("audio.cpp reported success but wrote no ABC file")
     return {"abc": str(out_abc), "metrics": _parse_metrics(output_tail)}
@@ -556,38 +574,11 @@ def run_qwen3_asr(cli, gguf, *, audio_wav, language=None,
     out_txt.parent.mkdir(parents=True, exist_ok=True)
     if words_path is not None:
         words_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, **_no_window_kwargs(),
-        )
-    except OSError as e:
-        raise RuntimeError(f"failed to launch audio.cpp: {e}")
-    try:
-        elapsed = 0.0
-        step = 0.5
-        output_tail = ""
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                raise GenerationCancelled("transcription cancelled")
-            try:
-                # May be retried after TimeoutExpired; returns full output.
-                output_tail, _ = proc.communicate(timeout=step)
-                break
-            except subprocess.TimeoutExpired:
-                elapsed += step
-                if elapsed >= timeout_s:
-                    raise TimeoutError(
-                        f"Qwen3-ASR transcription exceeded {timeout_s}s; terminating"
-                    )
-    finally:
-        if proc.poll() is None:
-            _terminate(proc)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"audio.cpp exited with code {proc.returncode}: "
-            f"{output_tail[-2000:].strip()}"
-        )
+    output_tail = run_audiocpp_subprocess(
+        argv, cancel_event=cancel_event, timeout_s=timeout_s,
+        task_label="Qwen3-ASR transcription",
+        cancel_message="transcription cancelled",
+    )
     if not out_txt.exists():
         raise RuntimeError("audio.cpp reported success but wrote no transcript file")
     words = None
@@ -647,38 +638,11 @@ def run_qwen3_align(cli, gguf, *, audio_wav, text, language,
                                    backend=backend or default_backend(),
                                    clamp_timestamps=clamp_timestamps)
     out_words.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, **_no_window_kwargs(),
-        )
-    except OSError as e:
-        raise RuntimeError(f"failed to launch audio.cpp: {e}")
-    try:
-        elapsed = 0.0
-        step = 0.5
-        output_tail = ""
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                raise GenerationCancelled("alignment cancelled")
-            try:
-                # May be retried after TimeoutExpired; returns full output.
-                output_tail, _ = proc.communicate(timeout=step)
-                break
-            except subprocess.TimeoutExpired:
-                elapsed += step
-                if elapsed >= timeout_s:
-                    raise TimeoutError(
-                        f"Qwen3 forced alignment exceeded {timeout_s}s; terminating"
-                    )
-    finally:
-        if proc.poll() is None:
-            _terminate(proc)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"audio.cpp exited with code {proc.returncode}: "
-            f"{output_tail[-2000:].strip()}"
-        )
+    output_tail = run_audiocpp_subprocess(
+        argv, cancel_event=cancel_event, timeout_s=timeout_s,
+        task_label="Qwen3 forced alignment",
+        cancel_message="alignment cancelled",
+    )
     if not out_words.exists():
         raise RuntimeError("audio.cpp reported success but wrote no words file")
     return {"words": str(out_words), "metrics": _parse_metrics(output_tail)}
@@ -739,38 +703,11 @@ def run_bs_roformer(cli, gguf, *, audio_wav, weight_type="native",
                                    out_dir=out_dir,
                                    backend=backend or default_backend())
     out_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, **_no_window_kwargs(),
-        )
-    except OSError as e:
-        raise RuntimeError(f"failed to launch audio.cpp: {e}")
-    try:
-        elapsed = 0.0
-        step = 0.5
-        output_tail = ""
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                raise GenerationCancelled("separation cancelled")
-            try:
-                # May be retried after TimeoutExpired; returns full output.
-                output_tail, _ = proc.communicate(timeout=step)
-                break
-            except subprocess.TimeoutExpired:
-                elapsed += step
-                if elapsed >= timeout_s:
-                    raise TimeoutError(
-                        f"BS-RoFormer separation exceeded {timeout_s}s; terminating"
-                    )
-    finally:
-        if proc.poll() is None:
-            _terminate(proc)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"audio.cpp exited with code {proc.returncode}: "
-            f"{output_tail[-2000:].strip()}"
-        )
+    output_tail = run_audiocpp_subprocess(
+        argv, cancel_event=cancel_event, timeout_s=timeout_s,
+        task_label="BS-RoFormer separation",
+        cancel_message="separation cancelled",
+    )
     vocals = out_dir / "vocals.wav"
     if not vocals.exists():
         raise RuntimeError("audio.cpp reported success but wrote no vocals.wav")
@@ -1012,38 +949,11 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     if out_dir_path is not None:
         out_dir_path.mkdir(parents=True, exist_ok=True)
-    try:
-        proc = subprocess.Popen(
-            argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, **_no_window_kwargs(),
-        )
-    except OSError as e:
-        raise RuntimeError(f"failed to launch audio.cpp: {e}")
-    try:
-        elapsed = 0.0
-        step = 0.5
-        output_tail = ""
-        while True:
-            if cancel_event is not None and cancel_event.is_set():
-                raise GenerationCancelled("generation cancelled")
-            try:
-                # May be retried after TimeoutExpired; returns full output.
-                output_tail, _ = proc.communicate(timeout=step)
-                break
-            except subprocess.TimeoutExpired:
-                elapsed += step
-                if elapsed >= timeout_s:
-                    raise TimeoutError(
-                        f"YuE2 generation exceeded {timeout_s}s; terminating"
-                    )
-    finally:
-        if proc.poll() is None:
-            _terminate(proc)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"audio.cpp exited with code {proc.returncode}: "
-            f"{output_tail[-2000:].strip()}"
-        )
+    output_tail = run_audiocpp_subprocess(
+        argv, cancel_event=cancel_event, timeout_s=timeout_s,
+        task_label="YuE2 generation",
+        cancel_message="generation cancelled",
+    )
     if not out_wav.exists():
         raise RuntimeError("audio.cpp reported success but wrote no WAV file")
     score = None
@@ -1062,7 +972,7 @@ _FETCH_PROGRESS_PCT = 5.0
 _FETCH_PROGRESS_BYTES = 64 * 1024 * 1024
 
 
-class AudioCppJob(Node):
+class AudioCppJob(TriggerPulseMixin, Node):
     """Node base with generate/cancel plumbing for audio.cpp sidecar jobs.
 
     A new job cancels the previous one first: a superseded multi-minute
