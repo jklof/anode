@@ -684,9 +684,7 @@ def _build_bs_roformer_argv(cli, gguf, *, audio_wav, weight_type,
     ]
     if num_overlap != BS_ROFORMER_DEFAULT_NUM_OVERLAP:
         # Insert before --audio to keep session options grouped.
-        argv.insert(argv.index("--audio"),
-                    f"bs_roformer.num_overlap={num_overlap}")
-        argv.insert(argv.index("--audio"), "--session-option")
+        i = argv.index("--audio"); argv[i:i] = ["--session-option", f"bs_roformer.num_overlap={num_overlap}"]
     return argv
 
 

@@ -98,6 +98,10 @@ def test_argv_nondefault_overlap_emitted(tmp_path):
                                    num_overlap=1,
                                    out_dir=str(tmp_path / "stems"))
     assert "bs_roformer.num_overlap=1" in argv
+    i_val = argv.index("bs_roformer.num_overlap=1")
+    assert argv[i_val - 1] == "--session-option"
+    assert argv[i_val + 1] == "--audio"
+    assert argv[argv.index("--audio") + 1] == str(tmp_path / "in.wav")
 
 
 def test_argv_rejects_bad_inputs(tmp_path):
