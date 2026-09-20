@@ -435,6 +435,90 @@ def test_complete_pushes_telemetry_and_snapshot(registry, tmp_path, monkeypatch)
     assert msg["node_data"][node.id]["status"] == "Ready"
 
 
+def test_fail_pushes_telemetry_and_snapshot(registry, tmp_path):
+    """Engine-stopped fail paths (wired-file-missing, worker exceptions) must
+    push telemetry + snapshot now, not leave the widget showing stale status.
+    Follows the stub pattern of test_complete_pushes_telemetry_and_snapshot."""
+    import queue
+    from types import SimpleNamespace
+    node = registry["TextNote"]()
+    out_q = queue.SimpleQueue()
+    snapshots = []
+    node.graph = SimpleNamespace(
+        engine=SimpleNamespace(output_queue=out_q,
+                               _emit_snapshot=lambda: snapshots.append(True)))
+    # worker-exception path via on_nrt_complete(ok=False)
+    node.on_nrt_complete("io", False, "disk exploded")
+    assert snapshots == [True]
+    msg = out_q.get_nowait()
+    assert msg["type"] == "telemetry"
+    data = msg["node_data"][node.id]
+    assert data["status"] == "Error"
+    assert data["audio"] == "I/O failed: disk exploded"
+    assert data["busy"] is False
+    # direct _fail with no engine attached must not crash (guard handles it)
+    node.graph = None
+    node._fail("no engine here")
+    assert node._status == "Error"
+
+
+def test_note_busy_flag_tracks_in_flight_work(registry, monkeypatch):
+    """get_telemetry carries 'busy' (appended last): True while NRT work is
+    in flight (Publishing/Loading), False in terminal states."""
+    node = registry["TextNote"]()
+    # drive the real staging path: committed text stages NRT publish work
+    # (stub out the pool submit; the status transition is what matters)
+    monkeypatch.setattr(node, "submit_nrt", lambda fn, spec, tag=None: None)
+    node.params["text"].set("fresh words")
+    node.params["text"].sync()
+    node.on_ui_param_change("text")
+    assert node._status == "Publishing"
+    data = node.get_telemetry()
+    assert list(data) == ["status", "audio", "busy"]  # key order stable
+    assert data["busy"] is True
+    node._status = "Loading"
+    assert node.get_telemetry()["busy"] is True
+    for terminal in ("Ready", "Idle", "Error", "Warning"):
+        node._status = terminal
+        assert node.get_telemetry()["busy"] is False, terminal
+
+
+def test_file_source_publish_pushes_telemetry_with_busy(registry, tmp_path):
+    """Engine-stopped pick/publish must push telemetry + snapshot now (the
+    publish is synchronous, so no NRT traffic would ever deliver it).
+    Sources never have NRT in flight, so 'busy' is always present but False."""
+    import queue
+    from types import SimpleNamespace
+    node = registry["TextFileSource"]()
+    out_q = queue.SimpleQueue()
+    snapshots = []
+    node.graph = SimpleNamespace(
+        engine=SimpleNamespace(output_queue=out_q,
+                               _emit_snapshot=lambda: snapshots.append(True)))
+    f = tmp_path / "picked.txt"
+    f.write_text("picked", encoding="utf-8")
+    node.params["file"].set(str(f))
+    node.params["file"].sync()
+    node.on_ui_param_change("file")
+    assert snapshots == [True]
+    msg = out_q.get_nowait()
+    assert msg["type"] == "telemetry"
+    data = msg["node_data"][node.id]
+    assert data == {"status": "Ready", "audio": "picked.txt", "busy": False}
+    # missing file still pushes (Warning), and clearing pushes Idle
+    node.params["file"].set(str(tmp_path / "gone.txt"))
+    node.params["file"].sync()
+    node.on_ui_param_change("file")
+    data = out_q.get_nowait()["node_data"][node.id]
+    assert data["status"] == "Warning" and data["busy"] is False
+    node.params["file"].set("")
+    node.params["file"].sync()
+    node.on_ui_param_change("file")
+    data = out_q.get_nowait()["node_data"][node.id]
+    assert data == {"status": "Idle", "audio": "No file selected",
+                    "busy": False}
+
+
 def test_focused_editor_holds_then_applies_on_focus_out(qapp, registry):
     import sys
     from PySide6.QtCore import QEvent

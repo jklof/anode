@@ -238,6 +238,10 @@ class _NoteNodeBase(Node):
         self._status_detail = message
         self.error_msg = message
         logger.error(f"{self.__class__.__name__} {self.name}: {message}")
+        # Push now: fail paths (wired-file-missing, validation/worker
+        # errors) otherwise leave the widget showing stale status when the
+        # engine is stopped. No-engine-guarded inside _refresh_ui.
+        self._refresh_ui()
 
     # ------------------------------------------------------------------
     # NRT worker (file I/O only here, never on the audio thread)
@@ -341,7 +345,8 @@ class _NoteNodeBase(Node):
             self._status_detail = "Previous file is missing; Apply again"
 
     def get_telemetry(self) -> dict:
-        return {"status": self._status, "audio": self._status_detail}
+        return {"status": self._status, "audio": self._status_detail,
+                "busy": self._status in ("Publishing", "Loading")}
 
 
 class TextNote(_NoteNodeBase):
@@ -465,6 +470,7 @@ class _FileSourceBase(Node):
             self._status = "Idle"
             self._status_detail = "No file selected"
             self.error_msg = None
+            self._refresh_ui()
             return
         self.outputs[self.URI_OUT].uri = path
         if pulse:
@@ -476,6 +482,29 @@ class _FileSourceBase(Node):
         else:
             self._status = "Warning"
             self._status_detail = f"Missing: {path}"
+        # Push now: publishing is synchronous (no NRT traffic), so without
+        # this the widget would show stale status when the engine is stopped.
+        self._refresh_ui()
+
+    def _refresh_ui(self):
+        """Same pattern as LyricFitter._refresh_ui: push telemetry now plus a
+        snapshot refresh. Engine/control contexts only (param handlers here),
+        never from process(); no-engine-guarded."""
+        import queue
+        graph = getattr(self, "graph", None)
+        engine = getattr(graph, "engine", None) if graph is not None else None
+        if engine is None:
+            return
+        try:
+            data = self.get_telemetry()
+            if data:
+                engine.output_queue.put_nowait(
+                    {"type": "telemetry", "node_data": {self.id: data}})
+        except queue.Full:
+            pass
+        emit = getattr(engine, "_emit_snapshot", None)
+        if callable(emit):
+            emit()
 
     def on_ui_param_change(self, param_name: str):
         if param_name == "file":
@@ -502,7 +531,11 @@ class _FileSourceBase(Node):
             self._status_detail = "Previous file is missing; pick again" if path else "No file selected"
 
     def get_telemetry(self) -> dict:
-        return {"status": self._status, "audio": self._status_detail}
+        # Sources are synchronous (no NRT work in flight), so always idle —
+        # but the key is present so consumers can rely on it (missing key
+        # also reads as idle in NodeItem.propagate_telemetry).
+        return {"status": self._status, "audio": self._status_detail,
+                "busy": False}
 
 
 class TextFileSource(_FileSourceBase):
