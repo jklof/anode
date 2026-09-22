@@ -1567,3 +1567,280 @@ def test_request_json_records_new_options(node_cls, tmp_path):
     assert req["num_inference_steps"] == 12
     assert req["attention"] == "eager"
     assert req["out_format"] == "float32"
+
+
+# ----------------------------------------------------------------------
+# max_duration song-length cap (seconds -> semantic_max_tokens)
+# ----------------------------------------------------------------------
+def test_max_duration_conversion():
+    from audiocpp_backend import YUE2_FPS
+    assert YUE2_FPS == 25
+    assert max(1, round(30.0 * YUE2_FPS)) == 750
+    assert max(1, round(240.0 * YUE2_FPS)) == 6000
+    assert max(1, round(900.0 * YUE2_FPS)) == 22500
+    # NB: Python round() is banker's rounding: 120.5 s * 25 = 3012.5
+    # rounds to the even 3012, not 3013.
+    assert max(1, round(120.5 * YUE2_FPS)) == 3012
+
+
+def test_argv_semantic_options_emitted_and_omitted(tmp_path):
+    out = str(tmp_path / "o.wav")
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec())
+    assert not any("semantic_max_tokens" in a for a in argv)
+    assert not any("export_semantic" in a for a in argv)
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                            semantic_max_tokens=6000)
+    assert "--request-option" in argv
+    assert "semantic_max_tokens=6000" in argv
+    assert not any("export_semantic" in a for a in argv)
+    argv = _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                            export_semantic=True)
+    assert "export_semantic=true" in argv
+
+
+def test_argv_semantic_options_rejected(tmp_path):
+    out = str(tmp_path / "o.wav")
+    for bad in (0, -1, True, False, 3.5, "6000", None.__class__):
+        with pytest.raises(ValueError):
+            _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                             semantic_max_tokens=bad)
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         export_semantic="true")
+    with pytest.raises(ValueError):
+        _build_yue2_argv("cli", "m", out_wav=out, **_spec(),
+                         export_semantic=1)
+
+
+def test_read_semantic_info_tolerant(tmp_path):
+    import json
+    from audiocpp_backend import _read_semantic_info
+    assert _read_semantic_info(None) == {"frames": None, "truncated": None}
+    assert _read_semantic_info(tmp_path / "missing") == {
+        "frames": None, "truncated": None}
+    d = tmp_path / "ok"
+    d.mkdir()
+    (d / "semantic.json").write_text(
+        json.dumps({"frames": 6000, "truncated": True}), encoding="utf-8")
+    assert _read_semantic_info(d) == {"frames": 6000, "truncated": True}
+    d2 = tmp_path / "list"
+    d2.mkdir()
+    (d2 / "semantic.json").write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+    assert _read_semantic_info(d2) == {"frames": 3, "truncated": None}
+    d3 = tmp_path / "bad"
+    d3.mkdir()
+    (d3 / "semantic.json").write_text("{not json", encoding="utf-8")
+    assert _read_semantic_info(d3) == {"frames": None, "truncated": None}
+    d4 = tmp_path / "wrong-types"
+    d4.mkdir()
+    (d4 / "semantic.json").write_text(
+        json.dumps({"frames": "6000", "truncated": "yes"}), encoding="utf-8")
+    assert _read_semantic_info(d4) == {"frames": None, "truncated": None}
+
+
+def test_run_gen_returns_semantic_when_present(tmp_path, monkeypatch):
+    import json
+    import threading
+    out = tmp_path / "run" / "song.wav"
+    cli = tmp_path / "cli"
+    cli.write_text("x")
+    model = tmp_path / "models"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "m.gguf").write_text("x")
+    (model / "v.gguf").write_text("x")
+    seen = _patch_popen(monkeypatch)
+
+    def fake_popen_semantic(argv, **kwargs):
+        proc = _StubProc(argv, seen.get("out"), code=seen.get("code", 0),
+                         metrics_text=seen.get("text", ""))
+        if "--out-dir" in argv:
+            d = Path(argv[argv.index("--out-dir") + 1])
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "semantic.json").write_text(
+                json.dumps({"frames": 6000, "truncated": True}),
+                encoding="utf-8")
+        seen["proc"] = proc
+        return proc
+    monkeypatch.setattr(backend.subprocess, "Popen", fake_popen_semantic)
+    seen["out"] = str(out)
+    result = run_yue2_gen(str(cli), str(model), lyrics="la", style="pop",
+                          main_gguf="m.gguf", vae_gguf="v.gguf",
+                          out_wav=str(out), cancel_event=threading.Event(),
+                          out_dir=str(tmp_path / "run"),
+                          semantic_max_tokens=6000, export_semantic=True)
+    assert result["semantic"] == {"frames": 6000, "truncated": True}
+    assert "semantic_max_tokens=6000" in seen["proc"].argv
+    assert "export_semantic=true" in seen["proc"].argv
+
+
+def test_run_gen_semantic_missing_never_fails(tmp_path, monkeypatch):
+    import threading
+    out = tmp_path / "run" / "song.wav"
+    cli = tmp_path / "cli"
+    cli.write_text("x")
+    model = tmp_path / "models"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "m.gguf").write_text("x")
+    (model / "v.gguf").write_text("x")
+    seen = _patch_popen(monkeypatch)
+    seen["out"] = str(out)
+    result = run_yue2_gen(str(cli), str(model), lyrics="la", style="pop",
+                          main_gguf="m.gguf", vae_gguf="v.gguf",
+                          out_wav=str(out), cancel_event=threading.Event(),
+                          out_dir=str(tmp_path / "run"))
+    assert result["semantic"] == {"frames": None, "truncated": None}
+    assert Path(result["wav"]).exists()
+    # Unparseable payload degrades to None fields as well.
+    out2 = tmp_path / "run2" / "song.wav"
+    seen["out"] = str(out2)
+    orig = backend.subprocess.Popen
+
+    def fake_popen_bad(argv, **kwargs):
+        proc = _StubProc(argv, seen.get("out"), code=0, metrics_text="")
+        if "--out-dir" in argv:
+            d = Path(argv[argv.index("--out-dir") + 1])
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "semantic.json").write_text("{oops", encoding="utf-8")
+        seen["proc"] = proc
+        return proc
+    monkeypatch.setattr(backend.subprocess, "Popen", fake_popen_bad)
+    result = run_yue2_gen(str(cli), str(model), lyrics="la", style="pop",
+                          main_gguf="m.gguf", vae_gguf="v.gguf",
+                          out_wav=str(out2), cancel_event=threading.Event(),
+                          out_dir=str(tmp_path / "run2"))
+    assert result["semantic"] == {"frames": None, "truncated": None}
+    assert Path(result["wav"]).exists()
+
+
+def test_build_spec_max_duration_default_and_carried(node_cls, tmp_path,
+                                                    monkeypatch):
+    node = _spec_node(node_cls, tmp_path, monkeypatch)
+    spec = node._build_spec()
+    assert spec["max_duration"] == pytest.approx(240.0)
+    assert spec["semantic_max_tokens"] == 6000
+    node.params["max_duration"].set(120.0)
+    node.params["max_duration"].sync()
+    spec = node._build_spec()
+    assert spec["max_duration"] == pytest.approx(120.0)
+    assert spec["semantic_max_tokens"] == 3000
+
+
+def test_build_spec_max_duration_rejected(node_cls, tmp_path, monkeypatch):
+    node = _spec_node(node_cls, tmp_path, monkeypatch)
+    # NB: FloatParam.set() clamps to [30, 900], so UI-driven out-of-range
+    # values never reach _build_spec (0.0 -> 30.0, 900.1 -> 900.0,
+    # inf -> 900.0). NaN passes the clamp through and must raise here.
+    node.params["max_duration"].set(float("nan"))
+    node.params["max_duration"].sync()
+    with pytest.raises(ValueError, match="max_duration"):
+        node._build_spec()
+    node.params["max_duration"].set(240.0)
+    node.params["max_duration"].sync()
+    # _build_spec's own guard (defense in depth for corrupted state
+    # bypassing set(), e.g. direct .value injection).
+    for bad in (0.0, 29.9, 900.1, float("inf"), float("-inf")):
+        node.params["max_duration"].value = bad
+        with pytest.raises(ValueError, match="max_duration"):
+            node._build_spec()
+    node.params["max_duration"].value = 240.0
+    assert node._build_spec()["semantic_max_tokens"] == 6000
+
+
+def test_request_json_records_max_duration(node_cls, tmp_path):
+    import json
+    node = make_node(node_cls)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "song.wav").write_bytes(b"cli-bytes")
+    keep = tmp_path / "keep"
+    spec = _keep_spec(tmp_path, "wav")
+    spec.update({"max_duration": 240.0, "semantic_max_tokens": 6000})
+    node._keep_song(run_dir, keep, _keep_audio(), spec, {"rtf": 1.0},
+                    semantic={"frames": 6000, "truncated": True})
+    req = json.loads((keep / "request.json").read_text())
+    assert req["max_duration"] == pytest.approx(240.0)
+    assert req["semantic_max_tokens"] == 6000
+    assert req["semantic"] == {"frames": 6000, "truncated": True}
+
+
+def _complete_song_truncated(node, wav="x.wav", seconds=1.0,
+                             max_duration=240.0):
+    data = torch.linspace(0, 1, int(seconds * SAMPLE_RATE),
+                          dtype=torch.float32).unsqueeze(0).repeat(
+                              CHANNELS, 1).contiguous()
+    node.on_nrt_complete("gen", True, {
+        "audio": data, "wav": wav, "metrics": {"rtf": 2.0},
+        "seed": 1, "cot": "full",
+        "semantic": {"frames": 6000, "truncated": True},
+        "max_duration": max_duration, "semantic_max_tokens": 6000})
+    return data
+
+
+def test_complete_truncated_adds_cap_note(node_cls):
+    node = make_node(node_cls)
+    _complete_song_truncated(node, wav="x.wav", max_duration=240.0)
+    assert node.outputs["song"].uri == "x.wav"
+    assert node._status == "Ready"
+    assert "cut at 240s cap" in node._status_detail
+    assert "cut at" in node.get_telemetry()["audio"]
+    assert node.error_msg is None
+    node.process()  # pulse intact
+    assert torch.all(node.ready.buffer == 1.0)
+    node.process()
+    assert torch.all(node.ready.buffer == 0.0)
+
+
+def test_complete_not_truncated_unchanged(node_cls):
+    node = make_node(node_cls)
+    _complete_song(node, wav="y.wav")  # legacy result: no semantic keys
+    assert "cut at" not in node._status_detail
+    assert "cut at" not in node.get_telemetry()["audio"]
+    data = torch.linspace(0, 1, int(1.0 * SAMPLE_RATE),
+                          dtype=torch.float32).unsqueeze(0).repeat(
+                              CHANNELS, 1).contiguous()
+    node.on_nrt_complete("gen", True, {
+        "audio": data, "wav": "z.wav", "metrics": {"rtf": 2.0},
+        "seed": 1, "cot": "full",
+        "semantic": {"frames": 100, "truncated": False},
+        "max_duration": 240.0, "semantic_max_tokens": 6000})
+    assert "cut at" not in node._status_detail
+
+
+def test_save_load_max_duration(node_cls):
+    node = make_node(node_cls)
+    node.params["max_duration"].set(120.0)
+    node.params["max_duration"].sync()
+    snapshot = node.to_dict()
+    node2 = make_node(node_cls)
+    node2.load_state(snapshot)
+    assert node2.params["max_duration"].value == pytest.approx(120.0)
+    # Old patch without the key loads with the default and does not raise.
+    old = node.to_dict()
+    del old["params"]["max_duration"]
+    node3 = make_node(node_cls)
+    node3.load_state(old)
+    assert node3.params["max_duration"].value == pytest.approx(240.0)
+
+
+def test_load_state_resets_out_of_range_cap(node_cls):
+    node = make_node(node_cls)
+    # NB: FloatParam.set() clamps on load, so a hand-corrupted 0 becomes
+    # the valid minimum 30.0 (kept); NaN passes the clamp through and the
+    # load_state guard resets it to the default.
+    snapshot = node.to_dict()
+    snapshot["params"]["max_duration"] = 0
+    node2 = make_node(node_cls)
+    node2.load_state(snapshot)
+    assert node2.params["max_duration"].value == pytest.approx(30.0)
+    snapshot["params"]["max_duration"] = float("nan")
+    node3 = make_node(node_cls)
+    node3.load_state(snapshot)
+    assert node3.params["max_duration"].value == pytest.approx(240.0)
+
+
+def test_max_duration_param_registered(node_cls):
+    node = make_node(node_cls)
+    assert "max_duration" in node.params
+    assert node.params["max_duration"].value == pytest.approx(240.0)
+    assert "max_duration" in _live().YuE2Widget.PARAM_KEYS
+    assert "Max duration caps the song length" in node_cls.description

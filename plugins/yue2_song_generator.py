@@ -23,6 +23,7 @@ widget score viewer, closing the plan -> edit -> re-render loop (wire plan
 to `abc_uri`, edit a copy, re-render with cot=melody/full).
 """
 
+import logging
 import math
 import random
 import shutil
@@ -37,6 +38,7 @@ from offline_job_widget import OfflineJobWidget
 from audiocpp_backend import (
     AUDIOCPP_PIN_VERSION,
     YUE2_ATTENTION_MODES,
+    YUE2_FPS,
     AudioCppRuntime,
     AudioCppJob,
     GenerationCancelled,
@@ -49,6 +51,8 @@ from audiocpp_backend import (
 )
 from base import SAMPLE_RATE, CHANNELS
 
+logger = logging.getLogger(__name__)
+
 COT_MODES = ("off", "melody", "full")
 FORMATS = ("mp3", "wav")
 LORA_FILTER = "SafeTensors (*.safetensors);;All Files (*.*)"
@@ -60,6 +64,13 @@ CLI_OUT_FORMAT = "float32"
 # equal these so the CLI's own (cot-dependent) defaults apply.
 DEFAULT_GUIDANCE = 1.0
 DEFAULT_STEPS = 8
+# Song length cap in seconds (user-facing unit). Converted to
+# semantic_max_tokens = round(seconds * YUE2_FPS) for the CLI; always sent
+# explicitly (240 s -> 6000 is a deliberate behavior change from the old
+# uncapped CLI default of ~9000 tokens).
+DEFAULT_MAX_DURATION = 240.0
+MIN_MAX_DURATION = 30.0
+MAX_MAX_DURATION = 900.0
 PROFILES = (
     ("Q4_K_M (8 GB VRAM)", "yue2-3b-q4_k_m.gguf"),
     ("Q8_0 (16 GB VRAM)", "yue2-3b-q8_0.gguf"),
@@ -100,7 +111,7 @@ class YuE2Widget(OfflineJobWidget):
     NODE_CLASS_NAME = "YuE2SongGenerator"
 
     PARAM_KEYS = ("style", "lyrics_file", "abc_file", "profile", "weight_type",
-                  "format", "cot", "ar_lora", "ar_lora_scale",
+                  "format", "cot", "max_duration", "ar_lora", "ar_lora_scale",
                   "nar_lora", "nar_lora_scale", "guidance_scale",
                   "num_inference_steps", "attention",
                   "seed", "auto_seed")
@@ -159,6 +170,8 @@ class YuE2SongGenerator(AudioCppJob):
         "button: resumable background download with progress) or via "
         "tools/audiocpp/fetch_audiocpp.py and "
         "tools/audiocpp/fetch_yue2_gguf.py. "
+        "Max duration caps the song length (default 240 s; the song may end "
+        "earlier and is cut with a warning if longer) and bounds peak VRAM. "
         "Weights are CC BY-NC 4.0 (non-commercial)."
     )
 
@@ -220,6 +233,11 @@ class YuE2SongGenerator(AudioCppJob):
                                   "CLI's own cot-dependent default applies.")
         self.add_int_param("num_inference_steps", DEFAULT_STEPS, 1, 64,
                            help="NAR midpoint ODE steps; at the default 8 the CLI default applies.")
+        self.add_float_param("max_duration", DEFAULT_MAX_DURATION,
+                             MIN_MAX_DURATION, MAX_MAX_DURATION, unit="s",
+                             help="Max song length in seconds (upper bound; the song may end "
+                                  "earlier and is cut with a warning if it needs longer). "
+                                  "Shorter caps use less VRAM.")
         self.add_menu_param("attention", list(YUE2_ATTENTION_MODES), initial_idx=0,
                             help="NAR acoustic-flow attention kernel; auto picks flash except where "
                                  "eager is faster (Turing CUDA, Intel Vulkan).")
@@ -250,6 +268,8 @@ class YuE2SongGenerator(AudioCppJob):
         self._gen_t0 = None  # monotonic start of the in-flight job (elapsed display)
         self._plan_text = None  # generated plan text for the score viewer
         self._plan_path = ""
+        self._truncated = False  # last song hit the max-duration cap
+        self._cap_seconds = None  # cap in seconds for the last song
         self._status = "Idle"
         self._status_detail = "No song generated"
 
@@ -327,6 +347,13 @@ class YuE2SongGenerator(AudioCppJob):
         steps = int(self.params["num_inference_steps"].value)
         if steps < 1:
             raise ValueError(f"Inference steps must be >= 1, got {steps!r}.")
+        seconds = float(self.params["max_duration"].value)
+        if (not math.isfinite(seconds)
+                or not MIN_MAX_DURATION <= seconds <= MAX_MAX_DURATION):
+            raise ValueError(
+                f"max_duration must be in [{MIN_MAX_DURATION:.0f}, "
+                f"{MAX_MAX_DURATION:.0f}] s, got {seconds!r}.")
+        tokens = max(1, round(seconds * YUE2_FPS))
         return {
             "cli": str(runtime.cli),
             "model_dir": str(model_dir),
@@ -348,6 +375,8 @@ class YuE2SongGenerator(AudioCppJob):
             "num_inference_steps": None if steps == DEFAULT_STEPS else steps,
             "attention": YUE2_ATTENTION_MODES[int(self.params["attention"].value)],
             "out_format": CLI_OUT_FORMAT,
+            "max_duration": seconds,
+            "semantic_max_tokens": tokens,
         }
 
     def _pick_seed(self):
@@ -369,10 +398,12 @@ class YuE2SongGenerator(AudioCppJob):
     def _running_status(self, spec):
         lora = (" +LoRA" if spec.get("ar_lora") or spec.get("nar_lora")
                 else "")
+        cap = spec.get("max_duration")
+        cap_text = f", cap {cap:.0f}s" if isinstance(cap, (int, float)) else ""
         return ("Generating",
                 f"seed {spec['seed']}, {spec['cot']}, "
                 f"{spec['main_gguf']}, {spec.get('weight_type', 'native')}"
-                f"{lora}…")
+                f"{lora}{cap_text}…")
 
     def _spec_warnings(self, spec):
         """Warn when the cover score and lyrics are shaped too differently
@@ -431,6 +462,7 @@ class YuE2SongGenerator(AudioCppJob):
                 num_inference_steps=spec.get("num_inference_steps"),
                 attention=spec.get("attention", "auto"),
                 out_format=spec.get("out_format", "pcm16"),
+                semantic_max_tokens=spec.get("semantic_max_tokens"),
             )
             audio = load_song_file(gen["wav"])
             plan_text = None
@@ -443,19 +475,24 @@ class YuE2SongGenerator(AudioCppJob):
                     plan_text = None
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             keep = Path(spec["model_dir"]) / "outputs" / f"{stamp}_seed{spec['seed']}_{spec['cot']}"
+            semantic = gen.get("semantic") or {"frames": None, "truncated": None}
             kept_song = self._keep_song(run_dir, keep, audio, spec, gen["metrics"],
                                         lyrics_text=lyrics, abc_text=abc_text,
-                                        plan_text=plan_text)
+                                        plan_text=plan_text, semantic=semantic)
             kept_plan = str(keep / "plan.abc") if plan_text is not None else None
             return {"audio": audio, "wav": str(kept_song),
                     "metrics": gen["metrics"], "seed": spec["seed"], "cot": spec["cot"],
-                    "plan": kept_plan, "plan_text": plan_text}
+                    "plan": kept_plan, "plan_text": plan_text,
+                    "semantic": semantic,
+                    "max_duration": spec.get("max_duration"),
+                    "semantic_max_tokens": spec.get("semantic_max_tokens")}
         except BaseException:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
 
     def _keep_song(self, run_dir, keep, audio, spec, metrics,
-                   lyrics_text=None, abc_text=None, plan_text=None):
+                   lyrics_text=None, abc_text=None, plan_text=None,
+                   semantic=None):
         """Keep exactly one song file plus provenance records. Returns kept path.
 
         request.json carries everything needed to recreate the song: the
@@ -501,6 +538,9 @@ class YuE2SongGenerator(AudioCppJob):
             "num_inference_steps": spec.get("num_inference_steps"),
             "attention": spec.get("attention", "auto"),
             "out_format": spec.get("out_format", "pcm16"),
+            "max_duration": spec.get("max_duration"),
+            "semantic_max_tokens": spec.get("semantic_max_tokens"),
+            "semantic": semantic,
         })
         self.write_json(keep / "metrics.json", metrics)
         return kept_song
@@ -554,17 +594,32 @@ class YuE2SongGenerator(AudioCppJob):
             self.error_msg = None
             secs = audio.shape[1] / SAMPLE_RATE
             rtf = result["metrics"].get("rtf")
+            sem = result.get("semantic") or {}
+            truncated = sem.get("truncated") is True
+            cap = result.get("max_duration")
+            cut = ""
+            if truncated:
+                if isinstance(cap, (int, float)):
+                    cut = f", cut at {cap:.0f}s cap"
+                else:
+                    cut = ", cut at cap"
+                logger.warning("YuE2 song hit the max-duration cap%s; kept.",
+                               cut.replace(",", ""))
+            self._truncated = truncated
+            self._cap_seconds = cap if isinstance(cap, (int, float)) else None
             self._status = "Ready"
             self._status_detail = (
                 f"{secs:.1f} s song (seed {result['seed']}, {result['cot']}"
                 + (f", RTF {rtf:.2f}" if rtf else "")
-                + (" + plan" if plan else "") + ")"
+                + (" + plan" if plan else "") + cut + ")"
             )
             self.params["last_wav"].set(result["wav"])
             self.params["last_wav"].sync()
             self.params["last_plan"].set(plan or "")
             self.params["last_plan"].sync()
         elif tag == "relink":
+            self._truncated = False
+            self._cap_seconds = None
             if ok and isinstance(result.get("audio"), torch.Tensor):
                 self.outputs["song"].uri = result["wav"]
                 plan = result.get("plan")
@@ -598,6 +653,15 @@ class YuE2SongGenerator(AudioCppJob):
 
     def load_state(self, data: dict):
         super().load_state(data)
+        # Old patches predate max_duration: the param keeps its default, but
+        # a stored out-of-range value (e.g. 0) is reset to the default.
+        try:
+            v = float(self.params["max_duration"].value)
+        except (KeyError, TypeError, ValueError):
+            v = DEFAULT_MAX_DURATION
+        if not (MIN_MAX_DURATION <= v <= MAX_MAX_DURATION):
+            self.params["max_duration"].set(DEFAULT_MAX_DURATION)
+            self.params["max_duration"].sync()
         # Re-link the kept WAV (+ plan when still present) without
         # regenerating. Decoding runs on NRT. Old patches have no last_plan
         # key: the param keeps its "" default and only the song re-links.
@@ -629,6 +693,15 @@ class YuE2SongGenerator(AudioCppJob):
             # pressure) is otherwise indistinguishable from a hung job.
             elapsed = time.monotonic() - self._gen_t0
             detail = f"{detail} ({elapsed:.0f} s elapsed)"
+        elif (self._status == "Ready" and getattr(self, "_truncated", False)
+                and "cut at" not in detail):
+            cap = getattr(self, "_cap_seconds", None)
+            cut = (f", cut at {cap:.0f}s cap"
+                   if isinstance(cap, (int, float)) else ", cut at cap")
+            if detail.endswith(")"):
+                detail = detail[:-1] + cut + ")"
+            else:
+                detail = detail + cut
         return {"status": self._status, "audio": detail,
                 "busy": self._busy_flag(),
                 "score_text": self._plan_text or ""}

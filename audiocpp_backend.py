@@ -803,6 +803,8 @@ def _no_window_kwargs():
 
 YUE2_ATTENTION_MODES = ("auto", "flash", "eager")
 YUE2_OUT_FORMATS = ("pcm16", "pcm24", "float32")
+# Semantic codec frames/sec; Comfy parity (FRAMES_PER_SECOND = 25).
+YUE2_FPS = 25
 
 
 def _check_yue2_scale(name, value):
@@ -819,7 +821,8 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
                      ar_lora=None, ar_lora_scale=1.0,
                      nar_lora=None, nar_lora_scale=1.0,
                      guidance_scale=None, num_inference_steps=None,
-                     attention="auto", out_format="pcm16"):
+                     attention="auto", out_format="pcm16",
+                     semantic_max_tokens=None, export_semantic=False):
     """Pure argv builder (no process). Tested without a GPU."""
     if cot not in ("off", "melody", "full"):
         raise ValueError(f"cot must be off/melody/full, got {cot!r}")
@@ -848,6 +851,16 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
             raise ValueError(
                 "num_inference_steps must be a positive integer, "
                 f"got {num_inference_steps!r}")
+    if semantic_max_tokens is not None:
+        if (isinstance(semantic_max_tokens, bool)
+                or not isinstance(semantic_max_tokens, int)
+                or semantic_max_tokens < 1):
+            raise ValueError(
+                "semantic_max_tokens must be a positive integer, "
+                f"got {semantic_max_tokens!r}")
+    if not isinstance(export_semantic, bool):
+        raise ValueError(
+            f"export_semantic must be bool, got {export_semantic!r}")
     argv = [
         str(cli), "--task", "gen", "--family", "yue2",
         "--model", str(model_dir), "--backend", backend, "--threads", "8",
@@ -882,7 +895,47 @@ def _build_yue2_argv(cli, model_dir, *, lyrics, style, cot, seed,
         _check_yue2_scale("nar_lora_scale", nar_lora_scale)
         argv += ["--session-option", f"yue2.nar_lora={nar_lora}",
                  "--session-option", f"yue2.nar_lora_scale={nar_lora_scale}"]
+    if semantic_max_tokens is not None:
+        argv += ["--request-option",
+                 f"semantic_max_tokens={semantic_max_tokens}"]
+    if export_semantic:
+        argv += ["--request-option", "export_semantic=true"]
     return argv
+
+
+def _read_semantic_info(out_dir):
+    """Best-effort read of ``semantic.json`` under ``out_dir``.
+
+    Returns ``{"frames": int | None, "truncated": bool | None}``; any
+    missing/unparseable payload (older CLI, ``cot`` edge cases) yields
+    ``None`` fields and never raises.
+    """
+    empty = {"frames": None, "truncated": None}
+    if out_dir is None:
+        return dict(empty)
+    try:
+        raw = Path(out_dir, "semantic.json").read_text(encoding="utf-8")
+    except OSError:
+        return dict(empty)
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return dict(empty)
+    try:
+        if isinstance(payload, list):
+            # Flat int-array payload without meta: length is the frame count.
+            return {"frames": len(payload), "truncated": None}
+        if not isinstance(payload, dict):
+            return dict(empty)
+        frames = payload.get("frames")
+        truncated = payload.get("truncated")
+        if isinstance(frames, bool) or not isinstance(frames, int):
+            frames = None
+        if not isinstance(truncated, bool):
+            truncated = None
+        return {"frames": frames, "truncated": truncated}
+    except (KeyError, TypeError, ValueError):
+        return dict(empty)
 
 
 _METRIC_RE = re.compile(r"^metrics\.(\w+)=([0-9.]+)\s*$")
@@ -907,13 +960,17 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
                  ar_lora=None, ar_lora_scale=1.0,
                  nar_lora=None, nar_lora_scale=1.0,
                  guidance_scale=None, num_inference_steps=None,
-                 attention="auto", out_format="pcm16"):
+                 attention="auto", out_format="pcm16",
+                 semantic_max_tokens=None, export_semantic=True):
     """Run one YuE2 generation. Blocking; call only from an NRT worker.
 
-    Returns ``{"wav": str, "metrics": dict, "score": str | None}`` where
+    Returns ``{"wav": str, "metrics": dict, "score": str | None,
+    "semantic": {"frames": int | None, "truncated": bool | None}}`` where
     ``score`` is the model-generated ABC plan (``score.abc`` under
     ``out_dir``, v0.8.1+) or None when the CLI wrote none (``cot=off`` or
-    external-abc runs). Raises :class:`GenerationCancelled` on
+    external-abc runs), and ``semantic`` is the best-effort
+    ``semantic.json`` info (missing/unparseable yields ``None`` fields and
+    never fails the job). Raises :class:`GenerationCancelled` on
     cancellation, ``RuntimeError`` / ``ValueError`` / ``FileNotFoundError``
     on failure.
     """
@@ -945,7 +1002,9 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
                             nar_lora=nar_lora, nar_lora_scale=nar_lora_scale,
                             guidance_scale=guidance_scale,
                             num_inference_steps=num_inference_steps,
-                            attention=attention, out_format=out_format)
+                            attention=attention, out_format=out_format,
+                            semantic_max_tokens=semantic_max_tokens,
+                            export_semantic=export_semantic)
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     if out_dir_path is not None:
         out_dir_path.mkdir(parents=True, exist_ok=True)
@@ -961,8 +1020,9 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
         candidate = out_dir_path / "score.abc"
         if candidate.exists():
             score = str(candidate)
+    semantic = _read_semantic_info(out_dir_path)
     return {"wav": str(out_wav), "metrics": _parse_metrics(output_tail),
-            "score": score}
+            "score": score, "semantic": semantic}
 
 
 # Fetch-progress throttle: _fetch_nrt reports at most every 5% or 64 MB per
