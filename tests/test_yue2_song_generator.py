@@ -1690,7 +1690,8 @@ def test_run_gen_semantic_missing_never_fails(tmp_path, monkeypatch):
                           out_dir=str(tmp_path / "run"))
     assert result["semantic"] == {"frames": None, "truncated": None}
     assert Path(result["wav"]).exists()
-    # Unparseable payload degrades to None fields as well.
+    # Defaults send nothing extra: no export flag unless asked.
+    assert not any("export_semantic" in a for a in seen["proc"].argv)
     out2 = tmp_path / "run2" / "song.wav"
     seen["out"] = str(out2)
     orig = backend.subprocess.Popen

@@ -961,7 +961,7 @@ def run_yue2_gen(cli, model_dir, *, lyrics, style, cot="full", seed=831001,
                  nar_lora=None, nar_lora_scale=1.0,
                  guidance_scale=None, num_inference_steps=None,
                  attention="auto", out_format="pcm16",
-                 semantic_max_tokens=None, export_semantic=True):
+                 semantic_max_tokens=None, export_semantic=False):
     """Run one YuE2 generation. Blocking; call only from an NRT worker.
 
     Returns ``{"wav": str, "metrics": dict, "score": str | None,

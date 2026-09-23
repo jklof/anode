@@ -463,6 +463,7 @@ class YuE2SongGenerator(AudioCppJob):
                 attention=spec.get("attention", "auto"),
                 out_format=spec.get("out_format", "pcm16"),
                 semantic_max_tokens=spec.get("semantic_max_tokens"),
+                export_semantic=True,
             )
             audio = load_song_file(gen["wav"])
             plan_text = None
