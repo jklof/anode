@@ -13,11 +13,11 @@ Stripped: ``comfy.*`` imports, prefetch queues, interruption hooks,
 ``llama.py``). Linear biases match the checkpoint exactly (vae2llm,
 llm2vae and both timestep MLPs carry bias; transformer linears do not).
 
-Plus ``euler_sample``: flow-matching Euler sampler over the DiT
-(default 8 steps = sidecar parity), matching ComfyUI
-``k_diffusion.sample_euler`` for a ``ModelSamplingDiscreteFlow`` model
-(sigmas 1.0 -> 0.0, model timestep == sigma, one NFE per step),
-deterministic ``torch.Generator(seed)`` noise.
+Provides Euler and DPM2 flow samplers over the DiT. DPM2 with 32 steps is
+the worker default and matches the ComfyUI YuE2 blueprint; Euler remains an
+explicit lower-cost option. Both use the ``ModelSamplingDiscreteFlow``
+schedule (sigmas 1.0 -> 0.0, model timestep == sigma) and deterministic
+``torch.Generator(seed)`` noise.
 """
 
 import math

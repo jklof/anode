@@ -20,7 +20,7 @@ from pathlib import Path
 
 CHUNK = 1024 * 1024
 
-# (relative path, URL, size bytes or None, sha256 or None).
+# (relative path, URL, exact size bytes, SHA-256).
 # NOTE: no tokenizer entry — it ships embedded in the checkpoint as the
 # text_encoders.yue2_tokenizer_json tensor (the Qwen .tiktoken sidecar is
 # a base vocab that lacks the codec/special ids).
@@ -28,7 +28,8 @@ TABLE = [
     ("yue2_3b_bf16.safetensors",
      "https://huggingface.co/Comfy-Org/YuE2/resolve/main"
      "/checkpoints/yue2_3b_bf16.safetensors",
-     None, None),
+     7799983228,
+     "33765adbf9813c9a50318218760b2fd819a319862460a04884607581961c6fee"),
 ]
 
 

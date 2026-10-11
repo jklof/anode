@@ -6,10 +6,9 @@ continues where it stopped. Run from the repo root:
 
     python tools/audiocpp/fetch_yue2_torch.py
 
-Downloads the BF16 safetensors repack plus the tokenizer (torch-only
-installs must not depend on models/YuE2-3B-GGUF/sidecars/). Full content
-hashes verify in this worker process. Weights are CC BY-NC 4.0
-(non-commercial).
+Downloads the BF16 safetensors checkpoint (the tokenizer is embedded, so no
+separate tokenizer or sidecar files are needed). Full content hashes verify
+in this worker process. Weights are CC BY-NC 4.0 (non-commercial).
 """
 import sys
 from pathlib import Path

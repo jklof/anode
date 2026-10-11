@@ -54,8 +54,8 @@
       "params": {
         "enabled": true,
         "style": "English, late-90s Swedish power metal, twin harmonized electric guitars, driving bass, double-bass drums, soaring clean male vocal with gang-vocal chorus, heroic anthemic, 155 BPM, polished powerful mix",
-        "lyrics_file": "./inputs/singer_rock_band_cover.txt",
-        "abc_file": "./inputs/singer_rock_band_cover.abc",
+        "lyrics_file": "",
+        "abc_file": "",
         "profile": 0,
         "format": 0,
         "cot": 2,
@@ -68,6 +68,7 @@
         "last_wav": "",
         "engine": 1,
         "sampler": 0,
+        "torch_steps": 32,
         "torch_model_dir": "models/YuE2-Torch",
         "max_duration": 240.0,
         "num_inference_steps": 8,

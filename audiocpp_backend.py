@@ -165,13 +165,13 @@ def yue2_fetch_specs(model_dir):
 # ``.tiktoken`` sidecar is a 151643-entry base vocab that lacks the
 # codec/special ids, so it is deliberately NOT fetched here).
 YUE2_TORCH_HF_BASE = "https://huggingface.co/Comfy-Org/YuE2/resolve/main"
-# Exact safetensors size/sha are pinned after the first verified download
-# (7.8 GB class file; hashing it on the command thread is banned — see
-# _build_fetch_payload size-only pre-check). Until pinned, size/sha stay
-# None (presence check only, same as unknown-size specs elsewhere).
+# Published file metadata from Comfy-Org/YuE2. Hashing this 7.8 GB model is
+# done by the fetch NRT worker, never on the engine command thread.
 YUE2_TORCH_SAFETENSORS_FILE = "checkpoints/yue2_3b_bf16.safetensors"
-YUE2_TORCH_SAFETENSORS_SIZE = None
-YUE2_TORCH_SAFETENSORS_SHA = None
+YUE2_TORCH_SAFETENSORS_SIZE = 7799983228
+YUE2_TORCH_SAFETENSORS_SHA = (
+    "33765adbf9813c9a50318218760b2fd819a319862460a04884607581961c6fee"
+)
 
 
 def yue2_torch_fetch_specs(model_dir):
@@ -184,27 +184,6 @@ def yue2_torch_fetch_specs(model_dir):
             YUE2_TORCH_SAFETENSORS_SIZE, YUE2_TORCH_SAFETENSORS_SHA,
             label="YuE2 torch model: yue2_3b_bf16.safetensors"),
     ]
-
-
-def missing_specs_size_only(specs):
-    """Subset of specs whose destination is missing or size-mismatched.
-
-    Fast pre-check for the engine command thread: never hashes file
-    contents, so a 7.8 GB present file costs one stat() instead of ~10–20 s
-    of SHA-256. Full content verification belongs in the NRT worker
-    (``fetch_all`` verifies size + sha after download).
-    """
-    out = []
-    for s in specs:
-        try:
-            p = Path(s.dest)
-            if not p.is_file():
-                out.append(s)
-            elif s.size is not None and p.stat().st_size != s.size:
-                out.append(s)
-        except OSError:
-            out.append(s)
-    return out
 
 
 def missing_specs(specs):
@@ -1285,16 +1264,6 @@ class AudioCppJob(TriggerPulseMixin, Node):
         """DownloadSpecs for this node's model weights. Subclass hook."""
         raise NotImplementedError
 
-    def _fetch_check_size_only(self):
-        """True when the model pre-check must skip content hashing.
-
-        Subclass hook: nodes with multi-GB payloads (YuE2 torch, 7.8 GB)
-        override this to avoid ~10–20 s of SHA-256 on the engine command
-        thread. Full size + sha verification still runs in the NRT worker
-        (``fetch_all`` after download).
-        """
-        return False
-
     def _build_fetch_payload(self):
         """Plain-data fetch plan for the NRT worker. Raises ValueError."""
         runtime = AudioCppRuntime()
@@ -1311,12 +1280,7 @@ class AudioCppJob(TriggerPulseMixin, Node):
             staging = Path(runtime.root) / "_dl"
             runtime_note = "runtime: manual install expected"
         ok, _missing = runtime.check_installed() if hasattr(runtime, "check_installed") else (runtime.cli.exists(), [])
-        if self._fetch_check_size_only():
-            pending_models = missing_specs_size_only(
-                self._model_fetch_specs(model_dir))
-        else:
-            pending_models = missing_specs(
-                self._model_fetch_specs(model_dir))
+        pending_models = missing_specs(self._model_fetch_specs(model_dir))
         return {
             "runtime": [self._spec_to_dict(s)
                         for s in missing_specs(runtime_specs)

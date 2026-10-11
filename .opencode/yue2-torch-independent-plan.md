@@ -208,7 +208,13 @@ the node maps it to a "lower max_duration / close VRAM users" hint.
   `_resolve_model_dir`). Only `engine` is added to
   `YuE2Widget.PARAM_KEYS` (next to `profile`); `torch_model_dir` stays out,
   mirroring `model_dir` which is deliberately absent from `PARAM_KEYS` to keep
-  the widget compact. `profile`/`weight_type`/`attention` help text gains
+  the widget compact. Keep the sidecar's `num_inference_steps` parameter at
+  its 8-step default, and add a separate `torch_steps` parameter at 32. The
+  widget shows only the active engine's step control, so the number displayed
+  is always the number sent to that engine; torch receives the explicit value
+  rather than interpreting 8 as a sentinel. Existing torch patches migrate
+  their former shared step value (8 -> 32; non-default values are preserved).
+  `profile`/`weight_type`/`attention` help text gains
   "(sidecar only)". Download button label reflects the active engine's
   payload (sidecar `~3.8 GB` vs torch `~7.8 GB`) via a
   `YuE2Widget._update_download_label(engine_idx)` helper called from both
@@ -271,11 +277,11 @@ the node maps it to a "lower max_duration / close VRAM users" hint.
   embedded; same `DownloadSpec` machinery, throttled progress, never
   auto-download).
   `_build_fetch_payload` conditional: torch engine returns `runtime=[]`
-  (`runtime_note="torch engine: no sidecar runtime"`) — the ~845 MB
-  `audiocpp_cli` archives must not fetch for torch. Payload build uses a
-  **size-only** pre-check for the multi-GB torch specs (hashing 7.8 GB via
-  `_verify` on the command thread freezes it ~10–20 s); the full sha256 is
-  verified in the NRT `_fetch_nrt` worker instead.
+  (`runtime_note` reports background checkpoint SHA-256 verification) — the
+  ~845 MB `audiocpp_cli` archives must not fetch for torch. The complete
+  model spec goes to the NRT worker, which checks an existing checkpoint's
+  size and full SHA-256 before accepting it; the engine command thread never
+  hashes the multi-GB file.
 - Description: one sentence for the engine switch + BF16 VRAM note.
 
 ## 4. Fetch
@@ -306,9 +312,10 @@ the node maps it to a "lower max_duration / close VRAM users" hint.
 - Node (stubbed Popen, existing pattern in `tests/test_yue2_song_generator.py`):
   engine menu defaults sidecar; sidecar spec/argv byte-identical to today
   (unchanged `prog` default keeps the `"audio.cpp …"` error strings);
-  torch spec maps 240 s→6000 with argv targeting `run.py` + spec file
-  containing full texts; torch fetch payload has `runtime==[]` and uses
-  size-only pre-check; download
+  torch spec maps 240 s→6000, emits explicit 32-step default (or selected
+  `torch_steps`), and targets `run.py` + spec file containing full texts;
+  torch fetch payload has `runtime==[]` and verifies the checkpoint in the
+  NRT worker, including same-size existing files; download
   button label follows `engine` (init + update); torch
   `on_nrt_complete` truncation note + `(torch)` tag; LoRA-on-torch raises;
   non-default `weight_type`/`attention` warn-and-ignore (⚠ note +

@@ -100,6 +100,11 @@ def test_torch_spec_carries_sampler_and_defaults(node_cls, tmp_path):
     spec = node._build_torch_spec()
     assert spec["engine"] == "torch"
     assert spec["sampler"] == "dpm_2"
+    assert spec["num_inference_steps"] == 32
+
+    node.params["torch_steps"].set(16)
+    node.params["torch_steps"].sync()
+    assert node._build_torch_spec()["num_inference_steps"] == 16
 
     node.params["sampler"].set(1)
     node.params["sampler"].sync()
@@ -118,14 +123,13 @@ def test_torch_spec_carries_sampler_and_defaults(node_cls, tmp_path):
     assert node2._sampler_idx() == 0
 
 
-def test_torch_cover_patch_pins_the_verified_recipe(node_cls):
-    """patches/yue2_torch_cover.json must reproduce the known-good render.
+def test_torch_cover_patch_pins_the_verified_recipe(node_cls, tmp_path):
+    """patches/yue2_torch_cover.json pins the known-good engine recipe.
 
-    Guards the two silent traps: a patch without an `engine` key loads as
-    sidecar, and `num_inference_steps: 8` is a SENTINEL (None reaches the
-    worker, which then applies its own 32 = Comfy blueprint default).
-    Setting 8 explicitly would force 8 steps and bring back the thin,
-    fundamental-less sound.
+    The active torch step count must be explicit in the patch and worker
+    spec. Private input files stay unbound in the portable patch template;
+    use temporary inputs/weight marker to keep the test independent of local
+    model and input files.
     """
     import json
     from pathlib import Path
@@ -144,20 +148,49 @@ def test_torch_cover_patch_pins_the_verified_recipe(node_cls):
     assert params["seed"] == 831001
     assert params["max_duration"] == 240.0
     assert params["torch_model_dir"] == "models/YuE2-Torch"
-    # sentinel, not a literal step count
+    assert params["lyrics_file"] == ""
+    assert params["abc_file"] == ""
     assert params["num_inference_steps"] == 8
+    assert params["torch_steps"] == 32
 
     node = make_node(node_cls)
     node.load_state({"params": params})
     assert node._engine_idx() == 1
     assert node._sampler_idx() == 0
+    # Spec construction should not need the user's local 7+ GiB checkpoint
+    # or private input files.
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "yue2_3b_bf16.safetensors").write_bytes(b"stub")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("[Verse]\nla\n", encoding="utf-8")
+    score = tmp_path / "score.abc"
+    score.write_text("X:1\nK:C\nC D E F|\n", encoding="utf-8")
+    for key, value in (("torch_model_dir", str(model_dir)),
+                       ("lyrics_file", str(lyrics)),
+                       ("abc_file", str(score))):
+        node.params[key].set(value)
+        node.params[key].sync()
     spec = node._build_torch_spec()
     assert spec["engine"] == "torch"
     assert spec["sampler"] == "dpm_2"
     assert spec["cot"] == "full"
     assert spec["semantic_max_tokens"] == 6000
-    assert spec["num_inference_steps"] is None
+    assert spec["num_inference_steps"] == 32
     assert spec["guidance_scale"] is None
+
+    # Old torch patches used 8 to mean "worker default". Migration turns
+    # that legacy state into the explicit 32-step value.
+    legacy_params = dict(params)
+    legacy_params.pop("torch_steps")
+    legacy = make_node(node_cls)
+    legacy.load_state({"params": legacy_params})
+    assert legacy.params["torch_steps"].value == 32
+
+    legacy_params["num_inference_steps"] = 16
+    legacy_custom = make_node(node_cls)
+    legacy_custom.load_state({"params": legacy_params})
+    assert legacy_custom.params["torch_steps"].value == 16
 
 
 # ----------------------------------------------------------------------

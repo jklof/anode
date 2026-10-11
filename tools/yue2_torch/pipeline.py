@@ -8,14 +8,14 @@ decode) without any ``comfy.*`` dependency:
 2. ABC plan sampling (cot=melody/full without input ABC; 256 tokens max)
 3. semantic sampling (dual-batch CFG, end-token, budget clamp)
 4. KV-conditioning prefill (per-layer caches stacked on CPU)
-5. per-chunk DiT midpoint-Euler sampling (8 steps)
-6. full-song VAE decode -> soundfile float32 48 kHz stereo
+5. per-chunk DiT sampling (DPM2, 32 steps by default; Euler is selectable)
+6. full-song or halo-tiled VAE decode -> soundfile float32 48 kHz stereo
 
 VRAM plan (required phase 1 on 8 GB WDDM): each stage reads only its own
 checkpoint section, builds its model on GPU, then releases
 (``to("cpu")``/``del``/``empty_cache()``) before the next stage. Peak is
 ~AR (~6.4 GB with dual-batch KV) / ~DiT / ~VAE, never all-resident.
-Per-layer streaming and tiled VAE stay deferred (plan §6).
+Per-layer streaming stays deferred (plan §6).
 """
 
 import json

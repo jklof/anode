@@ -74,10 +74,11 @@ LORA_FILTER = "SafeTensors (*.safetensors);;All Files (*.*)"
 # source for the MP3 re-encode); it costs ~2x the bytes of pcm16 with no
 # VRAM or speed effect, so no user-facing choice is needed.
 CLI_OUT_FORMAT = "float32"
-# CLI defaults, kept in one place: the spec omits guidance/steps when they
-# equal these so the CLI's own (cot-dependent) defaults apply.
+# Sidecar CLI defaults: omission keeps its own (cot-dependent) behavior.
+# Torch uses the explicit ``torch_steps`` control and the worker's CFG default.
 DEFAULT_GUIDANCE = 1.0
 DEFAULT_STEPS = 8
+TORCH_DEFAULT_STEPS = 32
 # Song length cap in seconds (user-facing unit). Converted to
 # semantic_max_tokens = round(seconds * YUE2_FPS) for the CLI; always sent
 # explicitly (240 s -> 6000 is a deliberate behavior change from the old
@@ -128,14 +129,16 @@ class YuE2Widget(OfflineJobWidget):
                    "profile", "weight_type",
                    "format", "cot", "max_duration", "ar_lora", "ar_lora_scale",
                    "nar_lora", "nar_lora_scale", "guidance_scale",
-                   "num_inference_steps", "attention",
+                   "num_inference_steps", "torch_steps", "attention",
                    "seed", "auto_seed")
     ACTION_LABEL = "Generate song"
     ACTION_PARAM = "generate"
     DOWNLOAD_LABEL = "Download runtime + model (~3.8 GB)"
     DOWNLOAD_LABEL_TORCH = "Download model (~7.8 GB)"
     # Sidecar-only rows are disabled while the torch engine is active.
-    SIDECAR_ONLY_KEYS = ("profile", "weight_type", "attention")
+    SIDECAR_ONLY_KEYS = ("profile", "weight_type", "attention",
+                         "num_inference_steps")
+    TORCH_ONLY_KEYS = ("torch_steps",)
     SHOW_SCORE = True
 
     def __init__(self, node_proxy):
@@ -168,6 +171,20 @@ class YuE2Widget(OfflineJobWidget):
                     widget.setEnabled(not torch_active)
                 except Exception:
                     pass
+        for key in self.TORCH_ONLY_KEYS:
+            widget = self.param_widgets.get(key)
+            if widget is not None:
+                try:
+                    widget.setVisible(torch_active)
+                    widget.setEnabled(torch_active)
+                except Exception:
+                    pass
+        sidecar_steps = self.param_widgets.get("num_inference_steps")
+        if sidecar_steps is not None:
+            try:
+                sidecar_steps.setVisible(not torch_active)
+            except Exception:
+                pass
 
     def update_from_params(self, params):
         super().update_from_params(params)
@@ -180,6 +197,12 @@ class YuE2Widget(OfflineJobWidget):
             self.btn_seed = QPushButton("Randomize seed")
             self.btn_seed.clicked.connect(self._on_seed_pressed)
             layout.addWidget(self.btn_seed)
+        elif key in ("num_inference_steps", "torch_steps"):
+            widget = self.param_widgets.get(key)
+            label = getattr(widget, "label", None)
+            if label is not None:
+                label.setText("Sidecar NAR steps" if key == "num_inference_steps"
+                              else "Torch DiT steps")
 
     def _on_seed_pressed(self):
         self.proxy.set_parameter("seed", random.randrange(0, 2 ** 31))
@@ -292,10 +315,12 @@ class YuE2SongGenerator(AudioCppJob):
                              help="Semantic classifier-free guidance scale; at the 1.0 default the "
                                   "CLI's own cot-dependent default applies.")
         self.add_int_param("num_inference_steps", DEFAULT_STEPS, 1, 64,
-                           help="Sidecar: NAR midpoint ODE steps. Torch: DiT sampler steps "
-                                "(32 = Comfy blueprint default and strongly recommended; "
-                                "low values thin out the mix). At the default 8 the "
-                                "selected engine's own default applies.")
+                           help="Sidecar NAR midpoint ODE steps. The sidecar's "
+                                "default is 8 steps.")
+        self.add_int_param("torch_steps", TORCH_DEFAULT_STEPS, 1, 64,
+                           help="Torch DiT sampler steps. Default 32 matches the "
+                                "Comfy blueprint and is strongly recommended; "
+                                "low values can thin out the mix.")
         self.add_float_param("max_duration", DEFAULT_MAX_DURATION,
                              MIN_MAX_DURATION, MAX_MAX_DURATION, unit="s",
                              help="Max song length in seconds (upper bound; the song may end "
@@ -316,7 +341,7 @@ class YuE2SongGenerator(AudioCppJob):
                                  "quality. (sidecar only — ignored there.)")
         self.add_string_param("torch_model_dir", TORCH_DEFAULT_DIR,
                               help="Torch engine model directory holding "
-                                   "yue2_3b_bf16.safetensors + tokenizer "
+                                   "yue2_3b_bf16.safetensors (tokenizer is embedded) "
                                    "(repo-relative). Kept out of the widget "
                                    "like model_dir; configure via patches.")
         # Capped at 2**31 - 1: IntParamWidget is a 32-bit QSpinBox
@@ -534,7 +559,7 @@ class YuE2SongGenerator(AudioCppJob):
         guidance = float(self.params["guidance_scale"].value)
         if not math.isfinite(guidance) or not 0 <= guidance <= 20:
             raise ValueError(f"Guidance scale must be in [0, 20], got {guidance!r}.")
-        steps = int(self.params["num_inference_steps"].value)
+        steps = int(self.params["torch_steps"].value)
         if steps < 1:
             raise ValueError(f"Inference steps must be >= 1, got {steps!r}.")
         seconds = float(self.params["max_duration"].value)
@@ -558,7 +583,9 @@ class YuE2SongGenerator(AudioCppJob):
             "format": FORMATS[int(self.params["format"].value)],
             "sampler": TORCH_SAMPLERS[self._sampler_idx()],
             "guidance_scale": None if guidance == DEFAULT_GUIDANCE else guidance,
-            "num_inference_steps": None if steps == DEFAULT_STEPS else steps,
+            # Torch uses an explicit value: the visible 32-step default is
+            # the actual run configuration, not a sentinel for a worker default.
+            "num_inference_steps": steps,
             "max_duration": seconds,
             "semantic_max_tokens": tokens,
             "ignored_sidecar_opts": ignored,
@@ -582,24 +609,21 @@ class YuE2SongGenerator(AudioCppJob):
             return yue2_torch_fetch_specs(model_dir)
         return yue2_fetch_specs(model_dir)
 
-    def _fetch_check_size_only(self):
-        # Torch payloads are multi-GB: never hash contents on the engine
-        # command thread (full verification runs in the NRT worker).
-        return self._engine_idx() == 1
-
     def _build_fetch_payload(self):
         if self._engine_idx() != 1:
             return super()._build_fetch_payload()
-        from audiocpp_backend import missing_specs_size_only
         runtime = AudioCppRuntime()
         model_dir = self._resolve_torch_model_dir()
         return {
             "runtime": [],
             "staging": str(runtime.root / "_dl"),
             "bin_dir": str(runtime.bin_dir),
-            "models": [self._spec_to_dict(s) for s in missing_specs_size_only(
-                self._model_fetch_specs(model_dir))],
-            "runtime_note": "torch engine: no sidecar runtime",
+            # The complete file spec goes to the NRT worker every time.
+            # That worker hashes an existing checkpoint before accepting it;
+            # a stat-only command-thread check would miss same-size damage.
+            "models": [self._spec_to_dict(s)
+                       for s in self._model_fetch_specs(model_dir)],
+            "runtime_note": "torch engine: checkpoint SHA-256 checked in background",
         }
 
     def _running_status(self, spec):
@@ -1010,7 +1034,32 @@ class YuE2SongGenerator(AudioCppJob):
             self._on_fetch_complete(ok, result)
 
     def load_state(self, data: dict):
+        # Migrate torch patches from the former shared step control. Its
+        # default value (8) meant "use the torch worker's 32-step default";
+        # preserve that behavior while making the new torch control explicit.
+        stored_params = data.get("params", {}) if isinstance(data, dict) else {}
+        stored_engine = stored_params.get("engine", 0)
+        if isinstance(stored_engine, dict) and "value" in stored_engine:
+            stored_engine = stored_engine["value"]
+        try:
+            legacy_torch = int(stored_engine) == 1
+        except (TypeError, ValueError):
+            legacy_torch = False
+        migrate_torch_steps = (legacy_torch
+                               and "torch_steps" not in stored_params)
+        legacy_steps = stored_params.get("num_inference_steps", DEFAULT_STEPS)
+        if isinstance(legacy_steps, dict) and "value" in legacy_steps:
+            legacy_steps = legacy_steps["value"]
         super().load_state(data)
+        if migrate_torch_steps:
+            try:
+                old_steps = int(legacy_steps)
+            except (TypeError, ValueError):
+                old_steps = DEFAULT_STEPS
+            migrated_steps = (TORCH_DEFAULT_STEPS
+                              if old_steps == DEFAULT_STEPS else old_steps)
+            self.params["torch_steps"].set(migrated_steps)
+            self.params["torch_steps"].sync()
         # Old patches predate max_duration: the param keeps its default, but
         # a stored out-of-range value (e.g. 0) is reset to the default.
         try:

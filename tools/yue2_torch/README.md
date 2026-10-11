@@ -95,8 +95,11 @@ the peak lands in `metrics.vram_peak_mb`.
 ## Model files (`models/YuE2-Torch/`, fetch-at-runtime)
 
 * `yue2_3b_bf16.safetensors` — `Comfy-Org/YuE2`
-  `checkpoints/yue2_3b_bf16.safetensors` (size/sha pinned after the first
-  verified download; presence-only until then). Holds the AR planner
+  `checkpoints/yue2_3b_bf16.safetensors` (7,799,983,228 bytes,
+  SHA-256 `33765adbf9813c9a50318218760b2fd819a319862460a04884607581961c6fee`).
+  The node and fetch scripts verify both size and SHA-256. The node checks
+  the large file on its NRT worker so integrity verification never blocks
+  the engine command thread. Holds the AR planner
   (`text_encoders.model.*`), the DiT (`model.diffusion_model.*`), the VAE
   (`vae.*`), and the tokenizer (`text_encoders.yue2_tokenizer_json`).
 * No separate tokenizer file: the HF `tokenizer.json` is embedded in the

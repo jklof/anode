@@ -782,16 +782,23 @@ def test_torch_missing_weights_raise(node_cls, tmp_path):
 
 def test_torch_fetch_payload_skips_runtime(node_cls, tmp_path):
     import audiocpp_backend as backend
-    # Spec table lists the weights file only (tokenizer is embedded).
+    # Spec table lists the weights file only (tokenizer is embedded), with
+    # the publisher's exact size and SHA-256 pinned.
     empty = tmp_path / "empty-torch"
     empty.mkdir()
-    assert [s.dest.name for s in
-            backend.yue2_torch_fetch_specs(empty)] == [
-        "yue2_3b_bf16.safetensors"]
+    specs = backend.yue2_torch_fetch_specs(empty)
+    assert [s.dest.name for s in specs] == ["yue2_3b_bf16.safetensors"]
+    assert specs[0].size == 7799983228
+    assert specs[0].sha256 == (
+        "33765adbf9813c9a50318218760b2fd819a319862460a04884607581961c6fee")
     node = _make_torch_node(node_cls, tmp_path)
     payload = node._build_fetch_payload()
     assert payload["runtime"] == []
     assert "torch engine" in payload["runtime_note"]
+    # Even an existing file goes to fetch_all on the NRT worker, where a
+    # same-size corrupt checkpoint cannot bypass SHA-256 verification.
+    assert len(payload["models"]) == 1
+    assert payload["models"][0]["sha256"] == specs[0].sha256
 
 
 def test_torch_complete_tags_torch_and_cut(node_cls):
@@ -835,6 +842,7 @@ def test_torch_model_dir_not_in_widget_keys(node_cls):
     mod = _live_node_module()
     assert "torch_model_dir" not in mod.YuE2Widget.PARAM_KEYS
     assert "engine" in mod.YuE2Widget.PARAM_KEYS
+    assert "torch_steps" in mod.YuE2Widget.PARAM_KEYS
 
 
 @pytest.fixture(scope="module")
@@ -876,10 +884,16 @@ def test_download_label_follows_engine(qapp, node_cls):
 
     widget = mod.YuE2Widget(_StubProxy())
     assert "3.8" in widget.btn_download.text()
+    assert not widget.param_widgets["num_inference_steps"].isHidden()
+    assert widget.param_widgets["torch_steps"].isHidden()
     widget.update_from_params({"engine": 1})
     assert "7.8" in widget.btn_download.text()
+    assert widget.param_widgets["num_inference_steps"].isHidden()
+    assert not widget.param_widgets["torch_steps"].isHidden()
     widget.update_from_params({"engine": 0})
     assert "3.8" in widget.btn_download.text()
+    assert not widget.param_widgets["num_inference_steps"].isHidden()
+    assert widget.param_widgets["torch_steps"].isHidden()
 
 
 gpu_e2e = pytest.mark.skipif(
