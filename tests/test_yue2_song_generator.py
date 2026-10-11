@@ -118,6 +118,48 @@ def test_torch_spec_carries_sampler_and_defaults(node_cls, tmp_path):
     assert node2._sampler_idx() == 0
 
 
+def test_torch_cover_patch_pins_the_verified_recipe(node_cls):
+    """patches/yue2_torch_cover.json must reproduce the known-good render.
+
+    Guards the two silent traps: a patch without an `engine` key loads as
+    sidecar, and `num_inference_steps: 8` is a SENTINEL (None reaches the
+    worker, which then applies its own 32 = Comfy blueprint default).
+    Setting 8 explicitly would force 8 steps and bring back the thin,
+    fundamental-less sound.
+    """
+    import json
+    from pathlib import Path
+    from audiocpp_backend import REPO_ROOT
+
+    patch_path = Path(REPO_ROOT) / "patches" / "yue2_torch_cover.json"
+    assert patch_path.exists(), patch_path
+    patch = json.loads(patch_path.read_text(encoding="utf-8"))
+    node_json = next(n for n in patch["nodes"]
+                     if n["type"] == "YuE2SongGenerator")
+    params = node_json["params"]
+
+    assert params["engine"] == 1          # torch (BF16), not sidecar
+    assert params["sampler"] == 0         # dpm_2
+    assert params["cot"] == 2             # full
+    assert params["seed"] == 831001
+    assert params["max_duration"] == 240.0
+    assert params["torch_model_dir"] == "models/YuE2-Torch"
+    # sentinel, not a literal step count
+    assert params["num_inference_steps"] == 8
+
+    node = make_node(node_cls)
+    node.load_state({"params": params})
+    assert node._engine_idx() == 1
+    assert node._sampler_idx() == 0
+    spec = node._build_torch_spec()
+    assert spec["engine"] == "torch"
+    assert spec["sampler"] == "dpm_2"
+    assert spec["cot"] == "full"
+    assert spec["semantic_max_tokens"] == 6000
+    assert spec["num_inference_steps"] is None
+    assert spec["guidance_scale"] is None
+
+
 # ----------------------------------------------------------------------
 # argv builder (pure, no process)
 # ----------------------------------------------------------------------
