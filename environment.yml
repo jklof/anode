@@ -9,8 +9,18 @@ dependencies:
   - pytest
 
   # ---- PyTorch stack ----
-  - pytorch
-  - torchaudio
+  # Installed from the official PyTorch CUDA index via pip below (NOT the
+  # conda pytorch channel): conda's cudatoolkit builds lag on new GPU
+  # architectures (e.g. Blackwell sm_120 ships no kernels in cu121-era
+  # builds -> "no kernel image is available for execution on the device").
+  # The cu128 wheels carry sm_120 cubins; driver >= R570 required.
+  # (torchaudio is used by plugins/vocos_resynthesizer.py.)
+  #
+  # OpenMP duality: pip torch bundles its own libiomp5md.dll while conda
+  # numpy/MKL brings another; Intel OMP aborts the process on the first
+  # MKL call unless KMP_DUPLICATE_LIB_OK=TRUE, which is set persistently
+  # via `conda env config vars set KMP_DUPLICATE_LIB_OK=TRUE -n anode-dev`.
+  # Fresh clones must repeat that command after `conda env create`.
 
   # ---- Everything else ----
   # Only dependencies actually imported by the app / plugins.
@@ -29,8 +39,18 @@ dependencies:
   - pysoundfile
   - yt-dlp
   - pyside6
+  # YuE2 torch worker (tools/yue2_torch/): BF16 eager pipeline deps.
+  - safetensors
+  - tokenizers
+  - einops
+  - tqdm
 
   - pip:
+      # PyTorch CUDA wheels (see note above; keep first so torch resolves
+      # from here, everything else falls back to PyPI).
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch
+      - torchaudio
       - sounddevice
       - mido
       - python-rtmidi

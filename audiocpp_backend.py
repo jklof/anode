@@ -158,6 +158,55 @@ def yue2_fetch_specs(model_dir):
             for rel, size, sha in YUE2_FILES]
 
 
+# YuE2 torch engine (tools/yue2_torch/): BF16 safetensors repack.
+# Weights are CC BY-NC 4.0 (non-commercial): fetch-at-runtime only.
+# NOTE: the tokenizer ships embedded in the checkpoint as the
+# ``text_encoders.yue2_tokenizer_json`` uint8 tensor (the Qwen
+# ``.tiktoken`` sidecar is a 151643-entry base vocab that lacks the
+# codec/special ids, so it is deliberately NOT fetched here).
+YUE2_TORCH_HF_BASE = "https://huggingface.co/Comfy-Org/YuE2/resolve/main"
+# Exact safetensors size/sha are pinned after the first verified download
+# (7.8 GB class file; hashing it on the command thread is banned — see
+# _build_fetch_payload size-only pre-check). Until pinned, size/sha stay
+# None (presence check only, same as unknown-size specs elsewhere).
+YUE2_TORCH_SAFETENSORS_FILE = "checkpoints/yue2_3b_bf16.safetensors"
+YUE2_TORCH_SAFETENSORS_SIZE = None
+YUE2_TORCH_SAFETENSORS_SHA = None
+
+
+def yue2_torch_fetch_specs(model_dir):
+    """DownloadSpecs for the YuE2 torch model weights."""
+    model_dir = Path(model_dir)
+    return [
+        DownloadSpec(
+            f"{YUE2_TORCH_HF_BASE}/{YUE2_TORCH_SAFETENSORS_FILE}",
+            model_dir / "yue2_3b_bf16.safetensors",
+            YUE2_TORCH_SAFETENSORS_SIZE, YUE2_TORCH_SAFETENSORS_SHA,
+            label="YuE2 torch model: yue2_3b_bf16.safetensors"),
+    ]
+
+
+def missing_specs_size_only(specs):
+    """Subset of specs whose destination is missing or size-mismatched.
+
+    Fast pre-check for the engine command thread: never hashes file
+    contents, so a 7.8 GB present file costs one stat() instead of ~10–20 s
+    of SHA-256. Full content verification belongs in the NRT worker
+    (``fetch_all`` verifies size + sha after download).
+    """
+    out = []
+    for s in specs:
+        try:
+            p = Path(s.dest)
+            if not p.is_file():
+                out.append(s)
+            elif s.size is not None and p.stat().st_size != s.size:
+                out.append(s)
+        except OSError:
+            out.append(s)
+    return out
+
+
 def missing_specs(specs):
     """Subset of specs whose destination does not verify. Cheap checks."""
     from download_util import _verify
@@ -363,7 +412,8 @@ def _terminate(proc, timeout_s=_TERMINATE_WAIT_S):
 
 
 def run_audiocpp_subprocess(argv, *, cancel_event=None, timeout_s=3600,
-                            task_label="job", cancel_message="cancelled") -> str:
+                            task_label="job", cancel_message="cancelled",
+                            prog="audio.cpp") -> str:
     """Run one audio.cpp sidecar subprocess to completion. Blocking; NRT only.
 
     Shared lifecycle for all ``run_*`` wrappers: launch, cooperative
@@ -371,6 +421,11 @@ def run_audiocpp_subprocess(argv, *, cancel_event=None, timeout_s=3600,
     exit reporting. Returns the combined stdout/stderr tail. Raises
     :class:`GenerationCancelled` on cancellation, ``TimeoutError`` on
     timeout, ``RuntimeError`` on launch failure or nonzero exit.
+
+    ``prog`` names the supervised program in error messages (default
+    ``"audio.cpp"`` keeps all five sidecar families byte-identical; the
+    YuE2 torch worker passes ``prog="yue2-torch"`` through the same
+    supervisor).
     """
     try:
         proc = subprocess.Popen(
@@ -378,7 +433,7 @@ def run_audiocpp_subprocess(argv, *, cancel_event=None, timeout_s=3600,
             text=True, **_no_window_kwargs(),
         )
     except OSError as e:
-        raise RuntimeError(f"failed to launch audio.cpp: {e}")
+        raise RuntimeError(f"failed to launch {prog}: {e}")
     try:
         elapsed = 0.0
         step = 0.5
@@ -401,7 +456,7 @@ def run_audiocpp_subprocess(argv, *, cancel_event=None, timeout_s=3600,
             _terminate(proc)
     if proc.returncode != 0:
         raise RuntimeError(
-            f"audio.cpp exited with code {proc.returncode}: "
+            f"{prog} exited with code {proc.returncode}: "
             f"{output_tail[-2000:].strip()}"
         )
     return output_tail
@@ -938,6 +993,8 @@ def _read_semantic_info(out_dir):
         return dict(empty)
 
 
+# Numeric metrics only; non-numeric provenance lines (e.g. the torch
+# sampler name) are intentionally ignored so metrics.json stays numeric.
 _METRIC_RE = re.compile(r"^metrics\.(\w+)=([0-9.]+)\s*$")
 
 
@@ -1228,6 +1285,16 @@ class AudioCppJob(TriggerPulseMixin, Node):
         """DownloadSpecs for this node's model weights. Subclass hook."""
         raise NotImplementedError
 
+    def _fetch_check_size_only(self):
+        """True when the model pre-check must skip content hashing.
+
+        Subclass hook: nodes with multi-GB payloads (YuE2 torch, 7.8 GB)
+        override this to avoid ~10–20 s of SHA-256 on the engine command
+        thread. Full size + sha verification still runs in the NRT worker
+        (``fetch_all`` after download).
+        """
+        return False
+
     def _build_fetch_payload(self):
         """Plain-data fetch plan for the NRT worker. Raises ValueError."""
         runtime = AudioCppRuntime()
@@ -1244,14 +1311,19 @@ class AudioCppJob(TriggerPulseMixin, Node):
             staging = Path(runtime.root) / "_dl"
             runtime_note = "runtime: manual install expected"
         ok, _missing = runtime.check_installed() if hasattr(runtime, "check_installed") else (runtime.cli.exists(), [])
+        if self._fetch_check_size_only():
+            pending_models = missing_specs_size_only(
+                self._model_fetch_specs(model_dir))
+        else:
+            pending_models = missing_specs(
+                self._model_fetch_specs(model_dir))
         return {
             "runtime": [self._spec_to_dict(s)
                         for s in missing_specs(runtime_specs)
                         if not ok],
             "staging": str(staging),
             "bin_dir": str(runtime.bin_dir),
-            "models": [self._spec_to_dict(s)
-                       for s in missing_specs(self._model_fetch_specs(model_dir))],
+            "models": [self._spec_to_dict(s) for s in pending_models],
             "runtime_note": runtime_note,
         }
 

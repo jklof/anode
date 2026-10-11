@@ -76,6 +76,48 @@ def test_int_params_fit_qspinbox(node_cls):
             assert param.meta["min"] >= -(2 ** 31), name
 
 
+def test_torch_spec_carries_sampler_and_defaults(node_cls, tmp_path):
+    """The torch spec pins the sampler; dpm_2 is the Comfy-blueprint default.
+
+    A bad sampler name must fail at spec build, not deep in the worker.
+    """
+    mod = _live()
+    node = make_node(node_cls)
+    weights = tmp_path / "yue2_3b_bf16.safetensors"
+    weights.write_bytes(b"x")
+    lyrics = tmp_path / "lyrics.txt"
+    lyrics.write_text("[Verse]\nla\n", encoding="utf-8")
+
+    node.params["engine"].set(1)
+    node.params["style"].set("pop")
+    node.params["lyrics_file"].set(str(lyrics))
+    node.params["lyrics_file"].sync()
+    node.params["torch_model_dir"].set(str(tmp_path))
+    node.params["seed"].set(7)
+    node.params["auto_seed"].set(False)
+
+    assert node.params["sampler"].value == 0
+    spec = node._build_torch_spec()
+    assert spec["engine"] == "torch"
+    assert spec["sampler"] == "dpm_2"
+
+    node.params["sampler"].set(1)
+    node.params["sampler"].sync()
+    assert node._build_torch_spec()["sampler"] == "euler"
+
+    # A garbage stored index must never reach the spec: the menu widget
+    # clamps to its option list, and _sampler_idx re-clamps defensively.
+    node.params["sampler"].set(99)
+    node.params["sampler"].sync()
+    assert node._build_torch_spec()["sampler"] in mod.TORCH_SAMPLERS
+    assert mod.TORCH_SAMPLERS[0] == "dpm_2"
+
+    # a patch with no sampler key at all (older patch file) still builds
+    node2 = make_node(node_cls)
+    node2.load_state({"params": {}})
+    assert node2._sampler_idx() == 0
+
+
 # ----------------------------------------------------------------------
 # argv builder (pure, no process)
 # ----------------------------------------------------------------------

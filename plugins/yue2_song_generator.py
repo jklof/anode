@@ -27,6 +27,7 @@ import logging
 import math
 import random
 import shutil
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -42,12 +43,16 @@ from audiocpp_backend import (
     AudioCppRuntime,
     AudioCppJob,
     GenerationCancelled,
+    _parse_metrics,
+    _read_semantic_info,
     abc_section_names,
     default_backend,
     lyric_section_names,
+    run_audiocpp_subprocess,
     run_yue2_gen,
     score_lyrics_fit_warning,
     yue2_fetch_specs,
+    yue2_torch_fetch_specs,
 )
 from base import SAMPLE_RATE, CHANNELS
 
@@ -55,6 +60,15 @@ logger = logging.getLogger(__name__)
 
 COT_MODES = ("off", "melody", "full")
 FORMATS = ("mp3", "wav")
+ENGINES = ("sidecar (GGUF)", "torch (BF16)")
+# Mirrors dit.SAMPLERS in tools/yue2_torch/dit.py; the torch engine default
+# is the first entry (Comfy blueprint parity).
+TORCH_SAMPLERS = ("dpm_2", "euler")
+TORCH_WEIGHTS_FILE = "yue2_3b_bf16.safetensors"
+# NOTE: no tokenizer filename — the tokenizer ships embedded in the
+# checkpoint (text_encoders.yue2_tokenizer_json tensor).
+TORCH_DEFAULT_DIR = "models/YuE2-Torch"
+TORCH_RUN_TIMEOUT_S = 1800
 LORA_FILTER = "SafeTensors (*.safetensors);;All Files (*.*)"
 # Fixed CLI WAV sample format: float32 is lossless (best kept WAV and best
 # source for the MP3 re-encode); it costs ~2x the bytes of pcm16 with no
@@ -110,15 +124,56 @@ class YuE2Widget(OfflineJobWidget):
     IS_NODE_UI = True
     NODE_CLASS_NAME = "YuE2SongGenerator"
 
-    PARAM_KEYS = ("style", "lyrics_file", "abc_file", "profile", "weight_type",
-                  "format", "cot", "max_duration", "ar_lora", "ar_lora_scale",
-                  "nar_lora", "nar_lora_scale", "guidance_scale",
-                  "num_inference_steps", "attention",
-                  "seed", "auto_seed")
+    PARAM_KEYS = ("style", "lyrics_file", "abc_file", "engine", "sampler",
+                   "profile", "weight_type",
+                   "format", "cot", "max_duration", "ar_lora", "ar_lora_scale",
+                   "nar_lora", "nar_lora_scale", "guidance_scale",
+                   "num_inference_steps", "attention",
+                   "seed", "auto_seed")
     ACTION_LABEL = "Generate song"
     ACTION_PARAM = "generate"
     DOWNLOAD_LABEL = "Download runtime + model (~3.8 GB)"
+    DOWNLOAD_LABEL_TORCH = "Download model (~7.8 GB)"
+    # Sidecar-only rows are disabled while the torch engine is active.
+    SIDECAR_ONLY_KEYS = ("profile", "weight_type", "attention")
     SHOW_SCORE = True
+
+    def __init__(self, node_proxy):
+        super().__init__(node_proxy)
+        try:
+            initial = self.proxy.node_item.params.get("engine", {}).get(
+                "value", 0) if hasattr(self.proxy, "node_item") else 0
+        except Exception:
+            initial = 0
+        self._update_download_label(initial)
+        self._update_engine_rows(initial)
+
+    def _update_download_label(self, engine_idx):
+        try:
+            idx = int(engine_idx)
+        except (TypeError, ValueError):
+            idx = 0
+        label = self.DOWNLOAD_LABEL_TORCH if idx == 1 else self.DOWNLOAD_LABEL
+        self.btn_download.setText(label)
+
+    def _update_engine_rows(self, engine_idx):
+        try:
+            torch_active = int(engine_idx) == 1
+        except (TypeError, ValueError):
+            torch_active = False
+        for key in self.SIDECAR_ONLY_KEYS:
+            widget = self.param_widgets.get(key)
+            if widget is not None:
+                try:
+                    widget.setEnabled(not torch_active)
+                except Exception:
+                    pass
+
+    def update_from_params(self, params):
+        super().update_from_params(params)
+        if "engine" in params:
+            self._update_download_label(params["engine"])
+            self._update_engine_rows(params["engine"])
 
     def _build_after_param(self, layout, key):
         if key == "seed":
@@ -153,7 +208,9 @@ class YuE2SongGenerator(AudioCppJob):
     label = "YuE2 Song Generator"
     description = (
         "Offline lyrics-to-song generator (YuE2-3B GGUF via the in-tree "
-        "audio.cpp sidecar). Generation runs on a background NRT worker "
+        "audio.cpp sidecar, or BF16 via the self-contained torch worker in "
+        "tools/yue2_torch/ — see the engine menu; torch peaks higher VRAM "
+        "and runs the staged AR→DiT→VAE pipeline). Generation runs on a background NRT worker "
         "(~2x realtime, ~4.3 GB peak VRAM with Q4_K_M on an 8 GB GPU; the "
         "weight_type menu trades speed for headroom when that pressure "
         "causes slowdowns) and "
@@ -207,11 +264,14 @@ class YuE2SongGenerator(AudioCppJob):
                             help="Optional melody/chord score for covers; requires cot=melody or full. "
                                  "A connected abc_uri input overrides this.")
         self.add_menu_param("profile", [label for label, _ in PROFILES], initial_idx=0,
-                            help="GGUF precision profile; larger profiles need more VRAM.")
+                            help="GGUF precision profile; larger profiles need more VRAM. "
+                                 "(sidecar only — ignored on the torch engine, "
+                                 "which is always BF16).")
         self.add_menu_param("weight_type", [label for label, _ in WTYPES], initial_idx=0,
                             help="Weight compute format: q4_0 cuts peak VRAM ~15% for ~1.5x slower "
                                  "generation (and slight requantization quality cost) — use it when "
-                                 "native memory pressure causes slowdowns.")
+                                 "native memory pressure causes slowdowns. "
+                                 "(sidecar only.)")
         self.add_menu_param("format", ["MP3 (320 kbps)", "WAV (lossless)"], initial_idx=0,
                             help="Kept song format — exactly one file is kept. MP3 shares cheaply; "
                                  "WAV keeps full quality for further processing.")
@@ -232,7 +292,10 @@ class YuE2SongGenerator(AudioCppJob):
                              help="Semantic classifier-free guidance scale; at the 1.0 default the "
                                   "CLI's own cot-dependent default applies.")
         self.add_int_param("num_inference_steps", DEFAULT_STEPS, 1, 64,
-                           help="NAR midpoint ODE steps; at the default 8 the CLI default applies.")
+                           help="Sidecar: NAR midpoint ODE steps. Torch: DiT sampler steps "
+                                "(32 = Comfy blueprint default and strongly recommended; "
+                                "low values thin out the mix). At the default 8 the "
+                                "selected engine's own default applies.")
         self.add_float_param("max_duration", DEFAULT_MAX_DURATION,
                              MIN_MAX_DURATION, MAX_MAX_DURATION, unit="s",
                              help="Max song length in seconds (upper bound; the song may end "
@@ -240,7 +303,22 @@ class YuE2SongGenerator(AudioCppJob):
                                   "Shorter caps use less VRAM.")
         self.add_menu_param("attention", list(YUE2_ATTENTION_MODES), initial_idx=0,
                             help="NAR acoustic-flow attention kernel; auto picks flash except where "
-                                 "eager is faster (Turing CUDA, Intel Vulkan).")
+                                 "eager is faster (Turing CUDA, Intel Vulkan). "
+                                 "(sidecar only — torch always uses eager SDPA.)")
+        self.add_menu_param("engine", list(ENGINES), initial_idx=0,
+                            help="Backend: sidecar (GGUF) is the default pinned audio.cpp "
+                                 "runtime; torch (BF16) is the opt-in self-contained "
+                                 "PyTorch worker (tools/yue2_torch/).")
+        self.add_menu_param("sampler", list(TORCH_SAMPLERS), initial_idx=0,
+                            help="Torch DiT sampler. dpm_2 @ 32 steps is the Comfy "
+                                 "blueprint default (recommended); euler is ~2x cheaper "
+                                 "in model calls but needs more steps for equal "
+                                 "quality. (sidecar only — ignored there.)")
+        self.add_string_param("torch_model_dir", TORCH_DEFAULT_DIR,
+                              help="Torch engine model directory holding "
+                                   "yue2_3b_bf16.safetensors + tokenizer "
+                                   "(repo-relative). Kept out of the widget "
+                                   "like model_dir; configure via patches.")
         # Capped at 2**31 - 1: IntParamWidget is a 32-bit QSpinBox
         # (ui_system.py); the backend accepts the full [0, 2**63) range.
         self.add_int_param("seed", 831001, 0, 2 ** 31 - 1,
@@ -310,8 +388,49 @@ class YuE2SongGenerator(AudioCppJob):
             raise ValueError("Pick a lyrics file first (lyrics_file is empty or missing).")
         return lyrics_file
 
+    def _engine_idx(self):
+        """Committed engine menu index (0 sidecar, 1 torch). Old patches
+        without the key load as sidecar."""
+        try:
+            return int(self.params["engine"].value)
+        except (KeyError, TypeError, ValueError):
+            return 0
+
+    def _sampler_idx(self):
+        """Committed torch sampler index; old patches default to dpm_2."""
+        try:
+            idx = int(self.params["sampler"].value)
+        except (KeyError, TypeError, ValueError):
+            return 0
+        return idx if 0 <= idx < len(TORCH_SAMPLERS) else 0
+
+    def _resolve_torch_model_dir(self):
+        raw = self.params["torch_model_dir"].value
+        d = Path(raw)
+        if not d.is_absolute():
+            from audiocpp_backend import REPO_ROOT as _REPO_ROOT
+            d = _REPO_ROOT / d
+        return d
+
+    @staticmethod
+    def _torch_cli():
+        """Load the worker cli.py builder without a GPU (importlib, cached)."""
+        import importlib.util
+        mod = sys.modules.get("yue2_torch_cli")
+        if mod is None:
+            from audiocpp_backend import REPO_ROOT as _REPO_ROOT
+            path = _REPO_ROOT / "tools" / "yue2_torch" / "cli.py"
+            spec = importlib.util.spec_from_file_location(
+                "yue2_torch_cli", str(path))
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["yue2_torch_cli"] = mod
+            spec.loader.exec_module(mod)
+        return mod
+
     def _build_spec(self):
         """Snapshot committed params into a worker spec. Raises ValueError."""
+        if self._engine_idx() == 1:
+            return self._build_torch_spec()
         runtime = AudioCppRuntime()
         ok, hint = runtime.check_ready()
         if not ok:
@@ -355,6 +474,7 @@ class YuE2SongGenerator(AudioCppJob):
                 f"{MAX_MAX_DURATION:.0f}] s, got {seconds!r}.")
         tokens = max(1, round(seconds * YUE2_FPS))
         return {
+            "engine": "sidecar",
             "cli": str(runtime.cli),
             "model_dir": str(model_dir),
             "lyrics_file": lyrics_file,
@@ -379,6 +499,71 @@ class YuE2SongGenerator(AudioCppJob):
             "semantic_max_tokens": tokens,
         }
 
+    def _build_torch_spec(self):
+        """Snapshot committed params into a torch worker spec. Raises ValueError."""
+        from audiocpp_backend import REPO_ROOT as _REPO_ROOT
+        model_dir = self._resolve_torch_model_dir()
+        if not (model_dir / TORCH_WEIGHTS_FILE).exists():
+            raise ValueError(
+                f"Torch weights {TORCH_WEIGHTS_FILE} not found in {model_dir}. "
+                "Press Download or run: python tools/audiocpp/fetch_yue2_torch.py"
+            )
+        # NOTE: the tokenizer ships embedded in the checkpoint
+        # (text_encoders.yue2_tokenizer_json tensor); no separate file needed.
+        lyrics_file = self._resolve_lyrics()
+        abc_file = self._resolve_score()
+        style = self.params["style"].value
+        if not style or not style.strip():
+            raise ValueError("Style prompt is empty.")
+        if self.params["ar_lora"].value or self.params["nar_lora"].value:
+            raise ValueError("LoRA adapters are not supported on the torch engine yet.")
+        # Sidecar-only perf knobs are warn-ignored on torch (see
+        # _spec_warnings): a stale q4_0/auto setting from sidecar use must
+        # not block torch generation. profile is likewise always ignored
+        # (torch is always BF16).
+        ignored = []
+        for key, options in (("weight_type", WTYPES),
+                             ("attention", YUE2_ATTENTION_MODES)):
+            try:
+                idx = int(self.params[key].value)
+                label = options[idx][0] if key == "weight_type" else options[idx]
+            except (TypeError, ValueError, IndexError):
+                idx, label = 0, "?"
+            if idx != 0:
+                ignored.append(f"{key}={label}")
+        guidance = float(self.params["guidance_scale"].value)
+        if not math.isfinite(guidance) or not 0 <= guidance <= 20:
+            raise ValueError(f"Guidance scale must be in [0, 20], got {guidance!r}.")
+        steps = int(self.params["num_inference_steps"].value)
+        if steps < 1:
+            raise ValueError(f"Inference steps must be >= 1, got {steps!r}.")
+        seconds = float(self.params["max_duration"].value)
+        if (not math.isfinite(seconds)
+                or not MIN_MAX_DURATION <= seconds <= MAX_MAX_DURATION):
+            raise ValueError(
+                f"max_duration must be in [{MIN_MAX_DURATION:.0f}, "
+                f"{MAX_MAX_DURATION:.0f}] s, got {seconds!r}.")
+        tokens = max(1, round(seconds * YUE2_FPS))
+        run_py = _REPO_ROOT / "tools" / "yue2_torch" / "run.py"
+        return {
+            "engine": "torch",
+            "worker_python": sys.executable,
+            "run_py": str(run_py),
+            "model_dir": str(model_dir),
+            "lyrics_file": lyrics_file,
+            "abc_file": abc_file,
+            "style": style,
+            "cot": COT_MODES[int(self.params["cot"].value)],
+            "seed": self._pick_seed(),
+            "format": FORMATS[int(self.params["format"].value)],
+            "sampler": TORCH_SAMPLERS[self._sampler_idx()],
+            "guidance_scale": None if guidance == DEFAULT_GUIDANCE else guidance,
+            "num_inference_steps": None if steps == DEFAULT_STEPS else steps,
+            "max_duration": seconds,
+            "semantic_max_tokens": tokens,
+            "ignored_sidecar_opts": ignored,
+        }
+
     def _pick_seed(self):
         """Committed seed, or a fresh random one with auto_seed on.
 
@@ -393,9 +578,37 @@ class YuE2SongGenerator(AudioCppJob):
         return int(self.params["seed"].value)
 
     def _model_fetch_specs(self, model_dir):
+        if self._engine_idx() == 1:
+            return yue2_torch_fetch_specs(model_dir)
         return yue2_fetch_specs(model_dir)
 
+    def _fetch_check_size_only(self):
+        # Torch payloads are multi-GB: never hash contents on the engine
+        # command thread (full verification runs in the NRT worker).
+        return self._engine_idx() == 1
+
+    def _build_fetch_payload(self):
+        if self._engine_idx() != 1:
+            return super()._build_fetch_payload()
+        from audiocpp_backend import missing_specs_size_only
+        runtime = AudioCppRuntime()
+        model_dir = self._resolve_torch_model_dir()
+        return {
+            "runtime": [],
+            "staging": str(runtime.root / "_dl"),
+            "bin_dir": str(runtime.bin_dir),
+            "models": [self._spec_to_dict(s) for s in missing_specs_size_only(
+                self._model_fetch_specs(model_dir))],
+            "runtime_note": "torch engine: no sidecar runtime",
+        }
+
     def _running_status(self, spec):
+        if spec.get("engine") == "torch":
+            cap = spec.get("max_duration")
+            cap_text = f", cap {cap:.0f}s" if isinstance(cap, (int, float)) else ""
+            return ("Generating",
+                    f"seed {spec['seed']}, {spec['cot']}, "
+                    f"torch BF16{cap_text}…")
         lora = (" +LoRA" if spec.get("ar_lora") or spec.get("nar_lora")
                 else "")
         cap = spec.get("max_duration")
@@ -411,17 +624,25 @@ class YuE2SongGenerator(AudioCppJob):
         engine/control thread — same I/O class as the existence checks in
         _build_spec. Warn-only; a missing file here is the worker's error
         to raise, so read failures simply skip the warning."""
+        warns = []
+        ignored = spec.get("ignored_sidecar_opts") or []
+        if ignored:
+            warns.append(
+                "torch engine ignores sidecar-only "
+                + ", ".join(ignored) + " (always BF16 + eager SDPA)")
         if not spec.get("abc_file"):
-            return []
+            return warns
         try:
             lyrics_text = Path(spec["lyrics_file"]).read_text(encoding="utf-8")
             abc_text = Path(spec["abc_file"]).read_text(encoding="utf-8")
         except OSError:
-            return []
+            return warns
         warning = score_lyrics_fit_warning(
             abc_sections=abc_section_names(abc_text),
             lyric_sections=lyric_section_names(lyrics_text))
-        return [warning] if warning else []
+        if warning:
+            warns.append(warning)
+        return warns
 
     def _on_job_submitted(self, spec):
         self._gen_t0 = time.monotonic()
@@ -438,6 +659,8 @@ class YuE2SongGenerator(AudioCppJob):
     # ------------------------------------------------------------------
     def _run_nrt(self, cancel_event, spec):
         """Full blocking pipeline: read inputs, run CLI, decode, keep artifacts."""
+        if spec.get("engine") == "torch":
+            return self._run_torch_nrt(cancel_event, spec)
         run_dir = self.new_run_dir(spec["model_dir"], "yue2")
         try:
             lyrics = Path(spec["lyrics_file"]).read_text(encoding="utf-8")
@@ -486,7 +709,91 @@ class YuE2SongGenerator(AudioCppJob):
                     "plan": kept_plan, "plan_text": plan_text,
                     "semantic": semantic,
                     "max_duration": spec.get("max_duration"),
-                    "semantic_max_tokens": spec.get("semantic_max_tokens")}
+                    "semantic_max_tokens": spec.get("semantic_max_tokens"),
+                    "engine": "sidecar"}
+        except BaseException:
+            shutil.rmtree(run_dir, ignore_errors=True)
+            raise
+
+    def _run_torch_nrt(self, cancel_event, spec):
+        """Torch worker pipeline: spec.json by file, same supervise/keep flow."""
+        import json as _json
+        run_dir = self.new_run_dir(spec["model_dir"], "yue2")
+        try:
+            lyrics = Path(spec["lyrics_file"]).read_text(encoding="utf-8")
+            if not lyrics.strip():
+                raise ValueError(f"Lyrics file is empty: {spec['lyrics_file']}")
+            abc_text = None
+            if spec["abc_file"]:
+                abc_text = Path(spec["abc_file"]).read_text(encoding="utf-8")
+            worker_spec = {
+                "lyrics": lyrics,
+                "style": spec["style"],
+                "cot": spec["cot"],
+                "seed": spec["seed"],
+                "semantic_max_tokens": spec["semantic_max_tokens"],
+                "model_dir": spec["model_dir"],
+                "sampler": spec.get("sampler") or TORCH_SAMPLERS[0],
+            }
+            if spec.get("guidance_scale") is not None:
+                worker_spec["guidance_scale"] = spec["guidance_scale"]
+            if spec.get("num_inference_steps") is not None:
+                worker_spec["num_inference_steps"] = spec["num_inference_steps"]
+            if spec["abc_file"]:
+                worker_spec["abc_file"] = spec["abc_file"]
+            spec_path = run_dir / "spec.json"
+            spec_path.write_text(_json.dumps(worker_spec), encoding="utf-8")
+            out_wav = run_dir / "song.wav"
+            cli = self._torch_cli()
+            argv = cli.build_argv(spec["worker_python"], spec["run_py"],
+                                  spec_path=spec_path, out_wav=out_wav,
+                                  out_dir=run_dir)
+            try:
+                output_tail = run_audiocpp_subprocess(
+                    argv, cancel_event=cancel_event,
+                    timeout_s=TORCH_RUN_TIMEOUT_S,
+                    task_label="YuE2 generation",
+                    cancel_message="generation cancelled",
+                    prog="yue2-torch",
+                )
+            except RuntimeError as e:
+                if "code 4" in str(e):
+                    raise RuntimeError(
+                        f"{e} (CUDA out of memory — lower max_duration / "
+                        "close VRAM users)")
+                raise
+            if not out_wav.exists():
+                raise RuntimeError(
+                    "yue2-torch reported success but wrote no WAV file")
+            score = None
+            candidate = run_dir / "score.abc"
+            if candidate.exists():
+                score = str(candidate)
+            semantic = _read_semantic_info(run_dir)
+            gen = {"wav": str(out_wav), "metrics": _parse_metrics(output_tail),
+                   "score": score, "semantic": semantic}
+            audio = load_song_file(gen["wav"])
+            plan_text = None
+            if gen.get("score"):
+                try:
+                    plan_text = Path(gen["score"]).read_text(encoding="utf-8")
+                    if not plan_text.strip():
+                        plan_text = None
+                except OSError:
+                    plan_text = None
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            keep = Path(spec["model_dir"]) / "outputs" / f"{stamp}_seed{spec['seed']}_{spec['cot']}"
+            kept_song = self._keep_song(run_dir, keep, audio, spec, gen["metrics"],
+                                        lyrics_text=lyrics, abc_text=abc_text,
+                                        plan_text=plan_text, semantic=semantic)
+            kept_plan = str(keep / "plan.abc") if plan_text is not None else None
+            return {"audio": audio, "wav": str(kept_song),
+                    "metrics": gen["metrics"], "seed": spec["seed"], "cot": spec["cot"],
+                    "plan": kept_plan, "plan_text": plan_text,
+                    "semantic": semantic,
+                    "max_duration": spec.get("max_duration"),
+                    "semantic_max_tokens": spec.get("semantic_max_tokens"),
+                    "engine": "torch"}
         except BaseException:
             shutil.rmtree(run_dir, ignore_errors=True)
             raise
@@ -516,7 +823,54 @@ class YuE2SongGenerator(AudioCppJob):
             self.keep_artifacts(run_dir, keep, ["song.wav"])
         if plan_text is not None:
             (keep / "plan.abc").write_text(plan_text, encoding="utf-8")
-        self.write_json(keep / "request.json", {
+        if spec.get("engine") == "torch":
+            from audiocpp_backend import (
+                YUE2_TORCH_SAFETENSORS_SHA as _TORCH_SHA,
+                YUE2_TORCH_SAFETENSORS_SIZE as _TORCH_SIZE,
+            )
+            # Pinned Comfy revision lives in tools/yue2_torch/pipeline.py
+            # (COMFY_REV); read lazily from the file so the node never
+            # imports torch-weight modules. Size/sha come from the fetch
+            # spec (verified at fetch, never rehashed per run).
+            _COMFY_REV = "master-post-16250"
+            try:
+                _pipe_src = (Path(spec.get("run_py", "")).parent
+                             / "pipeline.py").read_text(encoding="utf-8")
+                for _line in _pipe_src.splitlines():
+                    if _line.startswith("COMFY_REV"):
+                        _COMFY_REV = _line.split("=", 1)[1].strip().strip(
+                            "\"'")
+                        break
+            except OSError:
+                pass
+            runtime_info = {"torch": torch.__version__,
+                            "comfy_rev": _COMFY_REV,
+                            "model": {"size": _TORCH_SIZE, "sha": _TORCH_SHA}}
+            request = {
+                "engine": "torch",
+                "style": spec["style"],
+                "lyrics_file": spec["lyrics_file"],
+                "lyrics_text": lyrics_text,
+                "abc_file": spec["abc_file"],
+                "abc_text": abc_text,
+                "cot": spec["cot"],
+                "seed": spec["seed"],
+                "torch_model_dir": spec.get("model_dir"),
+                "format": spec["format"],
+                "runtime": runtime_info,
+                "generated_plan": plan_text is not None,
+                "plan_text": plan_text,
+                "guidance_scale": spec.get("guidance_scale"),
+                "num_inference_steps": spec.get("num_inference_steps"),
+                "sampler": spec.get("sampler"),
+                "max_duration": spec.get("max_duration"),
+                "semantic_max_tokens": spec.get("semantic_max_tokens"),
+                "ignored_sidecar_opts": spec.get("ignored_sidecar_opts", []),
+                "semantic": semantic,
+            }
+        else:
+            request = {
+            "engine": "sidecar",
             "style": spec["style"],
             "lyrics_file": spec["lyrics_file"],
             "lyrics_text": lyrics_text,
@@ -542,7 +896,8 @@ class YuE2SongGenerator(AudioCppJob):
             "max_duration": spec.get("max_duration"),
             "semantic_max_tokens": spec.get("semantic_max_tokens"),
             "semantic": semantic,
-        })
+        }
+        self.write_json(keep / "request.json", request)
         self.write_json(keep / "metrics.json", metrics)
         return kept_song
 
@@ -609,10 +964,12 @@ class YuE2SongGenerator(AudioCppJob):
             self._truncated = truncated
             self._cap_seconds = cap if isinstance(cap, (int, float)) else None
             self._status = "Ready"
+            engine_tag = result.get("engine") or (
+                "torch" if self._engine_idx() == 1 else "sidecar")
             self._status_detail = (
                 f"{secs:.1f} s song (seed {result['seed']}, {result['cot']}"
                 + (f", RTF {rtf:.2f}" if rtf else "")
-                + (" + plan" if plan else "") + cut + ")"
+                + (" + plan" if plan else "") + cut + f") [{engine_tag}]"
             )
             self.params["last_wav"].set(result["wav"])
             self.params["last_wav"].sync()
@@ -663,6 +1020,24 @@ class YuE2SongGenerator(AudioCppJob):
         if not (MIN_MAX_DURATION <= v <= MAX_MAX_DURATION):
             self.params["max_duration"].set(DEFAULT_MAX_DURATION)
             self.params["max_duration"].sync()
+        # New engine params: old patches lack them (default sidecar applies);
+        # clamp a stored out-of-range engine index back to the default.
+        if "engine" in self.params:
+            try:
+                eidx = int(self.params["engine"].value)
+            except (TypeError, ValueError):
+                eidx = 0
+            if eidx not in (0, 1):
+                self.params["engine"].set(0)
+                self.params["engine"].sync()
+        if "sampler" in self.params:
+            try:
+                sidx = int(self.params["sampler"].value)
+            except (TypeError, ValueError):
+                sidx = 0
+            if sidx not in range(len(TORCH_SAMPLERS)):
+                self.params["sampler"].set(0)
+                self.params["sampler"].sync()
         # Re-link the kept WAV (+ plan when still present) without
         # regenerating. Decoding runs on NRT. Old patches have no last_plan
         # key: the param keeps its "" default and only the song re-links.
@@ -699,10 +1074,15 @@ class YuE2SongGenerator(AudioCppJob):
             cap = getattr(self, "_cap_seconds", None)
             cut = (f", cut at {cap:.0f}s cap"
                    if isinstance(cap, (int, float)) else ", cut at cap")
+            tag = ""
+            if detail.endswith("]") and " [" in detail:
+                detail, tag = detail.rsplit(" [", 1)
+                tag = " [" + tag
             if detail.endswith(")"):
                 detail = detail[:-1] + cut + ")"
             else:
                 detail = detail + cut
+            detail += tag
         return {"status": self._status, "audio": detail,
                 "busy": self._busy_flag(),
                 "score_text": self._plan_text or ""}
