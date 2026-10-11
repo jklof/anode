@@ -55,6 +55,10 @@ dependencies:
       - mido
       - python-rtmidi
       - onnxruntime
+      # Supertonic 3 TTS (tools/supertonic3/): pinned archive source —
+      # no published PyPI artifact was verified equivalent, so pin the
+      # source commit. Lazy/child-only import: nodes register without it.
+      - supertonic @ git+https://github.com/supertone-oss-archive/supertonic-py.git@df0f9686dac7fbbde391b759e2ee5286a3737622
       - swift-f0
       - pylibrb
       - vocos

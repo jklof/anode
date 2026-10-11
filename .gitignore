@@ -38,6 +38,34 @@ models/YuE2-Torch/outputs/
 models/SheetSage2-GGUF/*.gguf
 models/SheetSage2-GGUF/outputs/
 
+# BS-RoFormer GGUF weights (fetched via tools/audiocpp/fetch_bs_roformer_gguf.py);
+# per-separation outputs are local provenance records, never committed.
+models/BS-RoFormer-ep368-GGUF/*.gguf
+models/BS-RoFormer-ep368-GGUF/outputs/
+
+# Qwen3 ASR + forced-aligner GGUF weights (fetched via
+# tools/audiocpp/fetch_qwen3_asr_gguf.py and fetch_qwen3_align_gguf.py);
+# per-transcription outputs are local provenance records, never committed.
+models/Qwen3-ASR-GGUF/*.gguf
+models/Qwen3-ASR-GGUF/outputs/
+models/Qwen3-ForcedAligner-GGUF/*.gguf
+models/Qwen3-ForcedAligner-GGUF/outputs/
+models/Qwen3-ForcedAligner-0.6B-GGUF/*.gguf
+models/Qwen3-ForcedAligner-0.6B-GGUF/outputs/
+
+# Silero VAD asset (fetched via tools/audiocpp/fetch_silero_vad.py).
+models/Silero-VAD/*.safetensors
+
+# Supertonic 3 ONNX + voice styles (fetched via tools/supertonic3/fetch.py);
+# per-generation profiles/outputs are local provenance records, never
+# committed. Documentation (tools/supertonic3/README.md) stays trackable.
+models/Supertonic3/onnx/
+models/Supertonic3/voice_styles/
+models/Supertonic3/profiles/
+models/Supertonic3/outputs/
+models/Supertonic3/_dl/
+models/Supertonic3/LICENSE
+
 #inputs
 inputs/
 

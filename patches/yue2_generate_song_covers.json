@@ -1,0 +1,483 @@
+{
+  "clock_id": "8e50e26f-e5f7-42b7-9cd8-f34d3dbaaeec",
+  "nodes": [
+    {
+      "id": "8e50e26f-e5f7-42b7-9cd8-f34d3dbaaeec",
+      "type": "AudioDeviceOutput",
+      "name": "Audio Device Output",
+      "params": {
+        "enabled": true,
+        "device_index": -1
+      },
+      "pos": [
+        970.5792048594737,
+        -647.7307131124271
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "f88c2d2b-93c8-4648-9a71-4b89e75e508b",
+      "type": "MediaPlayerNode",
+      "name": "Media Player",
+      "params": {
+        "enabled": true,
+        "file_path": "",
+        "playing": true,
+        "looping": false,
+        "seek_ratio": -1.0
+      },
+      "pos": [
+        13.247983089179598,
+        -378.8887316012499
+      ],
+      "ui_size": null,
+      "meta": {
+        "title": "song.mp3",
+        "duration": 303.07866666666666,
+        "path": "C:\\Users\\janne\\src\\anode\\models\\YuE2-3B-GGUF\\outputs\\20260919-153846_seed1211838965_melody\\song.mp3"
+      }
+    },
+    {
+      "id": "7a49703f-7d7f-4bb7-82ac-61efdc9c7b50",
+      "type": "WaveformDisplay",
+      "name": "Oscilloscope",
+      "params": {
+        "enabled": true
+      },
+      "pos": [
+        113.37180860281228,
+        27.161307575546765
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "type": "YuE2SongGenerator",
+      "name": "YuE2 Song Generator",
+      "params": {
+        "enabled": true,
+        "style": "English, late-90s Swedish power metal, twin harmonized electric guitars, driving bass, double-bass drums, growly female vocal with gang-vocal chorus, heroic anthemic, 155 BPM, polished powerful mix",
+        "lyrics_file": "",
+        "abc_file": "",
+        "profile": 0,
+        "weight_type": 1,
+        "format": 0,
+        "cot": 1,
+        "ar_lora": "",
+        "ar_lora_scale": 1.0,
+        "nar_lora": "",
+        "nar_lora_scale": 1.0,
+        "guidance_scale": 1.0,
+        "num_inference_steps": 8,
+        "attention": 0,
+        "seed": 1211838965,
+        "auto_seed": false,
+        "model_dir": "models/YuE2-3B-GGUF",
+        "generate": false,
+        "download": false,
+        "cancel": false,
+        "last_wav": "C:\\Users\\janne\\src\\anode\\models\\YuE2-3B-GGUF\\outputs\\20260919-153846_seed1211838965_melody\\song.mp3",
+        "last_plan": ""
+      },
+      "pos": [
+        -351.88749374999986,
+        -410.0444312499999
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "f30b6796-bf62-4059-871b-9ed44fd3d21d",
+      "type": "SheetSage2Transcriber",
+      "name": "SheetSage2 Transcriber",
+      "params": {
+        "enabled": true,
+        "audio_file": "C:/Users/janne/Downloads/Brillig - Windward Bound.mp3",
+        "weight_type": 0,
+        "max_tokens": 5120,
+        "strip_chords": true,
+        "model_dir": "models/SheetSage2-GGUF",
+        "transcribe": false,
+        "download": false,
+        "cancel": false,
+        "last_abc": "C:\\Users\\janne\\src\\anode\\models\\SheetSage2-GGUF\\outputs\\20260919-153614_Brillig - Windward Bound\\score.abc",
+        "last_melody": "C:\\Users\\janne\\src\\anode\\models\\SheetSage2-GGUF\\outputs\\20260919-153614_Brillig - Windward Bound\\score-melody.abc"
+      },
+      "pos": [
+        -1200.3167542812494,
+        -673.3411711562494
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "8bdf2e91-d1ef-4e5a-894d-b078af636cbd",
+      "type": "ABCNote",
+      "name": "ABC Note",
+      "params": {
+        "enabled": true,
+        "abc": "X:1\nT:\nM:4/4\nL:1/32\nQ:1/4=76\nV: Vocal clef=treble name=\"Vocal Melody\" snm=\"Vocal\"\nV: Ins clef=treble name=\"Ins Melody\" snm=\"Inst.\"\nK:Fm\n% intro\nV: Vocal\nz24z4z4|z32|z24z6F2|\nV: Ins\nz16z4B2B4d6|c4A4c4A4F4A4f4c4|F4A4c4A4F12F2z2|\n% verse\nV: Vocal\nF8z4F4F6E2F2G6|A8z16A6B2|G8z4G4G4F4G6A2|F8z16z4F4|\nV: Ins\nZ4|\nV: Vocal\nF8F4F4F2E6F4G4|A8z16A4B4|G12G4G6E2G4A4|F8z16z4F4|\nV: Ins\nZ4|\nV: Vocal\nc12c4c6B2A6G2|A8z16A4c4|B8z4B4B2c6d4e4-|e4c8z16F4|\nV: Ins\nZ4|\nV: Vocal\nc12c4c4B4A6G2|A8z16z4G4|G8G8G6E2G6A2|F8z16A4G4|\nV: Ins\nZ4|\n% chorus\nV: Vocal\nF8z4A4A6F2A4B4|B4c4z16A4G4|F8z4F4F6E2E4B4|B4c4z16A4G4|\nV: Ins\nZ4|\nV: Vocal\nF8z4A4A6F2A4B4|B4c4z16E4c4|B24z8|z24z4F2F2|\nV: Ins\nZ2|z24g4e4|E4B4g4e4E12z4|\n% verse\nV: Vocal\nF8F8F4A4F4G4|A8z16z4A4|B8z4B4B6A2G6E2|F8z16z4G4|\nV: Ins\nZ4|\nV: Vocal\nF8z4F4F2E6F4G4|A6B2A8z8A4B4|G8z4G4G4E4G4A4|F6G2F8z12F4|\nV: Ins\nZ4|\nV: Vocal\nc12c4c4B4A6G2|A8z16A4c4|B8B8B4c4d6e2|c8z16z4E4|\nV: Ins\nZ4|\nV: Vocal\nc8z4c4c4B4z4A2G2|A6B2A4z16A4|G8G4G4G4E4G6A2|F6G2F8z8A4G4|\nV: Ins\nZ4|\n% chorus\nV: Vocal\nF8z4A4A6F2A4B4|B4c4z16A4G4|F8F8F6E2E4B4|B4c4z16A4G4|\nV: Ins\nZ4|\nV: Vocal\nF8z4A4A4F4A4B4|B4c4z16E4c4|B24z4B2c2|\nV: Ins\nZ3|\nV: Vocal\nM:3/4\nd12c4A6G2|\nV: Ins\nM:3/4\nZ|\nV: Vocal\nM:4/4\nF8A8A4z4A4B4|B4c4z16A4G4|F8z4F4F4E4E4B4|B4c4z16A4G4|\nV: Ins\nM:4/4\nZ4|\nV: Vocal\nF8A8A6F2A4B4|B4c4c4z12E4c4|B8z24|z16B4d4c8-|\nV: Ins\nZ2|z8g4e4z4B4g4e4|z4B4B8z16|\nV: Vocal\nc8z24|z16A8B8|\nV: Ins\nz8f4e4c4f4e4c4|Z|\n% verse\nV: Vocal\nc8z4c4c4B4c4d4|B4z16z4A4B4|c4z8c4c4B4c4d4|B4B8A4B4B8A4|\nV: Ins\nZ4|\nV: Vocal\nz4B4c4z8c4c4B4|c4z8c4c4c4c4c4|d4z8d4d6d2d4e4|d4e4B4z8B4B4A4|\nV: Ins\nZ4|\nV: Vocal\nz32|z16z16|\nV: Ins\nc4f4e4c4f4e4f8-|f8a4g4f4a2a2a4g4|\n% outro\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nf4f4f4e4f4f4f4e4|c4c4A2B2c2d2c8A4G4|F4a2a2a4g4f4e4f4d4|c8A2B2c4A2B2c4A4G4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nF4a2a2a4g4f4f4f4e4|c4c4e4c4B4A4e4c4|B4e4g4e4B4e4g4e4|e4e4g4e4B4e4g4e4|\nV: Vocal\nz32|z32|z32|z32|\nV: Ins\nf4a2a2a4g4f4z2f2f4e4|c8A2B2c2d2c4A4a4g4|f4a2a2a4g4f4z2f2f4e4|c8e4c4B4A4a4g4|\nV: Vocal\nz32|z32|z32|z16z16|\nV: Ins\nf4a2a2a4g4f8b8|c'6b2a4c4A2B2c4A2B2c4|B4e4g4e4B4e4g4e4|B8e8f4e4c4f4|\nV: Vocal\nz32|z24z4z4|\nV: Ins\ne4c4f2z16z6|f4z24z4|\n\n",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\abc_notes\\e154b918a7061f67ac1df06daa1a2061efa1452abb87a068c04c26cccf346f17.abc"
+      },
+      "pos": [
+        -838.2499449687494,
+        -780.447759828125
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "d4f44597-df4f-4a2b-b863-cbf530773c81",
+      "type": "TextNote",
+      "name": "Text Note",
+      "params": {
+        "enabled": true,
+        "text": "[Intro]\n*(instrumental)*\n\n[Verse]\nThrough the storm and the raging sea\nCrimson sail flies wild and free\nOn a cursed shore where black winds moan\nFreydis the Red comes riding on by\nDown the old road that leads below\nA burden dragged down below\nAn ancient temple waits up ahead\nThe Heartstone waits unclaimed\n\n[Chorus]\nHeart of fire and the light of the mortal fate\nPower beyond\nthe mortal state held fast within\nSo lock it safely below\nwhere the dark and cold seas roll on\nLet her wisdom\nguide both her ship and her soul through the storm\nA heart of fire still burns\nto light the way to her fate\n\n[Interlude]\n*(instrumental)*\n\n[Verse]\nThen thunder rolls through forest deep\nBlackthorn comes with cannon roar\nFreydis, you followed me all too late\nThe Heartstone's mine, not yours to claim\nSteel meets steel in the pouring rain\nCutlass flashing for the kill\nTill at last Blackthorn falls, his dying eyes\nFire and smoke roll all around\n\n[Chorus]\nHeart of fire and the light of the mortal fate\nPower beyond\nher mortal state held fast within forever\nto light the way to her fate\n\n[Interlude]\n*(instrumental)*\n\n[Verse]\nThree shots of thunder shake the whole ground\nAncient doors torn apart\nFreydis reaches the temple's heart\nDown through the silent halls\nWhere the dead still sleep, never waking\nShe finds the throne\nOf a pirate king lost beneath the tides\nWhere dead kings still keep guard\nA cold blue fire that nobody knows\nShe takes the stone\nThe Heartstone of the land, from the dead king's hand\nFreydis the Red sails on\n\n[Outro]\n*(instrumental)*\n",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\text_notes\\53ef51dfba67e87a6c5582541598a3e27b963a00244046c4b975adc2202d875f.txt"
+      },
+      "pos": [
+        -861.7717437499997,
+        -248.51155624999984
+      ],
+      "ui_size": [
+        463,
+        630
+      ]
+    },
+    {
+      "id": "688d4830-1785-4980-b84b-327021f15cf8",
+      "type": "ABCNote",
+      "name": "ABC Note",
+      "params": {
+        "enabled": true,
+        "abc": "X:1\nT:\nM:4/4\nL:1/32\nQ:1/4=76\nV: Vocal clef=treble name=\"Vocal Melody\" snm=\"Vocal\"\nV: Ins clef=treble name=\"Ins Melody\" snm=\"Inst.\"\nK:Fm\n% intro\nV: Vocal\nz24z4\"Fm\"z4|\"Fm\"z32|\"Fm\"z24z6F2|\nV: Ins\nz16z4B2B4d6|c4A4c4A4F4A4f4c4|F4A4c4A4F12F2z2|\n% verse\nV: Vocal\n\"Fm\"F8z4F4F6E2F2G6|\"G#\"A8z16A6B2|\"D#\"G8z4G4G4F4G6A2|\"Fm\"F8z16z4F4|\nV: Ins\nZ4|\nV: Vocal\n\"Fm\"F8F4F4F2E6F4G4|\"G#\"A8z16A4B4|\"D#\"G12G4G6E2G4A4|\"Fm\"F8z16z4F4|\nV: Ins\nZ4|\nV: Vocal\n\"Fm\"c12c4c6B2A6G2|\"G#\"A8z16A4c4|\"D#\"B8z4B4B2c6d4e4-|\"G#\"e4c8z16F4|\nV: Ins\nZ4|\nV: Vocal\n\"Fm\"c12c4c4B4A6G2|\"G#\"A8z16z4G4|\"D#\"G8G8G6E2G6A2|\"Fm\"F8z16A4G4|\nV: Ins\nZ4|\n% chorus\nV: Vocal\n\"C#\"F8z4A4A6F2A4B4|\"G#\"B4c4z16A4G4|\"C#\"F8z4F4F6E2E4B4|\"G#\"B4c4z16A4G4|\nV: Ins\nZ4|\nV: Vocal\n\"C#\"F8z4A4A6F2A4B4|\"G#\"B4c4z16E4c4|\"D#\"B24z8|\"D#\"z24z4F2F2|\nV: Ins\nZ2|z24g4e4|E4B4g4e4E12z4|\n% verse\nV: Vocal\n\"Fm\"F8F8F4A4F4G4|\"G#\"A8z16z4A4|\"D#\"B8z4B4B6A2G6E2|\"Fm\"F8z16z4G4|\nV: Ins\nZ4|\nV: Vocal\n\"Fm\"F8z4F4F2E6F4G4|\"G#\"A6B2A8z8A4B4|\"D#\"G8z4G4G4E4G4A4|\"Fm\"F6G2F8z12F4|\nV: Ins\nZ4|\nV: Vocal\n\"Fm\"c12c4c4B4A6G2|\"G#\"A8z16A4c4|\"D#\"B8B8B4c4d6e2|\"G#\"c8z16z4E4|\nV: Ins\nZ4|\nV: Vocal\n\"Fm\"c8z4c4c4B4z4A2G2|\"G#\"A6B2A4z16A4|\"D#\"G8G4G4G4E4G6A2|\"Fm\"F6G2F8z8A4G4|\nV: Ins\nZ4|\n% chorus\nV: Vocal\n\"C#\"F8z4A4A6F2A4B4|\"G#\"B4c4z16A4G4|\"C#\"F8F8F6E2E4B4|\"G#\"B4c4z16A4G4|\nV: Ins\nZ4|\nV: Vocal\n\"C#\"F8z4A4A4F4A4B4|\"G#\"B4c4z16E4c4|\"D#\"B24z4B2c2|\nV: Ins\nZ3|\nV: Vocal\nM:3/4\n\"D#\"d12c4A6G2|\nV: Ins\nM:3/4\nZ|\nV: Vocal\nM:4/4\n\"C#\"F8A8A4z4A4B4|\"G#\"B4c4z16A4G4|\"C#\"F8z4F4F4E4E4B4|\"G#\"B4c4z16A4G4|\nV: Ins\nM:4/4\nZ4|\nV: Vocal\n\"C#\"F8A8A6F2A4B4|\"G#\"B4c4c4z12E4c4|\"D#\"B8z24|\"D#\"z16B4d4\"Fm\"c8-|\nV: Ins\nZ2|z8g4e4z4B4g4e4|z4B4B8z16|\nV: Vocal\n\"Fm\"c8z24|\"Fm\"z16A8B8|\nV: Ins\nz8f4e4c4f4e4c4|Z|\n% verse\nV: Vocal\n\"G#\"c8z4c4c4B4c4d4|\"D#\"B4z16z4A4B4|\"G#\"c4z8c4c4B4c4d4|\"D#\"B4B8A4B4B8A4|\nV: Ins\nZ4|\nV: Vocal\n\"D#\"z4B4\"Fm\"c4z8c4c4B4|\"Fm\"c4z8c4c4c4c4c4|\"C#\"d4z8d4d6d2d4e4|\"C#\"d4e4\"D#\"B4z8B4B4A4|\nV: Ins\nZ4|\nV: Vocal\n\"Fm\"z32|\"Fm\"z16\"C#\"z16|\nV: Ins\nc4f4e4c4f4e4f8-|f8a4g4f4a2a2a4g4|\n% outro\nV: Vocal\n\"C#\"z32|\"G#\"z32|\"C#\"z32|\"G#\"z32|\nV: Ins\nf4f4f4e4f4f4f4e4|c4c4A2B2c2d2c8A4G4|F4a2a2a4g4f4e4f4d4|c8A2B2c4A2B2c4A4G4|\nV: Vocal\n\"C#\"z32|\"G#\"z32|\"D#\"z32|\"D#\"z32|\nV: Ins\nF4a2a2a4g4f4f4f4e4|c4c4e4c4B4A4e4c4|B4e4g4e4B4e4g4e4|e4e4g4e4B4e4g4e4|\nV: Vocal\n\"C#\"z32|\"G#\"z32|\"C#\"z32|\"G#\"z32|\nV: Ins\nf4a2a2a4g4f4z2f2f4e4|c8A2B2c2d2c4A4a4g4|f4a2a2a4g4f4z2f2f4e4|c8e4c4B4A4a4g4|\nV: Vocal\n\"C#\"z32|\"G#\"z32|\"D#\"z32|\"D#\"z16\"Fm\"z16|\nV: Ins\nf4a2a2a4g4f8b8|c'6b2a4c4A2B2c4A2B2c4|B4e4g4e4B4e4g4e4|B8e8f4e4c4f4|\nV: Vocal\n\"Fm\"z32|\"Fm\"z24z4z4|\nV: Ins\ne4c4f2z16z6|f4z24z4|\n\n",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\abc_notes\\3a8a87885d2f7c72f2255a5d863ddedd9ca5e8b07ff24103105b8a238800182f.abc"
+      },
+      "pos": [
+        -809.3509041125386,
+        -1148.1287470771085
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "5e57b5bc-5e91-4a29-b7e3-b63e38448b07",
+      "type": "ABCNote",
+      "name": "ABC Note",
+      "params": {
+        "enabled": true,
+        "abc": "X:1\nT:Untitled\nM:4/4\nL:1/8\nQ:120\nK:C\n% Verse\nC D E F|G4 z2|\n",
+        "refresh": false,
+        "last_path": "C:\\Users\\janne\\src\\anode\\outputs\\abc_notes\\5f43baa2e2535ec356468c8f75b53a62a1fcc5ae1b9eb463ea01a57260b484de.abc"
+      },
+      "pos": [
+        14.382675962275357,
+        -977.7851646661594
+      ],
+      "ui_size": [
+        498,
+        583
+      ]
+    },
+    {
+      "id": "53f916e7-b569-42ca-bbc1-1fdf634fa49f",
+      "type": "FileSource",
+      "name": "Text File",
+      "params": {
+        "enabled": true,
+        "file": "./inputs/freydis_the_red_lyrics_v3.md",
+        "refresh": false
+      },
+      "pos": [
+        -1190.1188038630537,
+        125.38319019622432
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "42dd596a-f838-4ac2-bf51-95ee151c89df",
+      "type": "ADSRNode",
+      "name": "ADSR Envelope",
+      "params": {
+        "enabled": true,
+        "attack": 0.01,
+        "decay": 0.1,
+        "sustain": 0.7,
+        "release": 0.3
+      },
+      "pos": [
+        364.58630160100927,
+        -1390.9052608963966
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "31aac7e6-c6d2-4e0c-bee0-f68b2e19f8a6",
+      "type": "MIDIKeyboardNode",
+      "name": "MIDI Keyboard",
+      "params": {
+        "enabled": true,
+        "start_note": 48,
+        "octaves": 2
+      },
+      "pos": [
+        -170.24127234999992,
+        -1423.1106360507806
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "b4c642db-c1dd-44b3-841b-dd14712613fd",
+      "type": "MIDINoteToCV",
+      "name": "MIDI Note to CV",
+      "params": {
+        "enabled": true,
+        "glide_ms": 0.0
+      },
+      "pos": [
+        137.65602881425775,
+        -1474.4490197438267
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "fb7836ee-ebcd-47f6-80a8-8200cfba3c83",
+      "type": "SineOscillator",
+      "name": "Sine Oscillator",
+      "params": {
+        "enabled": true,
+        "freq": 440.0,
+        "amp": 0.5
+      },
+      "pos": [
+        632.5,
+        -1481.1999999999996
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "4c74b46a-4e81-4615-9e09-bed95b80f6ac",
+      "type": "Gain",
+      "name": "Gain",
+      "params": {
+        "enabled": true,
+        "vol": 1.0
+      },
+      "pos": [
+        630.2999999999997,
+        -1238.5999999999995
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "59ff8a13-25c0-4e58-9ee8-f1ba721210f4",
+      "type": "WaveformDisplay",
+      "name": "Oscilloscope",
+      "params": {
+        "enabled": true
+      },
+      "pos": [
+        598.1601374999997,
+        -844.7700187499996
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "77fa5fbb-effb-4ef5-a68f-4a95b7828a98",
+      "type": "ValuePlotterNode",
+      "name": "Value Plotter",
+      "params": {
+        "enabled": true,
+        "min_val": 0.0,
+        "max_val": 1.0,
+        "auto_range": false
+      },
+      "pos": [
+        845.0774999999999,
+        -1239.1825000000001
+      ],
+      "ui_size": null
+    },
+    {
+      "id": "beb2216c-921f-4ced-b38e-01ec41b201ff",
+      "type": "ABCPlayer",
+      "name": "ABC Score Player",
+      "params": {
+        "enabled": true,
+        "score_file": "",
+        "channel": 0,
+        "velocity": 96,
+        "tempo_scale": 1.0,
+        "loop": false
+      },
+      "pos": [
+        -307.21674999999993,
+        -1225.8252499999996
+      ],
+      "ui_size": null
+    }
+  ],
+  "connections": [
+    {
+      "src_id": "7a49703f-7d7f-4bb7-82ac-61efdc9c7b50",
+      "src_port": "out",
+      "dst_id": "8e50e26f-e5f7-42b7-9cd8-f34d3dbaaeec",
+      "dst_port": "audio_in"
+    },
+    {
+      "src_id": "4c74b46a-4e81-4615-9e09-bed95b80f6ac",
+      "src_port": "out",
+      "dst_id": "8e50e26f-e5f7-42b7-9cd8-f34d3dbaaeec",
+      "dst_port": "audio_in"
+    },
+    {
+      "src_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "src_port": "song",
+      "dst_id": "f88c2d2b-93c8-4648-9a71-4b89e75e508b",
+      "dst_port": "uri_in"
+    },
+    {
+      "src_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "src_port": "ready",
+      "dst_id": "f88c2d2b-93c8-4648-9a71-4b89e75e508b",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "f88c2d2b-93c8-4648-9a71-4b89e75e508b",
+      "src_port": "out",
+      "dst_id": "7a49703f-7d7f-4bb7-82ac-61efdc9c7b50",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "8bdf2e91-d1ef-4e5a-894d-b078af636cbd",
+      "src_port": "done",
+      "dst_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "8bdf2e91-d1ef-4e5a-894d-b078af636cbd",
+      "src_port": "abc",
+      "dst_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "dst_port": "abc_uri"
+    },
+    {
+      "src_id": "d4f44597-df4f-4a2b-b863-cbf530773c81",
+      "src_port": "text",
+      "dst_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "dst_port": "lyrics_uri"
+    },
+    {
+      "src_id": "f30b6796-bf62-4059-871b-9ed44fd3d21d",
+      "src_port": "done",
+      "dst_id": "8bdf2e91-d1ef-4e5a-894d-b078af636cbd",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "f30b6796-bf62-4059-871b-9ed44fd3d21d",
+      "src_port": "melody",
+      "dst_id": "8bdf2e91-d1ef-4e5a-894d-b078af636cbd",
+      "dst_port": "abc_uri"
+    },
+    {
+      "src_id": "53f916e7-b569-42ca-bbc1-1fdf634fa49f",
+      "src_port": "done",
+      "dst_id": "d4f44597-df4f-4a2b-b863-cbf530773c81",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "53f916e7-b569-42ca-bbc1-1fdf634fa49f",
+      "src_port": "text",
+      "dst_id": "d4f44597-df4f-4a2b-b863-cbf530773c81",
+      "dst_port": "text_uri"
+    },
+    {
+      "src_id": "f30b6796-bf62-4059-871b-9ed44fd3d21d",
+      "src_port": "done",
+      "dst_id": "688d4830-1785-4980-b84b-327021f15cf8",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "f30b6796-bf62-4059-871b-9ed44fd3d21d",
+      "src_port": "score",
+      "dst_id": "688d4830-1785-4980-b84b-327021f15cf8",
+      "dst_port": "abc_uri"
+    },
+    {
+      "src_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "src_port": "ready",
+      "dst_id": "5e57b5bc-5e91-4a29-b7e3-b63e38448b07",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "cffd440a-da31-4325-9240-54b13c490b89",
+      "src_port": "plan",
+      "dst_id": "5e57b5bc-5e91-4a29-b7e3-b63e38448b07",
+      "dst_port": "abc_uri"
+    },
+    {
+      "src_id": "b4c642db-c1dd-44b3-841b-dd14712613fd",
+      "src_port": "gate_out",
+      "dst_id": "42dd596a-f838-4ac2-bf51-95ee151c89df",
+      "dst_port": "gate"
+    },
+    {
+      "src_id": "b4c642db-c1dd-44b3-841b-dd14712613fd",
+      "src_port": "velocity_out",
+      "dst_id": "42dd596a-f838-4ac2-bf51-95ee151c89df",
+      "dst_port": "attack_in"
+    },
+    {
+      "src_id": "beb2216c-921f-4ced-b38e-01ec41b201ff",
+      "src_port": "midi_out",
+      "dst_id": "31aac7e6-c6d2-4e0c-bee0-f68b2e19f8a6",
+      "dst_port": "midi_in"
+    },
+    {
+      "src_id": "31aac7e6-c6d2-4e0c-bee0-f68b2e19f8a6",
+      "src_port": "midi_out",
+      "dst_id": "b4c642db-c1dd-44b3-841b-dd14712613fd",
+      "dst_port": "midi_in"
+    },
+    {
+      "src_id": "b4c642db-c1dd-44b3-841b-dd14712613fd",
+      "src_port": "pitch_out",
+      "dst_id": "fb7836ee-ebcd-47f6-80a8-8200cfba3c83",
+      "dst_port": "freq_in"
+    },
+    {
+      "src_id": "fb7836ee-ebcd-47f6-80a8-8200cfba3c83",
+      "src_port": "signal",
+      "dst_id": "4c74b46a-4e81-4615-9e09-bed95b80f6ac",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "42dd596a-f838-4ac2-bf51-95ee151c89df",
+      "src_port": "out",
+      "dst_id": "4c74b46a-4e81-4615-9e09-bed95b80f6ac",
+      "dst_port": "mod"
+    },
+    {
+      "src_id": "4c74b46a-4e81-4615-9e09-bed95b80f6ac",
+      "src_port": "out",
+      "dst_id": "59ff8a13-25c0-4e58-9ee8-f1ba721210f4",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "42dd596a-f838-4ac2-bf51-95ee151c89df",
+      "src_port": "out",
+      "dst_id": "77fa5fbb-effb-4ef5-a68f-4a95b7828a98",
+      "dst_port": "in"
+    },
+    {
+      "src_id": "688d4830-1785-4980-b84b-327021f15cf8",
+      "src_port": "done",
+      "dst_id": "beb2216c-921f-4ced-b38e-01ec41b201ff",
+      "dst_port": "trigger_in"
+    },
+    {
+      "src_id": "688d4830-1785-4980-b84b-327021f15cf8",
+      "src_port": "abc",
+      "dst_id": "beb2216c-921f-4ced-b38e-01ec41b201ff",
+      "dst_port": "uri_in"
+    }
+  ]
+}
