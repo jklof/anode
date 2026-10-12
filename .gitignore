@@ -66,6 +66,12 @@ models/Supertonic3/outputs/
 models/Supertonic3/_dl/
 models/Supertonic3/LICENSE
 
+# Whistle realtime STT weights + native engine (fetched via
+# tools/whistle/fetch.py). Everything under here is fetched at runtime only:
+# the 17 MB Apache-2.0 .cact, the platform engine wheel, the extracted
+# libneedle3 and the per-session transcripts/outputs.
+models/Whistle/
+
 #inputs
 inputs/
 

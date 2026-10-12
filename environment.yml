@@ -60,6 +60,10 @@ dependencies:
       # source commit. Lazy/child-only import: nodes register without it.
       - supertonic @ git+https://github.com/supertone-oss-archive/supertonic-py.git@df0f9686dac7fbbde391b759e2ee5286a3737622
       - swift-f0
+      # Whistle realtime STT (libneedle3 engine). Pinned: the .cact container
+      # format is tied to the engine version. [mic] adds soxr for the streaming
+      # 48k->16k resample on the NRT worker.
+      - cactus-needle[mic]==3.2.1
       - pylibrb
       - vocos
       - onnx
